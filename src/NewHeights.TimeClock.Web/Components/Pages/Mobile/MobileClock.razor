@@ -1,0 +1,262 @@
+@page "/mobile/clock"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@layout KioskLayout
+@attribute [Authorize(Policy = "RequireHourly")]
+@using NewHeights.TimeClock.Web.Services
+@using NewHeights.TimeClock.Shared.Enums
+@inject ITimePunchService TimePunchService
+@inject IGeofenceService GeofenceService
+@inject IJSRuntime JS
+@using System.Security.Claims
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IConfiguration Configuration
+@inject ILogger<MobileClock> Logger
+@implements IAsyncDisposable
+
+<div class="kiosk-container mobile-clock-container">
+    <header class="mobile-header">
+        <div class="user-info"><span>@userName</span></div>
+        <div class="current-time" style="font-size: 1.5rem;">@currentTime.ToString("h:mm tt")</div>
+    </header>
+
+    @if (showResult)
+    {
+        <div class="scan-area">
+            <div class="result-display @(isSuccess ? "success" : "error")">
+                @if (!string.IsNullOrEmpty(employeePhotoBase64))
+                {
+                    <img src="data:image/jpeg;base64,@employeePhotoBase64" alt="Photo" class="employee-photo" />
+                }
+                else if (isSuccess && noPhotoOnFile)
+                {
+                    <div style="background: #6c757d; display: flex; align-items: center; justify-content: center; font-size: 2.5rem; color: white; border-radius: 50%; width: 120px; height: 120px; margin: 0 auto 10px;">👤</div>
+                    <p style="color: #ffc107; font-weight: bold; font-size: 0.9rem; margin-bottom: 10px;">No Picture Found - See Reception to take new photo</p>
+                }
+                <div class="result-message">
+                    <h3>@resultMessage</h3>
+                    @if (lastPunchType.HasValue)
+                    {
+                        <span class="punch-type-badge @GetPunchTypeCss(lastPunchType.Value)">@GetPunchTypeDisplay(lastPunchType.Value)</span>
+                    }
+                    @if (totalHoursToday.HasValue && totalHoursToday.Value > 0)
+                    {
+                        <p class="hours-today">Today: @totalHoursToday.Value.ToString("F2") hours</p>
+                    }
+                </div>
+                <button class="btn btn-primary" style="margin-top: 20px;" @onclick="ResetForNextScan">Scan Again</button>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="location-status @locationStatusClass">
+            @if (isCheckingLocation)
+            {
+                <div class="spinner"></div><span>Checking your location...</span>
+            }
+            else if (locationVerified)
+            {
+                <span>✓ @nearestCampusName</span>
+            }
+            else if (debugModeActive)
+            {
+                <span>Debug Mode Active</span>
+            }
+            else
+            {
+                <span style="font-size: 0.9rem;">@(locationErrorMessage.Length > 100 ? locationErrorMessage.Substring(0, 100) + "..." : locationErrorMessage)</span>
+            }
+        </div>
+
+        @if (!locationVerified && !isCheckingLocation && !debugModeActive)
+        {
+            <div style="text-align: center; padding: 20px;">
+                <button class="btn btn-primary" @onclick="CheckLocation">Check Location Again</button>
+                <p style="color: white; margin-top: 15px; opacity: 0.8;">You must be on campus to clock in/out</p>
+            </div>
+        }
+        else if (locationVerified || debugModeActive)
+        {
+            <div class="scan-section" style="text-align: center; padding: 20px;">
+                <h3 style="color: white; margin-bottom: 10px;">Scan Your ID Badge</h3>
+                <p style="color: rgba(255,255,255,0.7); margin-bottom: 20px;">Hold your badge QR code up to the camera</p>
+                @if (scannerError)
+                {
+                    <div style="background: #dc3545; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                        <p>Camera not available</p>
+                        <button class="btn" style="background: white; color: #dc3545; margin-top: 10px;" @onclick="RetryScanner">Retry Camera</button>
+                    </div>
+                }
+            </div>
+            <div id="qr-reader" style="width: 100%; max-width: 400px; margin: 0 auto; min-height: 300px;"></div>
+        }
+    }
+    <footer class="kiosk-footer"><p>Mobile Clock-In</p></footer>
+</div>
+
+@code {
+    private DotNetObjectReference<MobileClock>? dotNetRef;
+    private DateTime currentTime = DateTime.Now;
+    private System.Timers.Timer? clockTimer;
+    private string userName = "";
+    private bool isCheckingLocation = true;
+    private bool locationVerified = false;
+    private bool debugModeActive = false;
+    private bool scannerError = false;
+    private bool scannerInitialized = false;
+    private string locationErrorMessage = "";
+    private string locationStatusClass = "checking";
+    private double? userLatitude;
+    private double? userLongitude;
+    private int? nearestCampusId;
+    private string nearestCampusName = "";
+    private bool showResult = false;
+    private bool isSuccess = false;
+    private string resultMessage = "";
+    private string employeePhotoBase64 = "";
+    private decimal? totalHoursToday;
+    private PunchType? lastPunchType;
+    private bool noPhotoOnFile = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        clockTimer = new System.Timers.Timer(1000);
+        clockTimer.Elapsed += (s, e) => { currentTime = DateTime.Now; InvokeAsync(StateHasChanged); };
+        clockTimer.Start();
+        debugModeActive = Configuration.GetValue<bool>("TimeClock:BypassGeofence");
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        if (user?.Identity?.IsAuthenticated == true)
+            userName = user.FindFirst("name")?.Value ?? user.Identity?.Name ?? "User";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            dotNetRef = DotNetObjectReference.Create(this);
+            await CheckLocation();
+        }
+        if ((locationVerified || debugModeActive) && !showResult && !scannerInitialized && !isCheckingLocation)
+        {
+            await Task.Delay(200);
+            await StartCameraScanner();
+        }
+    }
+
+    private async Task CheckLocation()
+    {
+        isCheckingLocation = true;
+        locationStatusClass = "checking";
+        locationVerified = false;
+        scannerInitialized = false;
+        StateHasChanged();
+        
+        try
+        {
+            var position = await JS.InvokeAsync<LocationResult>("kioskInterop.getPosition");
+            if (position != null)
+            {
+                userLatitude = position.Latitude;
+                userLongitude = position.Longitude;
+                var nearestCampus = await GeofenceService.GetNearestCampusAsync(position.Latitude, position.Longitude);
+                if (nearestCampus != null)
+                {
+                    var result = await GeofenceService.ValidateLocationAsync(nearestCampus.CampusId, position.Latitude, position.Longitude);
+                    if (result.IsValid)
+                    {
+                        locationVerified = true;
+                        locationStatusClass = "verified";
+                        nearestCampusId = nearestCampus.CampusId;
+                        nearestCampusName = nearestCampus.CampusName;
+                    }
+                    else { await HandleLocationFailed(result.Message); }
+                }
+                else { await HandleLocationFailed("No campuses configured"); }
+            }
+            else { await HandleLocationFailed("Could not get GPS position"); }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "CheckLocation error");
+            await HandleLocationFailed(ex.Message.Contains("denied") ? "Location permission denied" : "Location error");
+        }
+        finally { isCheckingLocation = false; StateHasChanged(); }
+    }
+
+    private Task HandleLocationFailed(string? message)
+    {
+        locationStatusClass = "error";
+        locationErrorMessage = message ?? "Location check failed";
+        if (debugModeActive)
+        {
+            _ = GeofenceService.GetAllCampusesAsync().ContinueWith(t => {
+                if (t.Result.Any()) { nearestCampusId = t.Result.First().CampusId; nearestCampusName = t.Result.First().CampusName + " (Debug)"; }
+            });
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task StartCameraScanner()
+    {
+        try
+        {
+            scannerError = false;
+            var initResult = await JS.InvokeAsync<bool>("qrScanner.init", "qr-reader", dotNetRef);
+            if (initResult)
+            {
+                var startResult = await JS.InvokeAsync<bool>("qrScanner.start");
+                scannerInitialized = startResult;
+                if (!startResult) { scannerError = true; StateHasChanged(); }
+            }
+            else { scannerError = true; StateHasChanged(); }
+        }
+        catch (Exception ex) { Logger.LogWarning(ex, "Could not start QR scanner"); scannerError = true; StateHasChanged(); }
+    }
+
+    private async Task RetryScanner() { scannerError = false; scannerInitialized = false; StateHasChanged(); await Task.Delay(200); await StartCameraScanner(); }
+    private async Task StopCameraScanner() { try { await JS.InvokeVoidAsync("qrScanner.stop"); scannerInitialized = false; } catch { } }
+
+    [JSInvokable]
+    public async Task OnQrCodeScanned(string qrCode)
+    {
+        if (string.IsNullOrWhiteSpace(qrCode) || showResult) return;
+        await StopCameraScanner();
+        await ProcessPunch(qrCode.Trim());
+    }
+
+    private async Task ProcessPunch(string idNumber)
+    {
+        try
+        {
+            var request = new PunchRequest { IdNumber = idNumber, CampusId = nearestCampusId ?? 0, Latitude = userLatitude, Longitude = userLongitude, ScanMethod = "MOBILE", IsMobileMode = true };
+            var result = await TimePunchService.ProcessPunchAsync(request);
+            showResult = true;
+            isSuccess = result.Success;
+            resultMessage = result.Message;
+            employeePhotoBase64 = result.EmployeePhotoBase64 ?? "";
+            totalHoursToday = result.TotalHoursToday;
+            lastPunchType = Enum.TryParse<PunchType>(result.PunchType, out var pt) ? pt : null;
+            noPhotoOnFile = result.NoPhotoOnFile;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error processing punch");
+            showResult = true; isSuccess = false; resultMessage = "System error - please try again";
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ResetForNextScan()
+    {
+        showResult = false; employeePhotoBase64 = ""; totalHoursToday = null; lastPunchType = null; noPhotoOnFile = false; scannerInitialized = false;
+        StateHasChanged();
+    }
+
+    private string GetPunchTypeDisplay(PunchType pt) => pt switch { PunchType.In => "CLOCKED IN", PunchType.Out => "CLOCKED OUT", PunchType.LunchOut => "LUNCH OUT", PunchType.LunchIn => "LUNCH IN", _ => pt.ToString().ToUpper() };
+    private string GetPunchTypeCss(PunchType pt) => pt switch { PunchType.In => "in", PunchType.Out => "out", PunchType.LunchOut => "lunch-out", PunchType.LunchIn => "lunch-in", _ => "in" };
+    public async ValueTask DisposeAsync() { clockTimer?.Stop(); clockTimer?.Dispose(); await StopCameraScanner(); dotNetRef?.Dispose(); }
+    private class LocationResult { public double Latitude { get; set; } public double Longitude { get; set; } public double Accuracy { get; set; } }
+}

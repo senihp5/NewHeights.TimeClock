@@ -1,0 +1,60 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@inject NavigationManager Nav
+@inject AuthenticationStateProvider AuthStateProvider
+
+@code {
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+
+        if (user.Identity?.IsAuthenticated != true)
+        {
+            Nav.NavigateTo("MicrosoftIdentity/Account/SignIn", forceLoad: true);
+            return;
+        }
+
+        // Hourly employees (campus-scoped or flat) and substitutes -> Mobile Clock
+        if (user.IsInRole("TimeClock.Employee") ||
+            user.IsInRole("TimeClock.Employee.StopSix") ||
+            user.IsInRole("TimeClock.Employee.McCart") ||
+            user.IsInRole("TimeClock.Substitute"))
+        {
+            Nav.NavigateTo("/mobile/clock", forceLoad: false);
+            return;
+        }
+
+        // Supervisors (campus-scoped or flat) -> Team Timesheets
+        if (user.IsInRole("TimeClock.Supervisor") ||
+            user.IsInRole("TimeClock.Supervisor.StopSix") ||
+            user.IsInRole("TimeClock.Supervisor.McCart"))
+        {
+            Nav.NavigateTo("/", forceLoad: false);
+            return;
+        }
+
+        // HR staff -> Payroll Review
+        if (user.IsInRole("TimeClock.HR"))
+        {
+            Nav.NavigateTo("/", forceLoad: false);
+            return;
+        }
+
+        // Campus admins -> Reception Dashboard
+        if (user.IsInRole("TimeClock.CampusAdmin"))
+        {
+            Nav.NavigateTo("/", forceLoad: false);
+            return;
+        }
+
+        // All other salaried staff (AllStaff) -> Campus Check-In
+        if (user.IsInRole("TimeClock.AllStaff"))
+        {
+            Nav.NavigateTo("/mobile/checkin", forceLoad: false);
+            return;
+        }
+
+        // Authenticated but not in any known TimeClock group -> Access Denied
+        Nav.NavigateTo("/access-denied", forceLoad: false);
+    }
+}

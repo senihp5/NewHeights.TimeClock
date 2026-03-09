@@ -1,0 +1,671 @@
+@page "/mobile/checkin"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@layout KioskLayout
+@attribute [Authorize(Policy = "RequireAnyStaff")]
+@using NewHeights.TimeClock.Web.Services
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IGeofenceService GeofenceService
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IJSRuntime JS
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<MobileCheckin> Logger
+
+<div class="kiosk-container mobile-clock-container">
+    <header class="mobile-header">
+        <div class="user-info"><span>@userName</span></div>
+        <div class="current-time" style="font-size: 1.5rem;">@currentTime.ToString("h:mm tt")</div>
+    </header>
+
+    @if (showResult)
+    {
+        <div class="scan-area">
+            <div class="result-display @resultClass">
+                @if (!string.IsNullOrEmpty(photoBase64))
+                {
+                    <img src="@photoSrc" alt="Photo" class="employee-photo" />
+                }
+                <div class="result-message">
+                    <h3>@resultMessage</h3>
+                    @if (!string.IsNullOrEmpty(lastCheckType))
+                    {
+                        <span class="punch-type-badge @punchBadgeClass">@punchBadgeText</span>
+                    }
+                    <p style="margin-top: 8px; opacity: 0.8; font-size: 0.95rem;">@scannedPersonName</p>
+                    <p style="margin-top: 4px; opacity: 0.7; font-size: 0.85rem;">@nearestCampusName</p>
+                </div>
+            </div>
+        </div>
+        <div style="text-align: center; padding: 20px;">
+            @if (isMobileDevice)
+            {
+                @if (isSuccess)
+                {
+                    <button class="btn @(lastCheckType == ""IN"" ? ""btn-warning"" : ""btn-success"")" style="padding: 16px 48px; font-size: 1.2rem; border-radius: 12px;" @onclick="ProcessNextAction">
+                        @(lastCheckType == "IN" ? "Check Out" : "Check In")
+                    </button>
+                    <p style="color: rgba(255,255,255,0.7); margin-top: 12px; font-size: 0.9rem;">Tap to @(lastCheckType == ""IN"" ? ""check out"" : ""check back in"")</p>
+                }
+                else
+                {
+                    <button class="btn btn-primary" @onclick="ResetMobileToScanner">Scan Again</button>
+                }
+            }
+            else
+            {
+                <button class="btn btn-primary" @onclick="ResetForDesktop">Done</button>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="location-status @locationStatusClass">
+            @if (isCheckingLocation)
+            {
+                <div class="spinner"></div>
+                <span>Checking your location...</span>
+            }
+            else if (locationVerified)
+            {
+                <span>@nearestCampusName</span>
+            }
+            else
+            {
+                <span style="font-size: 0.9rem;">@locationErrorMessage</span>
+            }
+        </div>
+
+        @if (!locationVerified && !isCheckingLocation && !string.IsNullOrEmpty(locationErrorMessage))
+        {
+            <div style="text-align: center; padding: 20px;">
+                <p style="color: #ff6b6b; margin-bottom: 15px;">@locationErrorMessage</p>
+                <button class="btn btn-primary" @onclick="CheckLocation">Try Again</button>
+                <p style="color: rgba(255,255,255,0.7); margin-top: 15px;">You must be on campus to check in/out</p>
+            </div>
+        }
+        else if (locationVerified)
+        {
+            @if (isMobileDevice)
+            {
+                <div style="text-align: center; padding: 15px 20px;">
+                    <p style="color: rgba(255,255,255,0.85); font-size: 1.1rem; margin-bottom: 15px;">
+                        Scan employee ID card
+                    </p>
+                    <div id="qr-reader" style="width: 100%; max-width: 400px; margin: 0 auto; border-radius: 12px; overflow: hidden; background: #000;"></div>
+                    @if (!string.IsNullOrEmpty(scannerError))
+                    {
+                        <p style="color: #ff6b6b; margin-top: 12px; font-size: 0.9rem;">@scannerError</p>
+                        <button class="btn btn-primary" style="margin-top: 10px;" @onclick="StartScanner">Restart Camera</button>
+                    }
+                    @if (isProcessing)
+                    {
+                        <div style="margin-top: 20px;">
+                            <div class="spinner" style="margin: 0 auto;"></div>
+                            <p style="color: rgba(255,255,255,0.7); margin-top: 10px;">Processing...</p>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div style="text-align: center; padding: 40px 20px;">
+                    @if (!string.IsNullOrEmpty(photoBase64))
+                    {
+                        <img src="@photoSrc" alt="" style="width: 150px; height: 150px; border-radius: 50%; object-fit: cover; border: 4px solid white; margin-bottom: 20px;" />
+                    }
+                    <h2 style="color: white; margin-bottom: 10px;">@userName</h2>
+                    <p style="color: rgba(255,255,255,0.7); margin-bottom: 30px;">@currentStatus</p>
+                    @if (isProcessing)
+                    {
+                        <div class="spinner" style="margin: 20px auto;"></div>
+                    }
+                    else
+                    {
+                        <button class="btn @actionButtonClass" style="padding: 20px 60px; font-size: 1.5rem; border-radius: 12px;" @onclick="ProcessDesktopCheckin">
+                            @actionButtonText
+                        </button>
+                    }
+                </div>
+            }
+        }
+    }
+    <footer class="kiosk-footer"><p>Campus Check-In</p></footer>
+</div>
+
+@code {
+    private DateTime currentTime = DateTime.Now;
+    private System.Timers.Timer? clockTimer;
+
+    // Auth / desktop identity
+    private string userName = "";
+    private string? staffIdNumber;
+    private string? staffFirstName;
+    private string? staffLastName;
+    private string photoBase64 = "";
+
+    // Device detection
+    private bool isMobileDevice = false;
+
+    // Location
+    private bool isCheckingLocation = true;
+    private bool locationVerified = false;
+    private string locationErrorMessage = "";
+    private string locationStatusClass = "checking";
+    private int? nearestCampusId;
+    private string nearestCampusName = "";
+
+    // QR / result
+    private bool showResult = false;
+    private bool isSuccess = false;
+    private bool isProcessing = false;
+    private string resultMessage = "";
+    private string lastCheckType = "";
+    private string scannerError = "";
+    private string scannedPersonName = "";
+
+    // Desktop status
+    private string currentStatus = "Loading...";
+    private bool nextActionIsCheckIn = true;
+
+    // JS interop reference for QR scanner callbacks
+    private DotNetObjectReference<MobileCheckin>? dotNetRef;
+
+    private string photoSrc => "data:image/jpeg;base64," + photoBase64;
+    private string resultClass => isSuccess ? "success" : "error";
+    private string punchBadgeClass => lastCheckType == "IN" ? "in" : "out";
+    private string punchBadgeText => string.IsNullOrEmpty(lastCheckType) ? "" : (lastCheckType == "IN" ? "CHECKED IN" : "CHECKED OUT");
+    private string actionButtonClass => nextActionIsCheckIn ? "btn-success" : "btn-warning";
+    private string actionButtonText => nextActionIsCheckIn ? "CHECK IN" : "CHECK OUT";
+
+    protected override async Task OnInitializedAsync()
+    {
+        clockTimer = new System.Timers.Timer(1000);
+        clockTimer.Elapsed += OnClockTick;
+        clockTimer.Start();
+
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        if (user.Identity?.IsAuthenticated == true)
+        {
+            userName = user.FindFirst("name")?.Value ?? user.Identity.Name ?? "User";
+            staffIdNumber = user.FindFirst("employeeid")?.Value ?? user.FindFirst("employee_id")?.Value;
+            var parts = userName.Split(' ', 2);
+            staffFirstName = parts.Length > 0 ? parts[0] : "";
+            staffLastName = parts.Length > 1 ? parts[1] : "";
+        }
+
+        dotNetRef = DotNetObjectReference.Create(this);
+    }
+
+    private void OnClockTick(object? sender, System.Timers.ElapsedEventArgs e)
+    {
+        currentTime = DateTime.Now;
+        InvokeAsync(StateHasChanged);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                isMobileDevice = await JS.InvokeAsync<bool>("kioskInterop.isMobile");
+            }
+            catch
+            {
+                isMobileDevice = false;
+            }
+
+            await CheckLocation();
+        }
+    }
+
+    private async Task CheckLocation()
+    {
+        isCheckingLocation = true;
+        locationStatusClass = "checking";
+        locationVerified = false;
+        locationErrorMessage = "";
+        StateHasChanged();
+        try
+        {
+            var position = await JS.InvokeAsync<LocResult>("kioskInterop.getPosition");
+            if (position != null)
+            {
+                var nearestCampus = await GeofenceService.GetNearestCampusAsync(position.Latitude, position.Longitude);
+                if (nearestCampus != null)
+                {
+                    var result = await GeofenceService.ValidateLocationAsync(nearestCampus.CampusId, position.Latitude, position.Longitude);
+                    if (result.IsValid)
+                    {
+                        locationVerified = true;
+                        locationStatusClass = "verified";
+                        nearestCampusId = nearestCampus.CampusId;
+                        nearestCampusName = nearestCampus.CampusName;
+
+                        if (!isMobileDevice)
+                        {
+                            await LoadStaffInfo();
+                            await LoadCurrentStatus();
+                        }
+                    }
+                    else
+                    {
+                        locationStatusClass = "error";
+                        locationErrorMessage = result.Message ?? "Too far from campus";
+                    }
+                }
+                else
+                {
+                    locationStatusClass = "error";
+                    locationErrorMessage = "No campuses configured";
+                }
+            }
+            else
+            {
+                locationStatusClass = "error";
+                locationErrorMessage = "Could not get GPS position";
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "CheckLocation error");
+            locationStatusClass = "error";
+            var msg = ex.Message ?? ex.ToString();
+            if (msg.Contains("denied") || msg.Contains("GEO_ERROR_1"))
+                locationErrorMessage = "Location permission denied - check browser settings";
+            else if (msg.Contains("unavailable") || msg.Contains("GEO_ERROR_2"))
+                locationErrorMessage = "Location unavailable - " + msg;
+            else if (msg.Contains("timeout") || msg.Contains("GEO_ERROR_3"))
+                locationErrorMessage = "Location timed out - " + msg;
+            else
+                locationErrorMessage = "Location error: " + msg;
+        }
+        finally
+        {
+            isCheckingLocation = false;
+            StateHasChanged();
+        }
+
+        if (isMobileDevice && locationVerified)
+        {
+            await Task.Delay(200);
+            await StartScanner();
+        }
+    }
+
+    private async Task StartScanner()
+    {
+        scannerError = "";
+        StateHasChanged();
+        try
+        {
+            var initialized = await JS.InvokeAsync<bool>("qrScanner.init", "qr-reader", dotNetRef);
+            if (initialized)
+            {
+                await JS.InvokeVoidAsync("qrScanner.start");
+            }
+            else
+            {
+                scannerError = "Camera could not be initialized. Check camera permissions.";
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "QR scanner start error");
+            scannerError = "Camera error: " + ex.Message;
+            StateHasChanged();
+        }
+    }
+
+    private async Task StopScanner()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("qrScanner.stop");
+        }
+        catch { }
+    }
+
+    [JSInvokable]
+    public async Task OnQrCodeScanned(string qrData)
+    {
+        if (isProcessing) return;
+
+        await StopScanner();
+
+        isProcessing = true;
+        StateHasChanged();
+
+        try
+        {
+            var parts = qrData.Split('|');
+            if (parts.Length < 3)
+            {
+                isSuccess = false;
+                resultMessage = "Invalid QR code format";
+                scannedPersonName = "";
+                showResult = true;
+                isProcessing = false;
+                StateHasChanged();
+                return;
+            }
+
+            var firstName = parts[0].Trim();
+            var lastName = parts[1].Trim();
+            var idNumber = parts[2].Trim();
+
+            await ProcessMobileCheckin(firstName, lastName, idNumber);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "QR scan processing error");
+            isSuccess = false;
+            resultMessage = "Processing error";
+            scannedPersonName = "";
+            showResult = true;
+            isProcessing = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ProcessMobileCheckin(string firstName, string lastName, string idNumber)
+    {
+        if (nearestCampusId == null)
+        {
+            isSuccess = false;
+            resultMessage = "Campus not verified";
+            scannedPersonName = firstName + " " + lastName;
+            showResult = true;
+            isProcessing = false;
+            StateHasChanged();
+            return;
+        }
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var staff = await context.Staff.AsNoTracking()
+                .Where(s => s.IdNumber == idNumber && s.FirstName == firstName && s.LastName == lastName)
+                .FirstOrDefaultAsync();
+
+            if (staff == null)
+            {
+                staff = await context.Staff.AsNoTracking()
+                    .Where(s => s.IdNumber == idNumber)
+                    .FirstOrDefaultAsync();
+            }
+
+            if (staff == null)
+            {
+                isSuccess = false;
+                resultMessage = "Employee not found";
+                scannedPersonName = firstName + " " + lastName;
+                photoBase64 = "";
+                showResult = true;
+                isProcessing = false;
+                StateHasChanged();
+                return;
+            }
+
+            photoBase64 = "";
+            if (staff.Dcid > 0)
+            {
+                var photo = await context.Photos.AsNoTracking()
+                    .Where(p => p.SubjectDcid == staff.Dcid && p.SubjectType == 1)
+                    .FirstOrDefaultAsync();
+                if (photo?.PhotoData != null)
+                    photoBase64 = Convert.ToBase64String(photo.PhotoData);
+            }
+
+            var today = DateTime.Today;
+            var lastTrans = await context.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.IdNumber == staff.IdNumber && t.ScanDateTime.Date == today)
+                .OrderByDescending(t => t.ScanDateTime)
+                .FirstOrDefaultAsync();
+
+            bool isCheckIn = lastTrans == null
+                || lastTrans.ScanType == "CAMPUS_OUT"
+                || lastTrans.ScanType == "LUNCH_OUT";
+
+            var scanType = isCheckIn ? "CAMPUS_IN" : "CAMPUS_OUT";
+
+            var transaction = new AttendanceTransaction
+            {
+                TransactionType = "STAFF",
+                IdNumber = staff.IdNumber,
+                FirstName = staff.FirstName,
+                LastName = staff.LastName,
+                CampusId = nearestCampusId.Value,
+                LocationId = 1,
+                ScanDateTime = DateTime.Now,
+                ScanType = scanType,
+                ScanMethod = "QR_MOBILE",
+                TerminalId = 0,
+                DataSource = "LOCAL",
+                ValidationStatus = "VALID",
+                CreatedDate = DateTime.UtcNow
+            };
+
+            context.AttendanceTransactions.Add(transaction);
+            await context.SaveChangesAsync();
+
+            isSuccess = true;
+            lastCheckType = isCheckIn ? "IN" : "OUT";
+            var hour = DateTime.Now.Hour;
+            var greeting = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+            resultMessage = isCheckIn
+                ? $"Good {greeting}, {staff.FirstName}!"
+                : $"Goodbye, {staff.FirstName}!";
+            scannedPersonName = staff.FirstName + " " + staff.LastName;
+            showResult = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ProcessMobileCheckin error");
+            isSuccess = false;
+            resultMessage = "Error processing check-in";
+            scannedPersonName = firstName + " " + lastName;
+            showResult = true;
+        }
+        finally
+        {
+            isProcessing = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadStaffInfo()
+    {
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            Staff? staff = null;
+            if (!string.IsNullOrEmpty(staffIdNumber))
+                staff = await context.Staff.AsNoTracking().Where(s => s.IdNumber == staffIdNumber).FirstOrDefaultAsync();
+            if (staff == null && !string.IsNullOrEmpty(staffFirstName))
+                staff = await context.Staff.AsNoTracking().Where(s => s.FirstName == staffFirstName && s.LastName == staffLastName).FirstOrDefaultAsync();
+
+            if (staff != null)
+            {
+                staffIdNumber = staff.IdNumber;
+                staffFirstName = staff.FirstName;
+                staffLastName = staff.LastName;
+                userName = staff.FirstName + " " + staff.LastName;
+                if (staff.Dcid > 0)
+                {
+                    var photo = await context.Photos.AsNoTracking()
+                        .Where(p => p.SubjectDcid == staff.Dcid && p.SubjectType == 1)
+                        .FirstOrDefaultAsync();
+                    if (photo?.PhotoData != null) photoBase64 = Convert.ToBase64String(photo.PhotoData);
+                }
+            }
+        }
+        catch (Exception ex) { Logger.LogError(ex, "Error loading staff info"); }
+    }
+
+    private async Task LoadCurrentStatus()
+    {
+        if (string.IsNullOrEmpty(staffIdNumber))
+        {
+            currentStatus = "Staff record not found";
+            return;
+        }
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var today = DateTime.Today;
+            var lastTrans = await context.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.IdNumber == staffIdNumber && t.ScanDateTime.Date == today)
+                .OrderByDescending(t => t.ScanDateTime).FirstOrDefaultAsync();
+
+            if (lastTrans == null)
+            {
+                currentStatus = "Not checked in today";
+                nextActionIsCheckIn = true;
+            }
+            else if (lastTrans.ScanType == "CAMPUS_IN" || lastTrans.ScanType == "LUNCH_IN")
+            {
+                currentStatus = "Checked in at " + lastTrans.ScanDateTime.ToString("h:mm tt");
+                nextActionIsCheckIn = false;
+            }
+            else
+            {
+                currentStatus = "Currently checked out";
+                nextActionIsCheckIn = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading status");
+            currentStatus = "Error loading status";
+        }
+    }
+
+    private async Task ProcessDesktopCheckin()
+    {
+        if (string.IsNullOrEmpty(staffIdNumber) || nearestCampusId == null)
+        {
+            resultMessage = "Unable to process - staff not found";
+            isSuccess = false;
+            scannedPersonName = userName;
+            showResult = true;
+            return;
+        }
+        isProcessing = true;
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var scanType = nextActionIsCheckIn ? "CAMPUS_IN" : "CAMPUS_OUT";
+            var transaction = new AttendanceTransaction
+            {
+                TransactionType = "STAFF",
+                IdNumber = staffIdNumber,
+                FirstName = staffFirstName ?? "",
+                LastName = staffLastName ?? "",
+                CampusId = nearestCampusId.Value,
+                LocationId = 1,
+                ScanDateTime = DateTime.Now,
+                ScanType = scanType,
+                ScanMethod = "GPS",
+                TerminalId = 0,
+                DataSource = "LOCAL",
+                ValidationStatus = "VALID",
+                CreatedDate = DateTime.UtcNow
+            };
+            context.AttendanceTransactions.Add(transaction);
+            await context.SaveChangesAsync();
+
+            isSuccess = true;
+            lastCheckType = nextActionIsCheckIn ? "IN" : "OUT";
+            var hour = DateTime.Now.Hour;
+            var greeting = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+            resultMessage = nextActionIsCheckIn
+                ? $"Good {greeting}, {staffFirstName}!"
+                : $"Goodbye, {staffFirstName}!";
+            scannedPersonName = userName;
+            showResult = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error processing desktop checkin");
+            isSuccess = false;
+            resultMessage = "Error processing";
+            scannedPersonName = userName;
+            showResult = true;
+        }
+        finally
+        {
+            isProcessing = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ProcessNextAction()
+    {
+        if (string.IsNullOrEmpty(staffIdNumber) || nearestCampusId == null)
+        {
+            showResult = false;
+            StateHasChanged();
+            await Task.Delay(100);
+            await StartScanner();
+            return;
+        }
+        isProcessing = true;
+        showResult = false;
+        StateHasChanged();
+        await LoadCurrentStatus();
+        await ProcessDesktopCheckin();
+    }
+
+    private async Task ResetMobileToScanner()
+    {
+        showResult = false;
+        photoBase64 = "";
+        scannedPersonName = "";
+        lastCheckType = "";
+        resultMessage = "";
+        scannerError = "";
+        isSuccess = false;
+        StateHasChanged();
+        await Task.Delay(100);
+        await StartScanner();
+    }
+
+
+    private void ResetForDesktop()
+    {
+        showResult = false;
+        photoBase64 = "";
+        scannedPersonName = "";
+        lastCheckType = "";
+        resultMessage = "";
+        isSuccess = false;
+        _ = Task.Run(async () =>
+        {
+            await LoadCurrentStatus();
+            await InvokeAsync(StateHasChanged);
+        });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        clockTimer?.Stop();
+        clockTimer?.Dispose();
+        dotNetRef?.Dispose();
+        if (isMobileDevice && locationVerified)
+            await StopScanner();
+    }
+
+    private class LocResult
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
+}

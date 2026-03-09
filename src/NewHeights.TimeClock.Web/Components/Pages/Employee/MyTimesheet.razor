@@ -1,0 +1,360 @@
+@page "/my/timesheet"
+@page "/my/timesheet/{WeekOffset:int}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireHourly")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ITimesheetService TimesheetService
+@inject IPayPeriodService PayPeriodService
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject ILogger<MyTimesheet> Logger
+
+<PageTitle>Weekly Time Sheet - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="timesheet-page">
+    <header class="timesheet-header">
+        <div class="header-brand">
+            <img src="/images/logo.svg" alt="New Heights" class="header-logo" />
+            <div>
+                <h1>School Year 2025-2026 Weekly Time Sheet</h1>
+                <p class="header-subtitle">This Time Sheet serves as the record for semi-monthly payroll.</p>
+            </div>
+        </div>
+    </header>
+
+    <div class="employee-info-bar">
+        <div class="info-item">
+            <span class="info-label">Name:</span>
+            <span class="info-value">@employeeName</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Pay Period:</span>
+            <span class="info-value">@currentPayPeriod?.PeriodName</span>
+        </div>
+        @if (currentPayPeriod != null && !currentPayPeriod.IsPastDeadline)
+        {
+            <div class="info-item deadline @(currentPayPeriod.DaysUntilDeadline <= 2 ? "urgent" : "")">
+                <span class="info-label">Submission Deadline:</span>
+                <span class="info-value">@currentPayPeriod.EmployeeDeadline.ToString("dddd, MMM d") (@currentPayPeriod.DaysUntilDeadline days)</span>
+            </div>
+        }
+    </div>
+
+    <div class="week-navigation">
+        <button class="btn-nav" @onclick="PreviousWeek" disabled="@isLoading">← Previous Week</button>
+        <div class="current-week">
+            <strong>Week of @selectedWeekStart.ToString("MMMM d") - @selectedWeekEnd.ToString("MMMM d, yyyy")</strong>
+            @if (weekOffset == 0)
+            {
+                <span class="current-badge">Current</span>
+            }
+        </div>
+        <button class="btn-nav" @onclick="NextWeek" disabled="@(weekOffset >= 0 || isLoading)">Next Week →</button>
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading time sheet...</div>
+    }
+    else if (weeklyTimesheet != null)
+    {
+        <div class="timesheet-table-container">
+            <table class="timesheet-table">
+                <thead>
+                    <tr>
+                        <th class="col-date">Date</th>
+                        <th class="col-status">AM<br/><span class="shift-time">(8am-12pm)</span></th>
+                        <th class="col-status">PM<br/><span class="shift-time">(1pm-5pm)</span></th>
+                        <th class="col-status">Evening<br/><span class="shift-time">(4:30pm-9pm)</span></th>
+                        <th class="col-hours">Hours<br/>Worked</th>
+                        <th class="col-hours">Leave<br/>Hours</th>
+                        <th class="col-hours">Holiday<br/>Hours</th>
+                        <th class="col-total">Total<br/>Hours</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var day in weeklyTimesheet.Days)
+                    {
+                        var amStatus = GetShiftStatus(day, "AM");
+                        var pmStatus = GetShiftStatus(day, "PM");
+                        var eveningStatus = GetShiftStatus(day, "Evening");
+                        
+                        <tr class="@(day.Date == DateOnly.FromDateTime(DateTime.Today) ? "today" : "") @(day.HasException ? "has-exception" : "")">
+                            <td class="col-date">
+                                <span class="day-name">@day.DayOfWeek.Substring(0, 3)</span>
+                                <span class="day-date">@day.Date.ToString("M/d")</span>
+                            </td>
+                            <td class="col-status">
+                                <span class="status-pill @amStatus.ToLower().Replace(" ", "-")">@amStatus</span>
+                            </td>
+                            <td class="col-status">
+                                <span class="status-pill @pmStatus.ToLower().Replace(" ", "-")">@pmStatus</span>
+                            </td>
+                            <td class="col-status">
+                                <span class="status-pill @eveningStatus.ToLower().Replace(" ", "-")">@eveningStatus</span>
+                            </td>
+                            <td class="col-hours">@day.TotalHours.ToString("F1")</td>
+                            <td class="col-hours">@GetLeaveHours(day).ToString("F1")</td>
+                            <td class="col-hours">@GetHolidayHours(day).ToString("F1")</td>
+                            <td class="col-total @(day.TotalHours == 8 ? "valid" : day.TotalHours > 0 ? "warning" : "")">
+                                @day.TotalHours.ToString("F1")
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot>
+                    <tr class="totals-row">
+                        <td colspan="4" class="totals-label">Weekly Totals</td>
+                        <td class="col-hours"><strong>@weeklyTimesheet.TotalHours.ToString("F1")</strong></td>
+                        <td class="col-hours"><strong>@totalLeaveHours.ToString("F1")</strong></td>
+                        <td class="col-hours"><strong>@totalHolidayHours.ToString("F1")</strong></td>
+                        <td class="col-total">
+                            <strong>@grandTotal.ToString("F1")</strong>
+                            @if (weeklyTimesheet.TotalOvertimeHours > 0)
+                            {
+                                <span class="overtime-note">(+@weeklyTimesheet.TotalOvertimeHours.ToString("F1") OT)</span>
+                            }
+                        </td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+
+        @if (weeklyTimesheet.HasExceptions)
+        {
+            <div class="exceptions-box">
+                <h4>⚠️ Attention Required</h4>
+                <ul>
+                    @foreach (var day in weeklyTimesheet.Days.Where(d => d.HasException))
+                    {
+                        <li>@day.DayOfWeek (@day.Date.ToString("M/d")): @day.ExceptionNotes</li>
+                    }
+                </ul>
+            </div>
+        }
+
+        <div class="assurance-section">
+            <h3>Assurance Statement</h3>
+            <div class="assurance-box">
+                <p>I hereby certify that the above time reported is accurate and reflects the time I worked during the week. I understand that falsifying time records may result in disciplinary action.</p>
+                
+                @if (!weeklyTimesheet.IsSubmitted)
+                {
+                    <div class="certification-controls">
+                        <label class="certification-checkbox">
+                            <input type="checkbox" @bind="certificationChecked" />
+                            <span>I certify this time sheet is accurate and complete</span>
+                        </label>
+                        
+                        <div class="signature-line">
+                            <div class="sig-field">
+                                <span class="sig-label">Name:</span>
+                                <span class="sig-value">@employeeName</span>
+                            </div>
+                            <div class="sig-field">
+                                <span class="sig-label">Date:</span>
+                                <span class="sig-value">@DateTime.Now.ToString("MMMM d, yyyy")</span>
+                            </div>
+                        </div>
+
+                        <button class="btn-submit" @onclick="SubmitTimesheet" disabled="@(!certificationChecked || isSubmitting)">
+                            @if (isSubmitting)
+                            {
+                                <span>Submitting...</span>
+                            }
+                            else
+                            {
+                                <span>✓ Submit Time Sheet</span>
+                            }
+                        </button>
+                    </div>
+                }
+                else
+                {
+                    <div class="submitted-confirmation">
+                        <span class="submitted-badge">✓ Submitted</span>
+                        <p>This time sheet has been submitted and is pending supervisor approval.</p>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public int WeekOffset { get; set; } = 0;
+
+    private int weekOffset = 0;
+    private bool isLoading = true;
+    private bool isSubmitting = false;
+    private bool certificationChecked = false;
+    
+    private string employeeName = "";
+    private int employeeId = 0;
+    private string currentUserEmail = "";
+    
+    private PayPeriodInfo? currentPayPeriod;
+    private WeeklyTimesheet? weeklyTimesheet;
+    private DateOnly selectedWeekStart;
+    private DateOnly selectedWeekEnd;
+    
+    private decimal totalLeaveHours = 0;
+    private decimal totalHolidayHours = 0;
+    private decimal grandTotal => (weeklyTimesheet?.TotalHours ?? 0) + totalLeaveHours + totalHolidayHours;
+
+    protected override async Task OnInitializedAsync()
+    {
+        weekOffset = WeekOffset;
+        
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUserEmail = user.FindFirst("preferred_username")?.Value ?? 
+                           user.FindFirst(ClaimTypes.Email)?.Value ?? "";
+
+        currentPayPeriod = PayPeriodService.GetCurrentPayPeriod();
+        await LoadEmployeeAndTimesheet();
+    }
+
+    private async Task LoadEmployeeAndTimesheet()
+    {
+        isLoading = true;
+        
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            
+            var employee = await context.TcEmployees
+                .Include(e => e.Staff)
+                .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
+
+            if (employee != null)
+            {
+                employeeId = employee.EmployeeId;
+                employeeName = employee.Staff?.FullName ?? "Unknown";
+                await LoadTimesheet();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading employee data");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadTimesheet()
+    {
+        if (employeeId == 0) return;
+        
+        isLoading = true;
+        certificationChecked = false;
+
+        try
+        {
+            var today = DateOnly.FromDateTime(DateTime.Today);
+            selectedWeekStart = today.AddDays(-(int)today.DayOfWeek + 1 + (weekOffset * 7));
+            if (today.DayOfWeek == DayOfWeek.Sunday)
+                selectedWeekStart = selectedWeekStart.AddDays(-7);
+            selectedWeekEnd = selectedWeekStart.AddDays(6);
+
+            weeklyTimesheet = await TimesheetService.GetWeeklyTimesheetAsync(employeeId, selectedWeekStart);
+            
+            // TODO: Load leave/holiday hours from separate tracking
+            totalLeaveHours = 0;
+            totalHolidayHours = 0;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading timesheet");
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PreviousWeek()
+    {
+        weekOffset--;
+        await LoadTimesheet();
+    }
+
+    private async Task NextWeek()
+    {
+        if (weekOffset < 0)
+        {
+            weekOffset++;
+            await LoadTimesheet();
+        }
+    }
+
+    private async Task SubmitTimesheet()
+    {
+        if (!certificationChecked || isSubmitting) return;
+        
+        isSubmitting = true;
+        try
+        {
+            await TimesheetService.SubmitTimesheetAsync(employeeId, selectedWeekEnd, currentUserEmail);
+            await LoadTimesheet();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error submitting timesheet");
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private string GetShiftStatus(DailyTimesheetEntry day, string shift)
+    {
+        if (day.TotalHours == 0 && !day.Punches.Any())
+        {
+            if (day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday)
+                return "N/A";
+            return "—";
+        }
+
+        var punches = day.Punches;
+        bool hasInPunch = false;
+        bool hasOutPunch = false;
+
+        foreach (var p in punches)
+        {
+            var hour = p.PunchTime.Hour;
+            bool inShift = shift switch
+            {
+                "AM" => hour >= 6 && hour < 12,
+                "PM" => hour >= 12 && hour < 17,
+                "Evening" => hour >= 16 && hour < 22,
+                _ => false
+            };
+
+            if (inShift)
+            {
+                if (p.PunchType == "In" || p.PunchType == "LunchIn") hasInPunch = true;
+                if (p.PunchType == "Out" || p.PunchType == "LunchOut") hasOutPunch = true;
+            }
+        }
+
+        if (hasInPunch || hasOutPunch) return "In Office";
+        if (day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday) return "N/A";
+        return "—";
+    }
+
+    private decimal GetLeaveHours(DailyTimesheetEntry day) => 0; // TODO: integrate leave tracking
+    private decimal GetHolidayHours(DailyTimesheetEntry day) => 0; // TODO: integrate holiday calendar
+}

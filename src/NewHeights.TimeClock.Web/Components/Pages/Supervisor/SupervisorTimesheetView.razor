@@ -1,0 +1,670 @@
+@page "/supervisor/timesheet/{EmployeeId:int}"
+@page "/supervisor/timesheet/{EmployeeId:int}/{PeriodOffset:int}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ITimesheetService TimesheetService
+@inject IPayPeriodService PayPeriodService
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject ILogger<SupervisorTimesheetView> Logger
+@inject IEmailService EmailService
+
+<PageTitle>Review Time Sheet - @employeeName</PageTitle>
+
+<div class="supervisor-review-page">
+    <nav class="breadcrumb">
+        <a href="/supervisor/timesheets">← Back to Team Timesheets</a>
+    </nav>
+
+    <header class="review-header">
+        <div class="employee-card">
+            @if (!string.IsNullOrEmpty(employeePhotoBase64))
+            {
+                <img src="data:image/jpeg;base64,@employeePhotoBase64" alt="@employeeName" class="employee-photo" />
+            }
+            else
+            {
+                <div class="employee-photo-placeholder">@employeeInitials</div>
+            }
+            <div class="employee-details">
+                <h1>@employeeName</h1>
+                <p class="employee-meta">ID: @employeeIdNumber • @employeePosition</p>
+                <p class="employee-meta">Supervisor: @supervisorName</p>
+            </div>
+        </div>
+        <div class="period-info">
+            <div class="period-nav">
+                <button class="btn-nav" @onclick="PreviousPeriod">← Previous</button>
+                <span class="period-display">@currentPayPeriod?.PeriodName</span>
+                <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0)">Next →</button>
+            </div>
+            <div class="status-summary">
+                <span class="status-item @(employeeApproved ? "approved" : "pending")">
+                    Employee: @(employeeApproved ? "✓ Submitted" : "⏳ Pending")
+                </span>
+                <span class="status-item @(supervisorApproved ? "approved" : "pending")">
+                    Supervisor: @(supervisorApproved ? "✓ Approved" : "⏳ Pending")
+                </span>
+            </div>
+        </div>
+    </header>
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading time sheet...</div>
+    }
+    else if (payPeriodTimesheet != null)
+    {
+        <div class="period-summary-cards">
+            <div class="summary-card">
+                <span class="card-value">@payPeriodTimesheet.TotalHours.ToString("F1")</span>
+                <span class="card-label">Total Hours</span>
+            </div>
+            <div class="summary-card">
+                <span class="card-value">@payPeriodTimesheet.TotalRegularHours.ToString("F1")</span>
+                <span class="card-label">Regular</span>
+            </div>
+            <div class="summary-card overtime">
+                <span class="card-value">@payPeriodTimesheet.TotalOvertimeHours.ToString("F1")</span>
+                <span class="card-label">Overtime</span>
+            </div>
+            <div class="summary-card">
+                <span class="card-value">@payPeriodTimesheet.DaysWorked</span>
+                <span class="card-label">Days Worked</span>
+            </div>
+            <div class="summary-card @(payPeriodTimesheet.ExceptionCount > 0 ? "warning" : "")">
+                <span class="card-value">@payPeriodTimesheet.ExceptionCount</span>
+                <span class="card-label">Exceptions</span>
+            </div>
+        </div>
+
+        @foreach (var week in payPeriodTimesheet.Weeks)
+        {
+            <div class="week-section">
+                <div class="week-header">
+                    <h3>Week of @week.WeekStartDate.ToString("MMMM d") - @week.WeekEndDate.ToString("MMMM d")</h3>
+                    <span class="week-total">@week.TotalHours.ToString("F1") hours</span>
+                </div>
+                
+                <table class="timesheet-table">
+                    <thead>
+                        <tr>
+                            <th class="col-date">Date</th>
+                            <th class="col-status">AM</th>
+                            <th class="col-status">PM</th>
+                            <th class="col-status">Evening</th>
+                            <th class="col-punches">Punches</th>
+                            <th class="col-hours">Hours</th>
+                            <th class="col-actions">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var day in week.Days)
+                        {
+                            var amStatus = GetShiftStatus(day, "AM");
+                            var pmStatus = GetShiftStatus(day, "PM");
+                            var eveningStatus = GetShiftStatus(day, "Evening");
+                            
+                            <tr class="@(day.HasException ? "has-exception" : "")">
+                                <td class="col-date">
+                                    <span class="day-name">@day.DayOfWeek.Substring(0, 3)</span>
+                                    <span class="day-date">@day.Date.ToString("M/d")</span>
+                                </td>
+                                <td class="col-status">
+                                    <span class="status-pill @amStatus.ToLower().Replace(" ", "-")">@amStatus</span>
+                                </td>
+                                <td class="col-status">
+                                    <span class="status-pill @pmStatus.ToLower().Replace(" ", "-")">@pmStatus</span>
+                                </td>
+                                <td class="col-status">
+                                    <span class="status-pill @eveningStatus.ToLower().Replace(" ", "-")">@eveningStatus</span>
+                                </td>
+                                <td class="col-punches">
+                                    @if (day.Punches.Any())
+                                    {
+                                        <div class="punch-list">
+                                            @foreach (var punch in day.Punches)
+                                            {
+                                                <span class="punch-tag @punch.PunchType.ToLower()">
+                                                    @FormatPunchType(punch.PunchType) @punch.PunchTime.ToString("h:mm tt")
+                                                    @if (punch.IsManual)
+                                                    {
+                                                        <span class="manual-indicator" title="Manual entry">✎</span>
+                                                    }
+                                                </span>
+                                            }
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <span class="no-punches">No punches</span>
+                                    }
+                                </td>
+                                <td class="col-hours">
+                                    <span class="hours-value">@day.TotalHours.ToString("F1")</span>
+                                    @if (day.OvertimeHours > 0)
+                                    {
+                                        <span class="ot-badge">+@day.OvertimeHours.ToString("F1") OT</span>
+                                    }
+                                </td>
+                                <td class="col-actions">
+                                    @if (day.HasException)
+                                    {
+                                        <span class="exception-flag" title="@day.ExceptionNotes">⚠️</span>
+                                    }
+                                    <button class="btn-edit" @onclick="() => OpenEditDay(day)" title="Edit">✏️</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @if (payPeriodTimesheet.ExceptionCount > 0)
+        {
+            <div class="exceptions-section">
+                <h3>⚠️ Exceptions Requiring Review</h3>
+                <div class="exception-list">
+                    @foreach (var week in payPeriodTimesheet.Weeks)
+                    {
+                        @foreach (var day in week.Days.Where(d => d.HasException))
+                        {
+                            <div class="exception-item">
+                                <span class="exception-date">@day.Date.ToString("ddd M/d")</span>
+                                <span class="exception-reason">@day.ExceptionNotes</span>
+                                <button class="btn-resolve" @onclick="() => OpenEditDay(day)">Resolve</button>
+                            </div>
+                        }
+                    }
+                </div>
+            </div>
+        }
+
+        <div class="approval-section">
+            <h3>Supervisor Approval</h3>
+            <div class="approval-box">
+                @if (!employeeApproved)
+                {
+                    <div class="approval-warning">
+                        <p>⚠️ This employee has not yet submitted their time sheet for this period.</p>
+                        <button class="btn-remind" @onclick="SendReminder">📧 Send Reminder Email</button>
+                    </div>
+                }
+                else if (supervisorApproved)
+                {
+                    <div class="already-approved">
+                        <p>✓ Approved by @payPeriodTimesheet.SupervisorApprovedBy on @payPeriodTimesheet.SupervisorApprovedDate?.ToString("MMM d, yyyy h:mm tt")</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="approval-form">
+                        <p>Review the time sheet above. If everything looks correct, approve to send to HR for final processing.</p>
+                        
+                        <div class="supervisor-notes">
+                            <label>Supervisor Notes (optional)</label>
+                            <textarea @bind="supervisorNotes" placeholder="Add any notes about this time sheet..."></textarea>
+                        </div>
+
+                        <label class="approval-checkbox">
+                            <input type="checkbox" @bind="approvalChecked" />
+                            <span>I have reviewed this time sheet and confirm it is accurate</span>
+                        </label>
+
+                        <div class="approval-actions">
+                            <button class="btn-approve" @onclick="ApproveTimesheet" disabled="@(!approvalChecked || isApproving)">
+                                @if (isApproving)
+                                {
+                                    <span>Approving...</span>
+                                }
+                                else
+                                {
+                                    <span>✓ Approve Time Sheet</span>
+                                }
+                            </button>
+                            <button class="btn-reject" @onclick="OpenRejectModal">✗ Request Corrections</button>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@if (showEditModal && editingDay != null)
+{
+    <div class="modal-overlay" @onclick="CloseEditModal">
+        <div class="modal-content" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>Edit Time Entry - @editingDay.Date.ToString("dddd, MMMM d")</h2>
+                <button class="modal-close" @onclick="CloseEditModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="current-punches">
+                    <h4>Current Punches</h4>
+                    @if (editingDay.Punches.Any())
+                    {
+                        @foreach (var punch in editingDay.Punches)
+                        {
+                            <div class="punch-row">
+                                <span class="punch-type">@FormatPunchType(punch.PunchType)</span>
+                                <span class="punch-time">@punch.PunchTime.ToString("h:mm tt")</span>
+                                @if (punch.IsManual)
+                                {
+                                    <span class="manual-tag">Manual</span>
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <p class="no-data">No punches recorded</p>
+                    }
+                </div>
+
+                <hr />
+
+                <h4>Add Correction</h4>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Punch Type</label>
+                        <select @bind="newPunchType">
+                            <option value="In">Clock In</option>
+                            <option value="Out">Clock Out</option>
+                            <option value="LunchOut">Lunch Out</option>
+                            <option value="LunchIn">Lunch In</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Time</label>
+                        <input type="time" @bind="newPunchTime" />
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Reason for Correction *</label>
+                    <textarea @bind="correctionReason" placeholder="Required: Explain the correction..."></textarea>
+                </div>
+
+                @if (editingDay.HasException)
+                {
+                    <div class="exception-info">
+                        <label>Current Exception</label>
+                        <p>@editingDay.ExceptionNotes</p>
+                        <label class="resolve-checkbox">
+                            <input type="checkbox" @bind="markExceptionResolved" />
+                            <span>Mark exception as resolved</span>
+                        </label>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseEditModal">Cancel</button>
+                <button class="btn-save" @onclick="SaveCorrection" disabled="@(string.IsNullOrWhiteSpace(correctionReason))">
+                    Save Correction
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int EmployeeId { get; set; }
+    [Parameter] public int PeriodOffset { get; set; } = 0;
+
+    private int periodOffset = 0;
+    private DateTime periodAnchorDate = DateTime.Today;
+    private bool isLoading = true;
+    private bool isApproving = false;
+    private bool approvalChecked = false;
+    private string supervisorNotes = "";
+    private string currentUserEmail = "";
+    private string currentUserName = "";
+
+    // Employee info
+    private string employeeName = "";
+    private string employeeIdNumber = "";
+    private string employeePosition = "";
+    private string supervisorName = "";
+    private string employeeInitials = "";
+    private string employeeEmail = "";
+    private string? employeePhotoBase64;
+
+    // Approval status
+    private bool employeeApproved = false;
+    private bool supervisorApproved = false;
+
+    // Data
+    private PayPeriodInfo? currentPayPeriod;
+    private PayPeriodTimesheet? payPeriodTimesheet;
+
+    // Edit modal
+    private bool showEditModal = false;
+    private DailyTimesheetEntry? editingDay;
+    private string newPunchType = "In";
+    private TimeOnly newPunchTime = new TimeOnly(8, 0);
+    private string correctionReason = "";
+    private bool markExceptionResolved = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        periodOffset = PeriodOffset;
+        for (int i = 0; i < Math.Abs(PeriodOffset); i++)
+            periodAnchorDate = NavigatePeriod(periodAnchorDate, PeriodOffset < 0 ? -1 : 1);
+
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUserEmail = user.FindFirst("preferred_username")?.Value ?? 
+                           user.FindFirst(ClaimTypes.Email)?.Value ?? "";
+        currentUserName = user.FindFirst("name")?.Value ?? 
+                          user.FindFirst(ClaimTypes.Name)?.Value ?? currentUserEmail;
+
+        await LoadEmployeeData();
+    }
+
+    private async Task LoadEmployeeData()
+    {
+        isLoading = true;
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var employee = await context.TcEmployees
+                .Include(e => e.Staff)
+                .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
+                .FirstOrDefaultAsync(e => e.EmployeeId == EmployeeId);
+
+            if (employee != null)
+            {
+                employeeName = employee.Staff?.FullName ?? "Unknown";
+                employeeIdNumber = employee.IdNumber;
+                employeePosition = employee.EmployeeType.ToString();
+                supervisorName = employee.Supervisor?.Staff?.FullName ?? "Unassigned";
+                employeeInitials = GetInitials(employeeName);
+                employeeEmail = employee.Email ?? "";
+
+                // Load photo
+                if (employee.StaffDcid > 0)
+                {
+                    var photo = await context.Photos
+                        .FirstOrDefaultAsync(p => p.SubjectDcid == employee.StaffDcid && p.SubjectType == 1);
+                    if (photo?.PhotoData != null)
+                    {
+                        employeePhotoBase64 = Convert.ToBase64String(photo.PhotoData);
+                    }
+                }
+
+                await LoadTimesheet();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading employee {EmployeeId}", EmployeeId);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadTimesheet()
+    {
+        currentPayPeriod = PayPeriodService.GetPayPeriodForDate(periodAnchorDate);
+
+        payPeriodTimesheet = await TimesheetService.GetPayPeriodTimesheetAsync(
+            EmployeeId,
+            currentPayPeriod.StartDate,
+            currentPayPeriod.EndDate);
+
+        employeeApproved = payPeriodTimesheet.EmployeeApprovalStatus != ApprovalStatus.Pending;
+        supervisorApproved = payPeriodTimesheet.SupervisorApprovalStatus == ApprovalStatus.Approved ||
+                             payPeriodTimesheet.SupervisorApprovalStatus == ApprovalStatus.Locked;
+
+        approvalChecked = false;
+        supervisorNotes = "";
+        StateHasChanged();
+    }
+
+    private async Task PreviousPeriod()
+    {
+        periodOffset--;
+        await LoadTimesheet();
+    }
+
+    private async Task NextPeriod()
+    {
+        if (periodOffset < 0)
+        {
+            periodOffset++;
+            await LoadTimesheet();
+        }
+    }
+
+    private async Task ApproveTimesheet()
+    {
+        if (!approvalChecked || isApproving || currentPayPeriod == null) return;
+
+        isApproving = true;
+        try
+        {
+            await TimesheetService.ApproveTimesheetAsync(
+                EmployeeId,
+                currentPayPeriod.StartDate,
+                currentPayPeriod.EndDate,
+                currentUserEmail,
+                "Supervisor");
+
+            // Send approval notification to employee
+            if (!string.IsNullOrEmpty(employeeEmail))
+            {
+                await EmailService.SendApprovalNotificationAsync(
+                    employeeEmail,
+                    employeeName.Split(' ').FirstOrDefault() ?? employeeName,
+                    currentUserName,
+                    currentPayPeriod?.PeriodName ?? "this pay period");
+            }
+
+            await LoadTimesheet();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error approving timesheet");
+        }
+        finally
+        {
+            isApproving = false;
+        }
+    }
+
+    private void OpenRejectModal()
+    {
+        // TODO: Implement rejection/request corrections workflow
+        Logger.LogInformation("Reject requested for employee {EmployeeId}", EmployeeId);
+    }
+
+    private async Task SendReminder()
+    {
+        if (string.IsNullOrEmpty(employeeEmail) || currentPayPeriod == null) return;
+        
+        try
+        {
+            var success = await EmailService.SendTimesheetReminderAsync(
+                employeeEmail,
+                employeeName.Split(' ').FirstOrDefault() ?? employeeName,
+                currentUserName,
+                currentPayPeriod.EmployeeDeadline);
+                
+            if (success)
+            {
+                Logger.LogInformation("Reminder sent to {Employee} ({Email})", employeeName, employeeEmail);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error sending reminder to employee {EmployeeId}", EmployeeId);
+        }
+    }
+
+    private void OpenEditDay(DailyTimesheetEntry day)
+    {
+        editingDay = day;
+        newPunchType = "In";
+        newPunchTime = new TimeOnly(8, 0);
+        correctionReason = "";
+        markExceptionResolved = false;
+        showEditModal = true;
+    }
+
+    private void CloseEditModal()
+    {
+        showEditModal = false;
+        editingDay = null;
+    }
+
+    private async Task SaveCorrection()
+    {
+        if (editingDay == null || string.IsNullOrWhiteSpace(correctionReason)) return;
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var employee = await context.TcEmployees.FindAsync(EmployeeId);
+            if (employee == null) return;
+
+            var punchDateTime = editingDay.Date.ToDateTime(newPunchTime);
+            var punchType = Enum.Parse<PunchType>(newPunchType);
+
+            var newPunch = new TcTimePunch
+            {
+                EmployeeId = EmployeeId,
+                CampusId = employee.HomeCampusId,
+                PunchType = punchType,
+                PunchDateTime = punchDateTime,
+                RoundedDateTime = RoundToQuarterHour(punchDateTime),
+                VerificationMethod = "MANUAL",
+                ScanMethod = "SUPERVISOR",
+                IsManualEntry = true,
+                IsModified = true,
+                ModifiedBy = currentUserEmail,
+                ModifiedReason = $"[Supervisor Correction] {correctionReason}",
+                Notes = correctionReason,
+                PunchStatus = PunchStatus.Active,
+                CreatedDate = DateTime.UtcNow
+            };
+
+            context.TcTimePunches.Add(newPunch);
+
+            // Recalculate daily timecard
+            await TimesheetService.RecalculateDailyTimecardAsync(EmployeeId, editingDay.Date);
+
+            // Mark exception resolved if checked
+            if (markExceptionResolved)
+            {
+                var timecard = await context.TcDailyTimecards
+                    .FirstOrDefaultAsync(t => t.EmployeeId == EmployeeId && t.WorkDate == editingDay.Date);
+                if (timecard != null)
+                {
+                    timecard.HasException = false;
+                    timecard.ExceptionNotes = $"Resolved by {currentUserName}: {correctionReason}";
+                }
+            }
+
+            await context.SaveChangesAsync();
+
+            Logger.LogInformation("Supervisor {Supervisor} added correction for {Employee} on {Date}: {Type} at {Time}",
+                currentUserEmail, EmployeeId, editingDay.Date, newPunchType, newPunchTime);
+
+            CloseEditModal();
+            await LoadTimesheet();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving correction");
+        }
+    }
+
+    private string GetShiftStatus(DailyTimesheetEntry day, string shift)
+    {
+        if (day.TotalHours == 0 && !day.Punches.Any())
+        {
+            if (day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday)
+                return "N/A";
+            return "—";
+        }
+
+        foreach (var p in day.Punches)
+        {
+            var hour = p.PunchTime.Hour;
+            bool inShift = shift switch
+            {
+                "AM" => hour >= 6 && hour < 12,
+                "PM" => hour >= 12 && hour < 17,
+                "Evening" => hour >= 16 && hour < 22,
+                _ => false
+            };
+            if (inShift) return "In Office";
+        }
+
+        return day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday ? "N/A" : "—";
+    }
+
+    private static string FormatPunchType(string punchType) => punchType switch
+    {
+        "In" => "IN",
+        "Out" => "OUT",
+        "LunchOut" => "L-Out",
+        "LunchIn" => "L-In",
+        _ => punchType
+    };
+
+
+    private static DateTime NavigatePeriod(DateTime anchor, int direction)
+    {
+        bool isFirstHalf = anchor.Day <= 15;
+        if (direction < 0)
+        {
+            return isFirstHalf
+                ? new DateTime(anchor.AddMonths(-1).Year, anchor.AddMonths(-1).Month, 16)
+                : new DateTime(anchor.Year, anchor.Month, 1);
+        }
+        else
+        {
+            if (isFirstHalf)
+                return new DateTime(anchor.Year, anchor.Month, 16);
+            var next = anchor.AddMonths(1);
+            return new DateTime(next.Year, next.Month, 1);
+        }
+    }
+    private static string GetInitials(string name)
+    {
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length >= 2)
+            return $"{parts[0][0]}{parts[^1][0]}".ToUpper();
+        return parts.Length > 0 ? parts[0][0].ToString().ToUpper() : "?";
+    }
+
+    private static DateTime RoundToQuarterHour(DateTime dt)
+    {
+        var minutes = (int)(Math.Round(dt.Minute / 15.0) * 15);
+        if (minutes == 60)
+            return new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, 0, 0).AddHours(1);
+        return new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, minutes, 0);
+    }
+}
+
+
+
+
+

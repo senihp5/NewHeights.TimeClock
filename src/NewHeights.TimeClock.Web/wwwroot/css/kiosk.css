@@ -1,0 +1,369 @@
+/* New Heights TimeClock - Kiosk Styles */
+:root {
+    --navy: #1e3a5f;
+    --gold: #f5b81c;
+    --success: #28a745;
+    --error: #dc3545;
+    --white: #ffffff;
+    --light-gray: #f8f9fa;
+    --dark-gray: #343a40;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+.kiosk-body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(135deg, var(--navy) 0%, #2c4a6e 100%);
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+.kiosk-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    padding: 20px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+/* Header */
+.kiosk-header {
+    text-align: center;
+    color: var(--white);
+    padding: 20px 0;
+}
+
+.kiosk-header h1 {
+    font-size: 1.8rem;
+    font-weight: 600;
+    margin-bottom: 5px;
+}
+
+.kiosk-header h2 {
+    font-size: 1.2rem;
+    font-weight: 400;
+    color: var(--gold);
+    margin-bottom: 15px;
+}
+
+.current-time {
+    font-size: 3rem;
+    font-weight: 700;
+    letter-spacing: 2px;
+}
+
+.current-date {
+    font-size: 1.1rem;
+    opacity: 0.9;
+    margin-top: 5px;
+}
+
+/* Scan Area */
+.scan-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 30px;
+}
+
+.scan-prompt {
+    text-align: center;
+    color: var(--white);
+    padding: 40px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    backdrop-filter: blur(10px);
+}
+
+.scan-icon {
+    font-size: 5rem;
+    margin-bottom: 20px;
+}
+
+.scan-prompt h3 {
+    font-size: 1.8rem;
+    margin-bottom: 10px;
+}
+
+.scan-prompt p {
+    font-size: 1.1rem;
+    opacity: 0.8;
+}
+
+/* Hidden scanner input */
+.scan-form {
+    position: absolute;
+    left: -9999px;
+}
+
+.scan-input {
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+}
+
+/* Result Display */
+.result-display {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px;
+    background: var(--white);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    animation: slideUp 0.3s ease-out;
+    min-width: 350px;
+}
+
+@keyframes slideUp {
+    from { opacity: 0; transform: translateY(30px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.result-display.success {
+    border-top: 6px solid var(--success);
+}
+
+.result-display.error {
+    border-top: 6px solid var(--error);
+}
+
+.employee-photo {
+    width: 150px;
+    height: 150px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 4px solid var(--navy);
+    margin-bottom: 20px;
+}
+
+.result-message {
+    text-align: center;
+}
+
+.result-message h3 {
+    font-size: 1.6rem;
+    color: var(--dark-gray);
+    margin-bottom: 10px;
+}
+
+.result-display.success .result-message h3 {
+    color: var(--success);
+}
+
+.result-display.error .result-message h3 {
+    color: var(--error);
+}
+
+.employee-name {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--navy);
+    margin-bottom: 5px;
+}
+
+.hours-today {
+    font-size: 1.1rem;
+    color: var(--dark-gray);
+}
+
+.punch-type-badge {
+    display: inline-block;
+    padding: 8px 20px;
+    border-radius: 20px;
+    font-weight: 600;
+    margin-top: 15px;
+    font-size: 1rem;
+}
+
+.punch-type-badge.in { background: #d4edda; color: #155724; }
+.punch-type-badge.out { background: #f8d7da; color: #721c24; }
+.punch-type-badge.lunch-out { background: #fff3cd; color: #856404; }
+.punch-type-badge.lunch-in { background: #cce5ff; color: #004085; }
+
+/* Footer */
+.kiosk-footer {
+    text-align: center;
+    color: var(--white);
+    padding: 15px;
+    opacity: 0.8;
+}
+
+.kiosk-footer p {
+    font-size: 1rem;
+}
+
+/* Mobile Mode Styles */
+.mobile-clock-container {
+    padding: 15px;
+}
+
+.mobile-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.2);
+    margin-bottom: 20px;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--white);
+}
+
+.user-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px solid var(--gold);
+}
+
+.camera-container {
+    background: #000;
+    border-radius: 15px;
+    overflow: hidden;
+    margin: 20px 0;
+    aspect-ratio: 1;
+    max-width: 400px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+#qr-reader {
+    width: 100%;
+}
+
+.location-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 15px;
+    border-radius: 10px;
+    margin: 15px 0;
+    font-size: 0.95rem;
+}
+
+.location-status.verified {
+    background: rgba(40, 167, 69, 0.2);
+    color: #28a745;
+    border: 1px solid rgba(40, 167, 69, 0.3);
+}
+
+.location-status.error {
+    background: rgba(220, 53, 69, 0.2);
+    color: #ff6b6b;
+    border: 1px solid rgba(220, 53, 69, 0.3);
+}
+
+.location-status.checking {
+    background: rgba(255, 193, 7, 0.2);
+    color: var(--gold);
+    border: 1px solid rgba(255, 193, 7, 0.3);
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: var(--gold);
+    color: var(--navy);
+}
+
+.btn-primary:hover {
+    background: #e0a518;
+}
+
+.btn-outline {
+    background: transparent;
+    border: 2px solid var(--white);
+    color: var(--white);
+}
+
+.btn-outline:hover {
+    background: rgba(255,255,255,0.1);
+}
+
+/* Loading spinner */
+.spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(255,255,255,0.3);
+    border-top-color: var(--white);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    .kiosk-header h1 { font-size: 1.4rem; }
+    .current-time { font-size: 2.5rem; }
+    .employee-photo { width: 120px; height: 120px; }
+    .result-display { padding: 25px; min-width: 280px; }
+}
+/* Logo and Branding */
+.logo-link {
+    display: inline-block;
+    margin-bottom: 10px;
+}
+
+.header-logo {
+    width: 80px;
+    height: auto;
+    border-radius: 8px;
+}
+
+.scan-icon-img {
+    width: 120px;
+    height: auto;
+    margin-bottom: 20px;
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.3));
+}
+
+.person-type {
+    font-size: 0.9rem;
+    color: rgba(255,255,255,0.7);
+    margin-top: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Mobile header adjustments */
+.mobile-header .header-logo {
+    width: 50px;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+    .header-logo {
+        width: 60px;
+    }
+    .scan-icon-img {
+        width: 80px;
+    }
+}

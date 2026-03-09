@@ -1,0 +1,389 @@
+@page "/admin/pay-periods"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ILogger<PayPeriods> Logger
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>Pay Period Management</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <div>
+            <h1>Pay Period Management</h1>
+            <p class="admin-subtitle">Upload the annual pay schedule Excel file to set pay periods for the year.</p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-error">@errorMessage</div>
+    }
+
+    <div class="admin-grid">
+        <div class="admin-card">
+            <h2>Upload Pay Schedule</h2>
+            <p class="card-desc">Upload the Excel file from HR containing the pay period schedule. Columns required: Pay period start, Pay period end, Approval deadline, Pay Date.</p>
+
+            <div class="upload-zone @(isDragging ? "dragging" : "")"
+                 @ondragover:preventDefault
+                 @ondragenter="() => isDragging = true"
+                 @ondragleave="() => isDragging = false">
+                <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:#9ca3af; margin-bottom:0.5rem">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <p class="upload-hint">Drag and drop your .xlsx file, or</p>
+                <label class="btn-upload-label">
+                    Browse File
+                    <InputFile OnChange="HandleFileSelected" accept=".xlsx,.xls" style="display:none" />
+                </label>
+                @if (selectedFileName != null)
+                {
+                    <p class="upload-filename">@selectedFileName</p>
+                }
+            </div>
+
+            @if (selectedFileName != null && parsedPeriods.Count == 0 && !isParsing)
+            {
+                <div class="form-group" style="margin-top:1rem">
+                    <label>School Year</label>
+                    <input type="text" @bind="schoolYear" placeholder="e.g. 2025-2026" class="form-input" maxlength="9" />
+                </div>
+                <button class="btn-primary" @onclick="ParseFile" disabled="@(string.IsNullOrWhiteSpace(schoolYear))">
+                    Parse File
+                </button>
+            }
+
+            @if (isParsing)
+            {
+                <div class="loading-msg">Parsing file...</div>
+            }
+
+            <hr class="divider" />
+            <h3>Existing Schedules</h3>
+
+            @if (existingYears.Count == 0)
+            {
+                <p class="empty-hint">No pay schedules loaded yet.</p>
+            }
+            else
+            {
+                <div class="year-list">
+                    @foreach (var year in existingYears)
+                    {
+                        <div class="year-row @(selectedYear == year.SchoolYear ? "active" : "")"
+                             @onclick="() => LoadYear(year.SchoolYear)">
+                            <div>
+                                <strong>@year.SchoolYear</strong>
+                                <span class="year-count">@year.Count periods</span>
+                            </div>
+                            <button class="btn-danger-sm" @onclick:stopPropagation @onclick="() => ConfirmDelete(year.SchoolYear)">Delete</button>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="admin-card wide">
+            @if (parsedPeriods.Count > 0)
+            {
+                <div class="preview-header">
+                    <h2>Preview - @schoolYear (@parsedPeriods.Count periods)</h2>
+                    <div style="display:flex; gap:0.5rem">
+                        <button class="btn-secondary" @onclick="ClearPreview">Cancel</button>
+                        <button class="btn-primary" @onclick="SavePeriods" disabled="@isSaving">
+                            @(isSaving ? "Saving..." : $"Save {parsedPeriods.Count} Periods")
+                        </button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table class="data-table">
+                        <thead>
+                            <tr><th>#</th><th>Period Name</th><th>Start</th><th>End</th><th>Emp. Deadline</th><th>Pay Date</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var p in parsedPeriods)
+                            {
+                                <tr>
+                                    <td>@p.PeriodNumber</td>
+                                    <td>@p.PeriodName</td>
+                                    <td>@p.StartDate.ToString("M/d/yyyy")</td>
+                                    <td>@p.EndDate.ToString("M/d/yyyy")</td>
+                                    <td>@p.EmployeeDeadline?.ToString("M/d/yyyy")</td>
+                                    <td>@p.PayDate?.ToString("M/d/yyyy")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else if (viewingPeriods.Count > 0)
+            {
+                <div class="preview-header">
+                    <h2>@selectedYear - @viewingPeriods.Count periods</h2>
+                </div>
+                <div class="table-wrapper">
+                    <table class="data-table">
+                        <thead>
+                            <tr><th>#</th><th>Period Name</th><th>Start</th><th>End</th><th>Emp. Deadline</th><th>Pay Date</th><th>Status</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var p in viewingPeriods)
+                            {
+                                <tr class="@(IsCurrentPeriod(p) ? "current-row" : "")">
+                                    <td>@p.PeriodNumber</td>
+                                    <td>
+                                        @p.PeriodName
+                                        @if (IsCurrentPeriod(p)) { <span class="badge-current">Current</span> }
+                                    </td>
+                                    <td>@p.StartDate.ToString("M/d/yyyy")</td>
+                                    <td>@p.EndDate.ToString("M/d/yyyy")</td>
+                                    <td>@p.EmployeeDeadline?.ToString("M/d/yyyy")</td>
+                                    <td>@p.PayDate?.ToString("M/d/yyyy")</td>
+                                    <td><span class="status-pill @p.Status.ToString().ToLower()">@p.Status</span></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else
+            {
+                <div class="empty-state">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:#d1d5db">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                        <line x1="16" y1="2" x2="16" y2="6"/>
+                        <line x1="8" y1="2" x2="8" y2="6"/>
+                        <line x1="3" y1="10" x2="21" y2="10"/>
+                    </svg>
+                    <p>Upload a pay schedule or select an existing year to view periods.</p>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+@if (showDeleteConfirm)
+{
+    <div class="modal-overlay" @onclick="() => showDeleteConfirm = false">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:400px">
+            <div class="modal-header" style="background:#7c2d12">
+                <h2>Delete Pay Schedule</h2>
+                <button class="modal-close" @onclick="() => showDeleteConfirm = false">X</button>
+            </div>
+            <div class="modal-body">
+                <p>Delete all <strong>@deleteTargetYear</strong> pay periods? This cannot be undone.</p>
+                <p style="color:#dc2626; font-size:0.875rem">Existing timesheets and punch records are not affected.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="() => showDeleteConfirm = false">Cancel</button>
+                <button class="btn-save" style="background:#dc2626" @onclick="DeleteYear">Delete</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string schoolYear = "2025-2026";
+    private string? selectedFileName;
+    private byte[]? fileBytes;
+    private bool isDragging = false;
+    private bool isParsing = false;
+    private bool isSaving = false;
+    private string successMessage = "";
+    private string errorMessage = "";
+
+    private List<TcPayPeriod> parsedPeriods = new();
+    private List<TcPayPeriod> viewingPeriods = new();
+    private List<(string SchoolYear, int Count)> existingYears = new();
+    private string selectedYear = "";
+    private bool showDeleteConfirm = false;
+    private string deleteTargetYear = "";
+    private string currentUserEmail = "";
+
+    private static readonly DateOnly Today = DateOnly.FromDateTime(DateTime.Today);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ?? "";
+        await LoadExistingYears();
+    }
+
+    private async Task LoadExistingYears()
+    {
+        using var context = await DbFactory.CreateDbContextAsync();
+        var raw = await context.TcPayPeriods
+            .AsNoTracking()
+            .Where(p => p.SchoolYear != "")
+            .GroupBy(p => p.SchoolYear)
+            .Select(g => new { SchoolYear = g.Key, Count = g.Count() })
+            .OrderByDescending(x => x.SchoolYear)
+            .ToListAsync();
+        existingYears = raw.Select(x => (x.SchoolYear, x.Count)).ToList();
+    }
+
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file == null) return;
+        selectedFileName = file.Name;
+        errorMessage = "";
+        using var ms = new MemoryStream();
+        await file.OpenReadStream(maxAllowedSize: 5 * 1024 * 1024).CopyToAsync(ms);
+        fileBytes = ms.ToArray();
+        parsedPeriods.Clear();
+    }
+
+    private async Task ParseFile()
+    {
+        if (fileBytes == null || string.IsNullOrWhiteSpace(schoolYear)) return;
+        isParsing = true;
+        errorMessage = "";
+        parsedPeriods.Clear();
+        StateHasChanged();
+        try
+        {
+            parsedPeriods = await Task.Run(() => ParseExcel(fileBytes, schoolYear));
+            if (parsedPeriods.Count == 0)
+                errorMessage = "No valid pay periods found. Verify columns: Start Date, End Date, Deadline, Pay Date in rows starting at row 4.";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Parse error: {ex.Message}";
+            Logger.LogError(ex, "Error parsing pay schedule Excel");
+        }
+        finally { isParsing = false; }
+    }
+
+    private static List<TcPayPeriod> ParseExcel(byte[] bytes, string year)
+    {
+        var results = new List<TcPayPeriod>();
+        using var ms = new MemoryStream(bytes);
+        using var workbook = new ClosedXML.Excel.XLWorkbook(ms);
+        var ws = workbook.Worksheets.First();
+
+        int num = 1;
+        // Data starts at row 4 (rows 1-3 are headers)
+        foreach (var row in ws.RowsUsed().Skip(3))
+        {
+            var startDate = GetCellDateXL(row.Cell(1));
+            var endDate = GetCellDateXL(row.Cell(2));
+            var deadline = GetCellDateXL(row.Cell(3));
+            var payDate = GetCellDateXL(row.Cell(4));
+
+            if (startDate == null || endDate == null || payDate == null) continue;
+
+            results.Add(new TcPayPeriod
+            {
+                PeriodName = $"{startDate.Value:MMM d} - {endDate.Value:MMM d, yyyy}",
+                StartDate = startDate.Value,
+                EndDate = endDate.Value,
+                EmployeeDeadline = deadline,
+                PayDate = payDate,
+                SchoolYear = year,
+                PeriodNumber = num++,
+                Status = NewHeights.TimeClock.Shared.Enums.PayPeriodStatus.Open,
+                CreatedDate = DateTime.UtcNow
+            });
+        }
+        return results;
+    }
+
+    private static DateOnly? GetCellDateXL(ClosedXML.Excel.IXLCell cell)
+    {
+        if (cell.IsEmpty()) return null;
+        try
+        {
+            if (cell.DataType == ClosedXML.Excel.XLDataType.DateTime)
+                return DateOnly.FromDateTime(cell.GetDateTime());
+            if (cell.DataType == ClosedXML.Excel.XLDataType.Number)
+            {
+                var dt = DateTime.FromOADate(cell.GetDouble());
+                if (dt.Year >= 2020 && dt.Year <= 2040) return DateOnly.FromDateTime(dt);
+            }
+            if (DateTime.TryParse(cell.GetString(), out var parsed))
+                return DateOnly.FromDateTime(parsed);
+        }
+        catch { }
+        return null;
+    }
+
+    private void ClearPreview()
+    {
+        parsedPeriods.Clear();
+        selectedFileName = null;
+        fileBytes = null;
+        errorMessage = "";
+    }
+
+    private async Task SavePeriods()
+    {
+        if (parsedPeriods.Count == 0) return;
+        isSaving = true;
+        errorMessage = "";
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var existing = await context.TcPayPeriods.Where(p => p.SchoolYear == schoolYear).ToListAsync();
+            if (existing.Count > 0) context.TcPayPeriods.RemoveRange(existing);
+            context.TcPayPeriods.AddRange(parsedPeriods);
+            await context.SaveChangesAsync();
+            Logger.LogInformation("Pay periods saved by {User}: {Count} periods for {Year}",
+                currentUserEmail, parsedPeriods.Count, schoolYear);
+            successMessage = $"Saved {parsedPeriods.Count} pay periods for {schoolYear}.";
+            await LoadExistingYears();
+            await LoadYear(schoolYear);
+            ClearPreview();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Save failed: {ex.Message}";
+            Logger.LogError(ex, "Error saving pay periods");
+        }
+        finally { isSaving = false; }
+    }
+
+    private async Task LoadYear(string year)
+    {
+        selectedYear = year;
+        parsedPeriods.Clear();
+        using var context = await DbFactory.CreateDbContextAsync();
+        viewingPeriods = await context.TcPayPeriods
+            .AsNoTracking()
+            .Where(p => p.SchoolYear == year)
+            .OrderBy(p => p.StartDate)
+            .ToListAsync();
+    }
+
+    private void ConfirmDelete(string year) { deleteTargetYear = year; showDeleteConfirm = true; }
+
+    private async Task DeleteYear()
+    {
+        showDeleteConfirm = false;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var toDelete = await context.TcPayPeriods.Where(p => p.SchoolYear == deleteTargetYear).ToListAsync();
+            context.TcPayPeriods.RemoveRange(toDelete);
+            await context.SaveChangesAsync();
+            successMessage = $"Deleted {toDelete.Count} periods for {deleteTargetYear}.";
+            if (selectedYear == deleteTargetYear) viewingPeriods.Clear();
+            await LoadExistingYears();
+        }
+        catch (Exception ex) { errorMessage = $"Delete failed: {ex.Message}"; }
+    }
+
+    private bool IsCurrentPeriod(TcPayPeriod p) => p.StartDate <= Today && p.EndDate >= Today;
+}

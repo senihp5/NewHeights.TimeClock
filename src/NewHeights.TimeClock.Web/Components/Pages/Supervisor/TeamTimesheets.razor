@@ -1,0 +1,317 @@
+@page "/supervisor/timesheets"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ITimesheetService TimesheetService
+@inject IPayPeriodService PayPeriodService
+@inject AuthenticationStateProvider AuthStateProvider
+@inject IUserContextService UserContextSvc
+@inject NavigationManager Navigation
+@inject ILogger<TeamTimesheets> Logger
+@inject IEmailService EmailService
+
+<PageTitle>Team Time Sheets - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="supervisor-page">
+    <header class="supervisor-header">
+        <div class="header-left">
+            <h1>Team Time Sheets</h1>
+            <p class="subtitle">Review and approve your team's time sheets</p>
+        </div>
+        <div class="header-right">
+            <div class="period-nav">
+                <button class="btn-nav" @onclick="PreviousPeriod" title="Previous Period">
+                    <span>←</span>
+                </button>
+                <span class="period-display">@currentPayPeriod?.PeriodName</span>
+                <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0)" title="Next Period">
+                    <span>→</span>
+                </button>
+            </div>
+            <div class="deadline-info">
+                @if (currentPayPeriod != null)
+                {
+                    <span class="deadline-label">Employee Deadline:</span>
+                    <span class="deadline-date">@currentPayPeriod.EmployeeDeadline.ToString("MMM d")</span>
+                }
+            </div>
+        </div>
+    </header>
+
+    <div class="summary-stats">
+        <div class="stat-card">
+            <span class="stat-value">@teamSummaries.Count</span>
+            <span class="stat-label">Team Members</span>
+        </div>
+        <div class="stat-card success">
+            <span class="stat-value">@teamSummaries.Count(t => t.SupervisorApproved)</span>
+            <span class="stat-label">Approved</span>
+        </div>
+        <div class="stat-card warning">
+            <span class="stat-value">@teamSummaries.Count(t => t.EmployeeApproved && !t.SupervisorApproved)</span>
+            <span class="stat-label">Ready to Approve</span>
+        </div>
+        <div class="stat-card pending">
+            <span class="stat-value">@teamSummaries.Count(t => !t.EmployeeApproved)</span>
+            <span class="stat-label">Awaiting Employee</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value">@teamSummaries.Sum(t => t.TotalHours).ToString("F1")</span>
+            <span class="stat-label">Total Hours</span>
+        </div>
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="loading-container">
+            <div class="loading-spinner"></div>
+            <p>Loading team data...</p>
+        </div>
+    }
+    else if (!teamSummaries.Any())
+    {
+        <div class="empty-state">
+            <div class="empty-icon">👥</div>
+            <h3>No Team Members Found</h3>
+            <p>No hourly employees are assigned to you for this pay period.</p>
+        </div>
+    }
+    else
+    {
+        <div class="team-grid">
+            @foreach (var member in teamSummaries.OrderBy(m => m.SupervisorApproved).ThenBy(m => m.EmployeeName))
+            {
+                <div class="team-card @GetCardClass(member)">
+                    <div class="card-header">
+                        <div class="member-info">
+                            <span class="member-name">@member.EmployeeName</span>
+                            <span class="member-id">ID: @member.IdNumber</span>
+                        </div>
+                        @if (member.SupervisorApproved)
+                        {
+                            <span class="approved-badge" title="Approved">✓</span>
+                        }
+                    </div>
+                    
+                    <div class="card-body">
+                        <div class="hours-section">
+                            <div class="hours-main">
+                                <span class="hours-value">@member.TotalHours.ToString("F1")</span>
+                                <span class="hours-label">hours</span>
+                            </div>
+                            @if (member.OvertimeHours > 0)
+                            {
+                                <span class="ot-badge" title="Overtime">+@member.OvertimeHours.ToString("F1") OT</span>
+                            }
+                        </div>
+                        
+                        <div class="days-info">
+                            <span>@member.DaysWorked days worked</span>
+                        </div>
+
+                        <div class="approval-status">
+                            <div class="approval-header">Approvals</div>
+                            <div class="approval-row">
+                                <span class="approval-label">Employee:</span>
+                                <span class="approval-value @(member.EmployeeApproved ? "done" : "pending")">
+                                    @(member.EmployeeApproved ? "Submitted ✓" : "Pending")
+                                </span>
+                            </div>
+                            <div class="approval-row">
+                                <span class="approval-label">Supervisor:</span>
+                                <span class="approval-value @(member.SupervisorApproved ? "done" : (member.EmployeeApproved ? "ready" : "pending"))">
+                                    @(member.SupervisorApproved ? "Approved ✓" : (member.EmployeeApproved ? "Ready" : "Waiting"))
+                                </span>
+                            </div>
+                        </div>
+                        @if (member.ExceptionCount > 0)
+                        {
+                            <div class="exception-status">
+                                <span class="exception-label">Exceptions:</span>
+                                <span class="exception-count">@member.ExceptionCount day(s)</span>
+                            </div>
+                        }
+                    </div>
+                    
+                    <div class="card-actions">
+                        <button class="btn-action btn-view" @onclick="() => ViewTimesheet(member.EmployeeId)">
+                            View Details
+                        </button>
+                        @if (member.EmployeeApproved && !member.SupervisorApproved)
+                        {
+                            <button class="btn-action btn-approve" @onclick="() => ApproveTimesheet(member.EmployeeId)">
+                                Approve
+                            </button>
+                        }
+                        else if (!member.EmployeeApproved)
+                        {
+                            <button class="btn-action btn-remind" @onclick="() => SendReminder(member.EmployeeId)">
+                                Send Reminder
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private int periodOffset = 0;
+    private DateTime periodAnchorDate = DateTime.Today;
+    private bool isLoading = true;
+    private string currentUserEmail = "";
+    private int currentSupervisorId = 0;
+    private UserContext? userCtx;
+    private PayPeriodInfo? currentPayPeriod;
+    private List<TeamTimesheetSummary> teamSummaries = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ?? 
+                           authState.User.FindFirst(ClaimTypes.Email)?.Value ?? "";
+        
+        userCtx = await UserContextSvc.GetCurrentUserAsync();
+        currentUserEmail = userCtx.Email;
+        await LoadCurrentSupervisor();
+        await LoadTeamData();
+    }
+
+    private async Task LoadCurrentSupervisor()
+    {
+        using var context = await DbFactory.CreateDbContextAsync();
+        var emailLower = currentUserEmail.ToLowerInvariant();
+        var supervisor = await context.TcEmployees
+            .FirstOrDefaultAsync(e => e.Email != null && e.Email.ToLower() == emailLower);
+        currentSupervisorId = supervisor?.EmployeeId ?? 0;
+        Logger.LogInformation("Supervisor lookup: {Email} -> ID {Id}", emailLower, currentSupervisorId);
+    }
+
+    private async Task LoadTeamData()
+    {
+        isLoading = true;
+        try
+        {
+            currentPayPeriod = PayPeriodService.GetPayPeriodForDate(periodAnchorDate);
+            
+            if (currentSupervisorId > 0)
+            {
+                teamSummaries = await TimesheetService.GetTeamTimesheetsAsync(
+                    currentSupervisorId,
+                    currentPayPeriod.StartDate,
+                    currentPayPeriod.EndDate);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading team data");
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PreviousPeriod()
+    {
+        periodOffset--;
+        await LoadTeamData();
+    }
+
+    private async Task NextPeriod()
+    {
+        if (periodOffset < 0)
+        {
+            periodOffset++;
+            await LoadTeamData();
+        }
+    }
+
+    private void ViewTimesheet(int employeeId)
+    {
+        Navigation.NavigateTo($"/supervisor/timesheet/{employeeId}/{periodOffset}");
+    }
+
+    private async Task ApproveTimesheet(int employeeId)
+    {
+        if (currentPayPeriod == null) return;
+        
+        try
+        {
+            await TimesheetService.ApproveTimesheetAsync(
+                employeeId,
+                currentPayPeriod.StartDate,
+                currentPayPeriod.EndDate,
+                currentUserEmail,
+                "Supervisor");
+            await LoadTeamData();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error approving timesheet for {EmployeeId}", employeeId);
+        }
+    }
+
+    private async Task SendReminder(int employeeId)
+    {
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var employee = await context.TcEmployees
+                .Include(e => e.Staff)
+                .FirstOrDefaultAsync(e => e.EmployeeId == employeeId);
+
+            if (employee != null && !string.IsNullOrEmpty(employee.Email) && currentPayPeriod != null)
+            {
+                await EmailService.SendTimesheetReminderAsync(
+                    employee.Email,
+                    employee.Staff?.FirstName ?? "Team Member",
+                    "Your Supervisor",
+                    currentPayPeriod.EmployeeDeadline);
+                    
+                Logger.LogInformation("Reminder sent to {Email}", employee.Email);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error sending reminder for {EmployeeId}", employeeId);
+        }
+    }
+
+
+    private static DateTime NavigatePeriod(DateTime anchor, int direction)
+    {
+        bool isFirstHalf = anchor.Day <= 15;
+        if (direction < 0)
+        {
+            return isFirstHalf
+                ? new DateTime(anchor.AddMonths(-1).Year, anchor.AddMonths(-1).Month, 16)
+                : new DateTime(anchor.Year, anchor.Month, 1);
+        }
+        else
+        {
+            if (isFirstHalf)
+                return new DateTime(anchor.Year, anchor.Month, 16);
+            var next = anchor.AddMonths(1);
+            return new DateTime(next.Year, next.Month, 1);
+        }
+    }
+    private static string GetCardClass(TeamTimesheetSummary member)
+    {
+        if (member.SupervisorApproved) return "status-approved";
+        if (member.ExceptionCount > 0) return "status-exception";
+        if (member.EmployeeApproved) return "status-ready";
+        return "status-pending";
+    }
+}
+

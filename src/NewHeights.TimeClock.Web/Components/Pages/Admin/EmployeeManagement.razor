@@ -1,0 +1,16 @@
+@page "/admin/employees"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+
+<PageTitle>Employee Management</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <h1>Employee Management</h1>
+        <p class="admin-subtitle">Manage employee records and role assignments.</p>
+    </div>
+    <div class="admin-card" style="padding:2rem; color:#6b7280">
+        Employee management coming soon.
+    </div>
+</div>

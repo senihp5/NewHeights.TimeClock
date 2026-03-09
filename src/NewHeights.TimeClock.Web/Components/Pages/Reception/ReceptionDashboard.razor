@@ -1,0 +1,714 @@
+@page "/reception"
+@page "/reception/{CampusCode}"
+@layout KioskLayout
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireCampusAdmin")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IJSRuntime JS
+@inject ILogger<ReceptionDashboard> Logger
+@inject AuthenticationStateProvider AuthStateProvider
+@implements IAsyncDisposable
+
+<PageTitle>Reception - @selectedCampusName</PageTitle>
+
+@if (!hasCampusSelected)
+{
+    <div class="campus-selector-overlay">
+        <div class="campus-selector-modal">
+            <h2>Select Your Campus</h2>
+            <p>Choose the campus you are working at today:</p>
+            <div class="campus-buttons">
+                @foreach (var campus in availableCampuses)
+                {
+                    <button class="campus-btn" @onclick="() => SelectCampus(campus.CampusCode)">
+                        @campus.CampusName
+                    </button>
+                }
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <div class="reception-dashboard">
+        <header class="reception-header">
+            <div class="header-brand">
+                <span class="header-icon">🛡️</span>
+                <div class="header-titles">
+                    <h1>@selectedCampusName</h1>
+                    <span class="header-subtitle">Reception Dashboard</span>
+                </div>
+            </div>
+            <div class="header-stats">
+                <div class="stat-pill staff">
+                    <span class="stat-count">@staffCount</span>
+                    <span class="stat-label">Staff</span>
+                </div>
+                <div class="stat-pill students">
+                    <span class="stat-count">@studentCount</span>
+                    <span class="stat-label">Students</span>
+                </div>
+                <div class="stat-pill total">
+                    <span class="stat-count">@(staffCount + studentCount)</span>
+                    <span class="stat-label">Total</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <span class="last-updated">@lastRefresh.ToString("h:mm:ss tt")</span>
+                <button class="btn-icon" @onclick="RefreshData" disabled="@isLoading" title="Refresh">
+                    🔄
+                </button>
+
+                <button class="btn-change-campus" @onclick="ChangeCampus" title="Change Campus">
+                    📍
+                </button>
+            </div>
+        </header>
+
+        <div class="reception-content">
+            <div class="onsite-section">
+                <div class="section-toolbar">
+                    <h2>👥 Currently On Site</h2>
+                    <div class="toolbar-controls">
+                        <input type="text" 
+                               @bind="searchTerm" 
+                               @bind:event="oninput"
+                               placeholder="Search name or ID..." 
+                               class="search-input" />
+                        <select @bind="personTypeFilter" class="filter-select">
+                            <option value="">All</option>
+                            <option value="STAFF">Staff</option>
+                            <option value="STUDENT">Students</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="onsite-table-wrapper">
+                    <table class="onsite-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>ID</th>
+                                <th>Status</th>
+                                <th>Time</th>
+                                <th>Duration</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var person in filteredOnSiteList)
+                            {
+                                <tr>
+                                    <td class="name-cell">@person.LastName, @person.FirstName</td>
+                                    <td><span class="type-badge @person.TransactionType.ToLower()">@person.TransactionType</span></td>
+                                    <td>@person.IdNumber</td>
+                                    <td><span class="status-badge @person.LastScanType.ToLower().Replace("_","-")">@FormatScanType(person.LastScanType)</span></td>
+                                    <td>@person.LastScanTime.ToString("h:mm tt")</td>
+                                    <td>@FormatDuration(person.CheckInTime)</td>
+                                    <td>
+                                        <button class="btn-action" @onclick="() => OpenCorrection(person)" title="Correct">
+                                            ✏️
+                                        </button>
+                                        <button class="btn-action" @onclick="() => QuickCheckOut(person)" title="Check Out">
+                                            🚪
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                            @if (!filteredOnSiteList.Any())
+                            {
+                                <tr>
+                                    <td colspan="7" class="empty-row">No one currently on site</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div class="table-footer">
+                    Showing @filteredOnSiteList.Count of @onSiteList.Count people
+                </div>
+            </div>
+
+            <div class="activity-section">
+                <div class="section-header">
+                    <h2>📋 Activity</h2>
+                    <label class="auto-refresh">
+                        <input type="checkbox" @bind="autoRefresh" /> Auto
+                    </label>
+                </div>
+                <div class="activity-list">
+                    @foreach (var activity in recentActivity.Take(30))
+                    {
+                        <div class="activity-row @activity.ScanType.ToLower().Replace("_","-")">
+                            <span class="activity-icon">@GetActivityIcon(activity.ScanType)</span>
+                            <div class="activity-info">
+                                <span class="activity-name">@activity.FirstName @activity.LastName</span>
+                                <span class="activity-detail">@activity.TransactionType</span>
+                            </div>
+                            <div class="activity-time">
+                                <span>@activity.ScanDateTime.ToString("h:mm:ss tt")</span>
+                            </div>
+                        </div>
+                    }
+                    @if (!recentActivity.Any())
+                    {
+                        <div class="empty-activity">No activity today</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showManualEntryModal)
+{
+    <div class="modal-overlay" @onclick="CloseManualEntry">
+        <div class="modal-content" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>➕ Manual Entry</h2>
+                <button class="modal-close" @onclick="CloseManualEntry">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Search Person</label>
+                    <input type="text" @bind="manualSearchTerm" @bind:event="oninput" 
+                           @onkeyup="SearchPeople" placeholder="Type name or ID..." />
+                </div>
+                @if (searchResults.Any())
+                {
+                    <div class="search-results">
+                        @foreach (var result in searchResults.Take(10))
+                        {
+                            <div class="search-result-item" @onclick="() => SelectPerson(result)">
+                                <strong>@result.LastName, @result.FirstName</strong>
+                                <span class="result-meta">@result.Type - ID: @result.IdNumber</span>
+                            </div>
+                        }
+                    </div>
+                }
+                @if (selectedPerson != null)
+                {
+                    <div class="selected-person">
+                        <h4>@selectedPerson.FirstName @selectedPerson.LastName</h4>
+                        <span>@selectedPerson.Type - ID: @selectedPerson.IdNumber</span>
+                    </div>
+                    <div class="form-group">
+                        <label>Action</label>
+                        <select @bind="manualScanType">
+                            <option value="CAMPUS_IN">Check In</option>
+                            <option value="CAMPUS_OUT">Check Out</option>
+                            <option value="LUNCH_OUT">Lunch Out</option>
+                            <option value="LUNCH_IN">Lunch In</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Time</label>
+                        <input type="time" @bind="manualTime" />
+                    </div>
+                    <div class="form-group">
+                        <label>Notes</label>
+                        <textarea @bind="manualNotes" placeholder="Reason for manual entry..."></textarea>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseManualEntry">Cancel</button>
+                <button class="btn-save" @onclick="SaveManualEntry" disabled="@(selectedPerson == null)">
+                    Save Entry
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showCorrectionModal && correctionPerson != null)
+{
+    <div class="modal-overlay" @onclick="CloseCorrection">
+        <div class="modal-content" @onclick:stopPropagation>
+            <div class="modal-header correction">
+                <h2>✏️ Correct Entry</h2>
+                <button class="modal-close" @onclick="CloseCorrection">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="correction-person">
+                    <h3>@correctionPerson.FirstName @correctionPerson.LastName</h3>
+                    <span>@correctionPerson.TransactionType - ID: @correctionPerson.IdNumber</span>
+                </div>
+                <div class="correction-current">
+                    <p><strong>Current Status:</strong> @FormatScanType(correctionPerson.LastScanType) at @correctionPerson.LastScanTime.ToString("h:mm tt")</p>
+                </div>
+                <hr />
+                <h4>New Entry</h4>
+                <div class="form-group">
+                    <label>Action</label>
+                    <select @bind="correctionScanType">
+                        <option value="CAMPUS_IN">Check In</option>
+                        <option value="CAMPUS_OUT">Check Out</option>
+                        <option value="LUNCH_OUT">Lunch Out</option>
+                        <option value="LUNCH_IN">Lunch In</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Time</label>
+                    <input type="time" @bind="correctionTime" />
+                </div>
+                <div class="form-group">
+                    <label>Reason for Correction *</label>
+                    <textarea @bind="correctionNotes" placeholder="Required: Explain why this correction is needed..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseCorrection">Cancel</button>
+                <button class="btn-save" @onclick="SaveCorrection" disabled="@string.IsNullOrWhiteSpace(correctionNotes)">
+                    Save Correction
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string? CampusCode { get; set; }
+
+    private bool hasCampusSelected = false;
+    private string selectedCampusCode = "";
+    private string selectedCampusName = "Reception";
+    private int selectedCampusId = 0;
+    private int staffCount = 0;
+    private int studentCount = 0;
+    
+    private DateTime lastRefresh = DateTime.Now;
+    private bool isLoading = false;
+    private bool autoRefresh = true;
+    private string searchTerm = "";
+    private string personTypeFilter = "";
+    private string currentUserName = "";
+    private string currentUserEmail = "";
+
+    private List<Campus> availableCampuses = new();
+    private List<OnSitePerson> onSiteList = new();
+    private List<ActivityItem> recentActivity = new();
+    private System.Timers.Timer? refreshTimer;
+
+    // Manual Entry
+    private bool showManualEntryModal = false;
+    private string manualSearchTerm = "";
+    private List<PersonSearchResult> searchResults = new();
+    private PersonSearchResult? selectedPerson = null;
+    private string manualScanType = "CAMPUS_IN";
+    private TimeOnly manualTime = TimeOnly.FromDateTime(DateTime.Now);
+    private string manualNotes = "";
+
+    // Correction
+    private bool showCorrectionModal = false;
+    private OnSitePerson? correctionPerson = null;
+    private string correctionScanType = "CAMPUS_OUT";
+    private TimeOnly correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+    private string correctionNotes = "";
+
+    private List<OnSitePerson> filteredOnSiteList => onSiteList
+        .Where(p => string.IsNullOrEmpty(searchTerm) ||
+                    p.FirstName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+                    p.LastName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+                    p.IdNumber.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
+        .Where(p => string.IsNullOrEmpty(personTypeFilter) || p.TransactionType == personTypeFilter)
+        .OrderBy(p => p.LastName).ThenBy(p => p.FirstName)
+        .ToList();
+
+    private bool firstRenderComplete = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUserName = user.FindFirst("name")?.Value ?? user.FindFirst(ClaimTypes.Name)?.Value ?? "Unknown";
+        currentUserEmail = user.FindFirst("preferred_username")?.Value ?? user.FindFirst(ClaimTypes.Email)?.Value ?? "";
+
+        using var context = await DbFactory.CreateDbContextAsync();
+        availableCampuses = await context.Campuses.AsNoTracking().OrderBy(c => c.CampusName).ToListAsync();
+
+        if (!string.IsNullOrEmpty(CampusCode))
+        {
+            await SelectCampus(CampusCode);
+        }
+
+        refreshTimer = new System.Timers.Timer(15000);
+        refreshTimer.Elapsed += async (s, e) =>
+        {
+            if (autoRefresh && hasCampusSelected)
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshData();
+                    StateHasChanged();
+                });
+            }
+        };
+        refreshTimer.Start();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !firstRenderComplete)
+        {
+            firstRenderComplete = true;
+            
+            if (!hasCampusSelected && string.IsNullOrEmpty(CampusCode))
+            {
+                try
+                {
+                    var savedCampus = await JS.InvokeAsync<string>("localStorage.getItem", "reception_campus");
+                    if (!string.IsNullOrEmpty(savedCampus))
+                    {
+                        await SelectCampus(savedCampus);
+                        StateHasChanged();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogWarning(ex, "Could not load saved campus preference");
+                }
+            }
+        }
+    }
+
+    private async Task SelectCampus(string campusCode)
+    {
+        var campus = availableCampuses.FirstOrDefault(c => 
+            c.CampusCode.Equals(campusCode, StringComparison.OrdinalIgnoreCase));
+        
+        if (campus != null)
+        {
+            selectedCampusCode = campus.CampusCode;
+            selectedCampusName = campus.CampusName;
+            selectedCampusId = campus.CampusId;
+            hasCampusSelected = true;
+            
+            await JS.InvokeVoidAsync("localStorage.setItem", "reception_campus", campus.CampusCode);
+            await RefreshData();
+        }
+    }
+
+    private void ChangeCampus()
+    {
+        hasCampusSelected = false;
+    }
+
+    private async Task RefreshData()
+    {
+        if (isLoading) return;
+        isLoading = true;
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var today = DateTime.Today;
+
+            var todayTransactions = await context.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.ScanDateTime.Date == today && t.CampusId == selectedCampusId)
+                .OrderByDescending(t => t.ScanDateTime)
+                .ToListAsync();
+
+            onSiteList.Clear();
+            var peopleGroups = todayTransactions
+                .GroupBy(t => new { t.IdNumber, t.TransactionType })
+                .ToList();
+
+            foreach (var group in peopleGroups)
+            {
+                var scans = group.OrderByDescending(t => t.ScanDateTime).ToList();
+                var lastScan = scans.First();
+                var firstIn = scans.LastOrDefault(s => s.ScanType == "CAMPUS_IN" || s.ScanType == "LUNCH_IN");
+
+                if (lastScan.ScanType == "CAMPUS_IN" || lastScan.ScanType == "LUNCH_IN")
+                {
+                    onSiteList.Add(new OnSitePerson
+                    {
+                        IdNumber = lastScan.IdNumber,
+                        FirstName = lastScan.FirstName,
+                        LastName = lastScan.LastName,
+                        TransactionType = lastScan.TransactionType,
+                        LastScanType = lastScan.ScanType,
+                        LastScanTime = lastScan.ScanDateTime,
+                        CheckInTime = firstIn?.ScanDateTime ?? lastScan.ScanDateTime
+                    });
+                }
+            }
+
+            staffCount = onSiteList.Count(p => p.TransactionType == "STAFF");
+            studentCount = onSiteList.Count(p => p.TransactionType == "STUDENT");
+
+            recentActivity = todayTransactions.Take(50).Select(t => new ActivityItem
+            {
+                TransactionId = t.TransactionId,
+                IdNumber = t.IdNumber,
+                FirstName = t.FirstName,
+                LastName = t.LastName,
+                TransactionType = t.TransactionType,
+                ScanType = t.ScanType,
+                ScanDateTime = t.ScanDateTime
+            }).ToList();
+
+            lastRefresh = DateTime.Now;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error refreshing reception data");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void OpenManualEntry()
+    {
+        manualSearchTerm = "";
+        searchResults.Clear();
+        selectedPerson = null;
+        manualScanType = "CAMPUS_IN";
+        manualTime = TimeOnly.FromDateTime(DateTime.Now);
+        manualNotes = "";
+        showManualEntryModal = true;
+    }
+
+    private void CloseManualEntry()
+    {
+        showManualEntryModal = false;
+    }
+
+    private async Task SearchPeople(KeyboardEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(manualSearchTerm) || manualSearchTerm.Length < 2)
+        {
+            searchResults.Clear();
+            return;
+        }
+
+        using var context = await DbFactory.CreateDbContextAsync();
+        var term = manualSearchTerm.ToLower();
+
+        var staffResults = await context.Staff.AsNoTracking()
+            .Where(s => (s.FirstName != null && s.FirstName.ToLower().Contains(term)) ||
+                        (s.LastName != null && s.LastName.ToLower().Contains(term)) ||
+                        (s.IdNumber != null && s.IdNumber.Contains(term)))
+            .Take(5)
+            .Select(s => new PersonSearchResult
+            {
+                IdNumber = s.IdNumber ?? "",
+                FirstName = s.FirstName ?? "",
+                LastName = s.LastName ?? "",
+                Type = "STAFF"
+            }).ToListAsync();
+
+        var studentResults = await context.Students.AsNoTracking()
+            .Where(s => s.IsActive &&
+                        ((s.FirstName != null && s.FirstName.ToLower().Contains(term)) ||
+                         (s.LastName != null && s.LastName.ToLower().Contains(term)) ||
+                         (s.StudentNumber != null && s.StudentNumber.Contains(term))))
+            .Take(5)
+            .Select(s => new PersonSearchResult
+            {
+                IdNumber = s.StudentNumber ?? "",
+                FirstName = s.FirstName ?? "",
+                LastName = s.LastName ?? "",
+                Type = "STUDENT"
+            }).ToListAsync();
+
+        searchResults = staffResults.Concat(studentResults).ToList();
+        StateHasChanged();
+    }
+
+    private void SelectPerson(PersonSearchResult person)
+    {
+        selectedPerson = person;
+        searchResults.Clear();
+        manualSearchTerm = "";
+    }
+
+    private async Task SaveManualEntry()
+    {
+        if (selectedPerson == null) return;
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            
+            var scanDateTime = DateTime.Today.Add(manualTime.ToTimeSpan());
+            
+            var transaction = new AttendanceTransaction
+            {
+                TransactionType = selectedPerson.Type,
+                IdNumber = selectedPerson.IdNumber,
+                FirstName = selectedPerson.FirstName,
+                LastName = selectedPerson.LastName,
+                CampusId = selectedCampusId,
+                LocationId = 1,
+                ScanDateTime = scanDateTime,
+                ScanType = manualScanType,
+                ScanMethod = "MANUAL",
+                TerminalId = 0,
+                DataSource = "LOCAL",
+                ValidationStatus = "VALID",
+                Notes = $"[Manual Entry by {currentUserName}] {manualNotes}",
+                CreatedDate = DateTime.UtcNow
+            };
+
+            context.AttendanceTransactions.Add(transaction);
+            await context.SaveChangesAsync();
+
+            Logger.LogInformation("Manual entry created by {User}: {Person} - {Type} at {Time}",
+                currentUserEmail, selectedPerson.IdNumber, manualScanType, scanDateTime);
+
+            CloseManualEntry();
+            await RefreshData();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving manual entry");
+        }
+    }
+
+    private void OpenCorrection(OnSitePerson person)
+    {
+        correctionPerson = person;
+        correctionScanType = person.LastScanType == "CAMPUS_IN" ? "CAMPUS_OUT" : "CAMPUS_IN";
+        correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+        correctionNotes = "";
+        showCorrectionModal = true;
+    }
+
+    private void CloseCorrection()
+    {
+        showCorrectionModal = false;
+        correctionPerson = null;
+    }
+
+    private async Task SaveCorrection()
+    {
+        if (correctionPerson == null || string.IsNullOrWhiteSpace(correctionNotes)) return;
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            
+            var scanDateTime = DateTime.Today.Add(correctionTime.ToTimeSpan());
+            
+            var transaction = new AttendanceTransaction
+            {
+                TransactionType = correctionPerson.TransactionType,
+                IdNumber = correctionPerson.IdNumber,
+                FirstName = correctionPerson.FirstName,
+                LastName = correctionPerson.LastName,
+                CampusId = selectedCampusId,
+                LocationId = 1,
+                ScanDateTime = scanDateTime,
+                ScanType = correctionScanType,
+                ScanMethod = "MANUAL",
+                TerminalId = 0,
+                DataSource = "LOCAL",
+                ValidationStatus = "CORRECTED",
+                Notes = $"[Correction by {currentUserName}] {correctionNotes}",
+                CreatedDate = DateTime.UtcNow
+            };
+
+            context.AttendanceTransactions.Add(transaction);
+            await context.SaveChangesAsync();
+
+            Logger.LogInformation("Correction made by {User}: {Person} - {Type} at {Time}. Reason: {Reason}",
+                currentUserEmail, correctionPerson.IdNumber, correctionScanType, scanDateTime, correctionNotes);
+
+            CloseCorrection();
+            await RefreshData();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving correction");
+        }
+    }
+
+    private async Task QuickCheckOut(OnSitePerson person)
+    {
+        correctionPerson = person;
+        correctionScanType = "CAMPUS_OUT";
+        correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+        correctionNotes = "Check-out from reception";
+        showCorrectionModal = true;
+    }
+
+    private static string FormatDuration(DateTime checkInTime)
+    {
+        var duration = DateTime.Now - checkInTime;
+        if (duration.TotalHours >= 1)
+            return $"{(int)duration.TotalHours}h {duration.Minutes}m";
+        return $"{duration.Minutes}m";
+    }
+
+    private static string GetActivityIcon(string scanType) => scanType switch
+    {
+        "CAMPUS_IN" => "➡️",
+        "CAMPUS_OUT" => "⬅️",
+        "LUNCH_OUT" => "🍽️",
+        "LUNCH_IN" => "🔙",
+        _ => "📍"
+    };
+
+    private static string FormatScanType(string scanType) => scanType switch
+    {
+        "CAMPUS_IN" => "In",
+        "CAMPUS_OUT" => "Out",
+        "LUNCH_OUT" => "Lunch",
+        "LUNCH_IN" => "Back",
+        _ => scanType
+    };
+
+    public ValueTask DisposeAsync()
+    {
+        refreshTimer?.Stop();
+        refreshTimer?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private class OnSitePerson
+    {
+        public string IdNumber { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string TransactionType { get; set; } = "";
+        public string LastScanType { get; set; } = "";
+        public DateTime LastScanTime { get; set; }
+        public DateTime CheckInTime { get; set; }
+    }
+
+    private class ActivityItem
+    {
+        public long TransactionId { get; set; }
+        public string IdNumber { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string TransactionType { get; set; } = "";
+        public string ScanType { get; set; } = "";
+        public DateTime ScanDateTime { get; set; }
+    }
+
+    private class PersonSearchResult
+    {
+        public string IdNumber { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string Type { get; set; } = "";
+    }
+}
+
+
+
+
+

@@ -1,0 +1,9 @@
+MSBuild version 17.14.23+b0019275e for .NET Framework
+
+C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\src\NewHeights.TimeClock.Web\NewHeights.TimeClock.Web.csproj : warning NU1902: Package 'Microsoft.Identity.Web' 3.8.0 has a known moderate severity vulnerability, https://github.com/advisories/GHSA-rpq8-q44m-2rpg
+  NewHeights.TimeClock.Shared -> C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\src\NewHeights.TimeClock.Shared\bin\Debug\net8.0\NewHeights.TimeClock.Shared.dll
+  NewHeights.TimeClock.Data -> C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\src\NewHeights.TimeClock.Data\bin\Debug\net8.0\NewHeights.TimeClock.Data.dll
+C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\src\NewHeights.TimeClock.Web\Components\Pages\Mobile\MobileClock.razor(250,24): warning CS1998: This async method lacks 'await' operators and will run synchronously. Consider using the 'await' operator to await non-blocking API calls, or 'await Task.Run(...)' to do CPU-bound work on a background thread. [C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\src\NewHeights.TimeClock.Web\NewHeights.TimeClock.Web.csproj]
+  NewHeights.TimeClock.Web -> C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\src\NewHeights.TimeClock.Web\bin\Debug\net8.0\NewHeights.TimeClock.Web.dll
+  NewHeights.TimeClock.Tests.Unit -> C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\tests\NewHeights.TimeClock.Tests.Unit\bin\Debug\net8.0\NewHeights.TimeClock.Tests.Unit.dll
+  NewHeights.TimeClock.Tests.Integration -> C:\Users\PatrickHines\Documents\GitHub\NewHeights.TimeClock\tests\NewHeights.TimeClock.Tests.Integration\bin\Debug\net8.0\NewHeights.TimeClock.Tests.Integration.dll

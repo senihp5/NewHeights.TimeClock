@@ -1,0 +1,205 @@
+@page "/hr/payroll"
+@page "/hr/payroll/{PeriodOffset:int}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireHR")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@using System.Text
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ITimesheetService TimesheetService
+@inject IPayPeriodService PayPeriodService
+@inject IEmailService EmailService
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ILogger<HRPayroll> Logger
+
+<PageTitle>Payroll Review - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="hr-payroll-page">
+    <header class="payroll-header">
+        <div class="header-info">
+            <h1>Payroll Review</h1>
+            <p class="subtitle">Final approval and export for Ascender HCM</p>
+        </div>
+        <div class="header-actions">
+            <div class="period-nav">
+                <button class="btn-nav" @onclick="PreviousPeriod">Prev</button>
+                <div class="period-display">
+                    <span class="period-name">@currentPayPeriod?.PeriodName</span>
+                    <span class="period-dates">Pay: @currentPayPeriod?.PayDate.ToString("MMM d")</span>
+                </div>
+                <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0)">Next</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="status-overview">
+        <div class="status-card">
+            <span class="status-value">@payrollSummaries.Count</span>
+            <span class="status-label">Employees</span>
+        </div>
+        <div class="status-card">
+            <span class="status-value">@payrollSummaries.Sum(p => p.TotalHours).ToString("F1")</span>
+            <span class="status-label">Total Hours</span>
+        </div>
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading...</div>
+    }
+    else
+    {
+        <div class="payroll-actions-bar">
+            <select @bind="filterStatus">
+                <option value="all">All</option>
+                <option value="pending_hr">Ready for HR</option>
+                <option value="approved">Approved</option>
+            </select>
+            <button class="btn-approve-all" @onclick="ApproveAllReady">Approve All Ready</button>
+            <button class="btn-export" @onclick="ExportToCSV" disabled="@(!allHRApproved)">Export CSV</button>
+        </div>
+
+        <table class="payroll-table">
+            <thead>
+                <tr>
+                    <th>Employee</th>
+                    <th>Supervisor</th>
+                    <th>Regular</th>
+                    <th>OT</th>
+                    <th>Total</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var emp in FilteredSummaries)
+                {
+                    <tr>
+                        <td>@emp.EmployeeName<br/><small>@emp.IdNumber</small></td>
+                        <td>@emp.SupervisorName</td>
+                        <td>@emp.RegularHours.ToString("F1")</td>
+                        <td>@emp.OvertimeHours.ToString("F1")</td>
+                        <td><strong>@emp.TotalHours.ToString("F1")</strong></td>
+                        <td>
+                            @(emp.EmployeeApproved ? "E✓" : "E⏳")
+                            @(emp.SupervisorApproved ? "S✓" : "S⏳")
+                            @(emp.HRApproved ? "HR✓" : "HR⏳")
+                        </td>
+                        <td>
+                            <button @onclick="() => ViewDetails(emp.EmployeeId)">View</button>
+                            @if (emp.SupervisorApproved && !emp.HRApproved)
+                            {
+                                <button @onclick="() => ApproveEmployee(emp.EmployeeId)">Approve</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        @if (payPeriodExported)
+        {
+            <div class="export-info">Exported on @exportedDate?.ToString("MMM d") by @exportedBy</div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public int PeriodOffset { get; set; } = 0;
+
+    private int periodOffset = 0;
+    private bool isLoading = true;
+    private string currentUserEmail = "";
+    private PayPeriodInfo? currentPayPeriod;
+    private List<PayrollSummary> payrollSummaries = new();
+    private string filterStatus = "all";
+    private bool payPeriodExported = false;
+    private DateTime? exportedDate;
+    private string? exportedBy;
+
+    private bool allHRApproved => payrollSummaries.Count > 0 && payrollSummaries.All(p => p.HRApproved);
+
+    private IEnumerable<PayrollSummary> FilteredSummaries => filterStatus switch
+    {
+        "pending_hr" => payrollSummaries.Where(p => p.SupervisorApproved && !p.HRApproved),
+        "approved" => payrollSummaries.Where(p => p.HRApproved),
+        _ => payrollSummaries
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        periodOffset = PeriodOffset;
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ?? "";
+        await LoadPayrollData();
+    }
+
+    private async Task LoadPayrollData()
+    {
+        isLoading = true;
+        try
+        {
+            currentPayPeriod = PayPeriodService.GetPayPeriodForDate(DateTime.Today.AddDays(periodOffset * 15));
+            payrollSummaries = await TimesheetService.GetPayrollSummariesAsync(currentPayPeriod.StartDate, currentPayPeriod.EndDate);
+
+            using var context = await DbFactory.CreateDbContextAsync();
+            var pp = await context.TcPayPeriods.FirstOrDefaultAsync(p => p.StartDate == currentPayPeriod.StartDate && p.EndDate == currentPayPeriod.EndDate);
+            payPeriodExported = pp?.ExportedDate != null;
+            exportedDate = pp?.ExportedDate;
+            exportedBy = pp?.ExportedBy;
+        }
+        catch (Exception ex) { Logger.LogError(ex, "Error loading payroll"); }
+        finally { isLoading = false; StateHasChanged(); }
+    }
+
+    private async Task PreviousPeriod() { periodOffset--; await LoadPayrollData(); }
+    private async Task NextPeriod() { if (periodOffset < 0) { periodOffset++; await LoadPayrollData(); } }
+    private void ViewDetails(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}");
+
+    private async Task ApproveEmployee(int employeeId)
+    {
+        if (currentPayPeriod == null) return;
+        await TimesheetService.ApproveTimesheetAsync(employeeId, currentPayPeriod.StartDate, currentPayPeriod.EndDate, currentUserEmail, "HR");
+        await LoadPayrollData();
+    }
+
+    private async Task ApproveAllReady()
+    {
+        foreach (var emp in payrollSummaries.Where(p => p.SupervisorApproved && !p.HRApproved))
+            await ApproveEmployee(emp.EmployeeId);
+    }
+
+    private async Task ExportToCSV()
+    {
+        if (!allHRApproved || currentPayPeriod == null) return;
+        var csv = new StringBuilder();
+        csv.AppendLine("EmployeeID,LastName,FirstName,PayPeriodStart,PayPeriodEnd,RegularHours,OvertimeHours,TotalHours,PayCode");
+        foreach (var emp in payrollSummaries.Where(p => p.HRApproved))
+        {
+            var names = emp.EmployeeName.Split(' ', 2);
+            var fn = names.Length > 0 ? names[0] : "";
+            var ln = names.Length > 1 ? names[1] : "";
+            if (emp.RegularHours > 0) csv.AppendLine($"{emp.AscenderEmployeeId ?? emp.IdNumber},{ln},{fn},{currentPayPeriod.StartDate:yyyy-MM-dd},{currentPayPeriod.EndDate:yyyy-MM-dd},{emp.RegularHours:F2},0.00,{emp.RegularHours:F2},REG");
+            if (emp.OvertimeHours > 0) csv.AppendLine($"{emp.AscenderEmployeeId ?? emp.IdNumber},{ln},{fn},{currentPayPeriod.StartDate:yyyy-MM-dd},{currentPayPeriod.EndDate:yyyy-MM-dd},0.00,{emp.OvertimeHours:F2},{emp.OvertimeHours:F2},OT");
+        }
+
+        using var context = await DbFactory.CreateDbContextAsync();
+        var pp = await context.TcPayPeriods.FirstOrDefaultAsync(p => p.StartDate == currentPayPeriod.StartDate) 
+                 ?? new TcPayPeriod { PeriodName = currentPayPeriod.PeriodName, StartDate = currentPayPeriod.StartDate, EndDate = currentPayPeriod.EndDate, PayDate = currentPayPeriod.PayDate };
+        if (pp.PayPeriodId == 0) context.TcPayPeriods.Add(pp);
+        pp.Status = PayPeriodStatus.Exported; pp.ExportedDate = DateTime.UtcNow; pp.ExportedBy = currentUserEmail;
+        await context.SaveChangesAsync();
+
+        var fn2 = $"Payroll_{currentPayPeriod.StartDate:yyyyMMdd}.csv";
+        await JS.InvokeVoidAsync("downloadFile", fn2, Convert.ToBase64String(Encoding.UTF8.GetBytes(csv.ToString())));
+        await LoadPayrollData();
+    }
+}
