@@ -1,4 +1,4 @@
-﻿/* Reception Dashboard Styles */
+/* Reception Dashboard Styles */
 
 /* Campus Selector */
 .campus-selector-overlay {
@@ -113,12 +113,14 @@
 .stat-pill .stat-count {
     font-size: 1.25rem;
     font-weight: 700;
+    color: white;
 }
 
 .stat-pill .stat-label {
     font-size: 0.7rem;
-    opacity: 0.9;
+    opacity: 0.95;
     text-transform: uppercase;
+    color: white;
 }
 
 .stat-pill.staff { background: rgba(37, 99, 235, 0.3); }
@@ -331,7 +333,120 @@
     color: #6b7280;
 }
 
-/* Activity Section */
+/* Right Sidebar - Last Scan + Activity */
+.right-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+/* Last Scan Panel */
+.last-scan-panel {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    overflow: hidden;
+}
+
+.last-scan-header {
+    padding: 0.75rem 1rem;
+    background: #f8fafc;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.last-scan-header h2 {
+    margin: 0;
+    font-size: 1rem;
+    color: #1e3a5f;
+}
+
+.last-scan-content {
+    padding: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.last-scan-photo {
+    width: 80px;
+    height: 80px;
+    border-radius: 8px;
+    object-fit: cover;
+    border: 2px solid #e5e7eb;
+    background: #f3f4f6;
+}
+
+.last-scan-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.last-scan-name {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e3a5f;
+    margin: 0 0 0.25rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.last-scan-details {
+    font-size: 0.8rem;
+    color: #6b7280;
+}
+
+.last-scan-type {
+    display: inline-block;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    margin-right: 0.5rem;
+}
+
+.last-scan-type.staff {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.last-scan-type.student {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.last-scan-status {
+    display: inline-block;
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 500;
+}
+
+.last-scan-status.in {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.last-scan-status.out {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.last-scan-time {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    margin-top: 0.25rem;
+}
+
+.no-scan-yet {
+    padding: 2rem 1rem;
+    text-align: center;
+    color: #9ca3af;
+    font-size: 0.9rem;
+}
+
+/* Activity Section - Shorter */
 .activity-section {
     display: flex;
     flex-direction: column;
@@ -339,6 +454,8 @@
     border-radius: 12px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     overflow: hidden;
+    flex: 1;
+    min-height: 0;
 }
 
 .section-header {
@@ -613,7 +730,223 @@
         grid-template-columns: 1fr;
     }
     
-    .activity-section {
-        max-height: 250px;
+    .right-sidebar {
+        flex-direction: row;
+        gap: 1rem;
     }
+    
+    .last-scan-panel {
+        flex: 1;
+    }
+    
+    .activity-section {
+    display: flex;
+    flex-direction: column;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+}
+}
+
+
+
+/* Right Sidebar Container */
+.right-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    height: 100%;
+}
+/* Last Scan Section */
+.last-scan-section {
+    background: white;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.last-scan-card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: linear-gradient(135deg, #f5f7fa 0%, #ffffff 100%);
+    border-radius: 8px;
+    border: 2px solid #e2e8f0;
+}
+
+.last-scan-photo {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid var(--nh-navy);
+}
+
+.last-scan-photo-placeholder {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background: var(--nh-gold);
+    color: var(--nh-navy);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+    font-weight: bold;
+}
+
+.last-scan-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.last-scan-info h3 {
+    margin: 0;
+    font-size: 1.25rem;
+    color: var(--nh-navy);
+}
+
+.last-scan-type {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.last-scan-type.campus-in {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.last-scan-type.campus-out {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.last-scan-time {
+    font-size: 0.875rem;
+    color: #64748b;
+}
+
+.empty-scan {
+    text-align: center;
+    padding: 2rem;
+    color: #94a3b8;
+    font-style: italic;
+}
+
+
+/* Header Text Visibility Fixes */
+.header-subtitle,
+.last-updated {
+    color: white !important;
+}
+
+.reception-header h1 {
+    color: white !important;
+}
+
+/* Expand Button and Punch History */
+.expand-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    margin-right: 0.5rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    color: var(--nh-navy);
+}
+
+.expand-icon {
+    display: inline-block;
+    transition: transform 0.2s;
+    font-size: 0.75rem;
+}
+
+.expand-icon.expanded {
+    transform: rotate(90deg);
+}
+
+.punch-history-row {
+    background: #f8fafc !important;
+}
+
+.punch-history {
+    padding: 1rem;
+    border-left: 3px solid var(--nh-gold);
+}
+
+.punch-history h4 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.875rem;
+    color: #64748b;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.punch-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.punch-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem;
+    background: white;
+    border-radius: 6px;
+}
+
+.punch-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    min-width: 80px;
+    text-align: center;
+}
+
+.punch-badge.campus-in {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.punch-badge.campus-out {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.punch-badge.lunch-out {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.punch-badge.lunch-in {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.punch-time {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.875rem;
+    color: #475569;
+}
+
+.name-cell {
+    display: flex;
+    align-items: center;
 }

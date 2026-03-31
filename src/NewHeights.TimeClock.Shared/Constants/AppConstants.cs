@@ -28,6 +28,12 @@ public static class AppConstants
 
         // Campus admins — attendance dashboards + reports
         public const string CampusAdmin = "TimeClock.CampusAdmin";
+
+        // Reception staff - dashboard view + manual entry only (no admin functions)
+        public const string Reception   = "TimeClock.Reception";
+
+        // District staff - all-campus read-only view (no edit)
+        public const string District    = "TimeClock.District";
     }
 
     public static class Campus

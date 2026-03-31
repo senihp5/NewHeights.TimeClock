@@ -1,0 +1,22 @@
+            // Get last scan for display
+            lastScan = recentActivity.FirstOrDefault();
+            
+            // Load photo for last scan if available (STAFF only)
+            lastScanPhotoUrl = null;
+            if (lastScan != null && lastScan.TransactionType == "STAFF")
+            {
+                // Look up Staff record to get Dcid for photo matching
+                var staffRecord = await context.Staff.AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.IdNumber == lastScan.IdNumber);
+                    
+                if (staffRecord != null)
+                {
+                    var photo = await context.Photos.AsNoTracking()
+                        .FirstOrDefaultAsync(p => p.SubjectDcid == staffRecord.Dcid && p.SubjectType == 1);
+                        
+                    if (photo?.PhotoData != null && photo.PhotoData.Length > 0)
+                    {
+                        lastScanPhotoUrl = $"data:image/jpeg;base64,{Convert.ToBase64String(photo.PhotoData)}";
+                    }
+                }
+            }

@@ -1,0 +1,330 @@
+@page "/reports/timeclock"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using System.Text
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IPayPeriodService PayPeriodService
+@inject IJSRuntime JS
+@inject ILogger<TimeclockReport> Logger
+<PageTitle>TimeClock Report - @AppConstants.Branding.ShortName</PageTitle>
+<div class="report-page">
+    <div class="report-header">
+        <div class="report-title-block">
+            <h1>TimeClock Historical Report</h1>
+            <p class="report-subtitle">Time punch history and hours summary</p>
+        </div>
+        <div class="report-controls">
+            <div class="control-group">
+                <label>Mode</label>
+                <select @bind="dateMode" class="campus-select">
+                    <option value="payperiod">Pay Period</option>
+                    <option value="custom">Custom Range</option>
+                </select>
+            </div>
+            @if (dateMode == "payperiod")
+            {
+                <div class="control-group">
+                    <label>Pay Period</label>
+                    <div class="period-nav-inline">
+                        <button class="btn-nav-sm" @onclick="PrevPeriod">&#8249;</button>
+                        <span class="period-label">@currentPayPeriod?.PeriodName</span>
+                        <button class="btn-nav-sm" @onclick="NextPeriod" disabled="@(periodOffset >= 0)">&#8250;</button>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="control-group">
+                    <label>From</label>
+                    <input type="date" @bind="customStart" class="date-input" />
+                </div>
+                <div class="control-group">
+                    <label>To</label>
+                    <input type="date" @bind="customEnd" class="date-input" />
+                </div>
+            }
+            <div class="control-group">
+                <label>Employee</label>
+                <input type="text" @bind="employeeSearch" placeholder="All employees..." class="search-input-sm" />
+            </div>
+            <button class="btn-run" @onclick="RunReport" disabled="@isLoading">Run Report</button>
+            @if (employeeSummaries.Any())
+            {
+                <button class="btn-export" @onclick="ExportCsv">Export CSV</button>
+            }
+        </div>
+    </div>
+    @if (!string.IsNullOrEmpty(errorMsg))
+    {
+        <div class="report-error">@errorMsg</div>
+    }
+    @if (isLoading)
+    {
+        <div class="report-loading"><div class="loading-spinner"></div><p>Loading report...</p></div>
+    }
+    else if (hasRun && !employeeSummaries.Any())
+    {
+        <div class="report-empty"><p>No time punch records found for the selected range.</p></div>
+    }
+    else if (employeeSummaries.Any())
+    {
+        <div class="report-summary-bar">
+            <div class="summary-chip">Period: <strong>@reportDateLabel</strong></div>
+            <div class="summary-chip">Employees: <strong>@employeeSummaries.Count</strong></div>
+            <div class="summary-chip">Total Regular: <strong>@employeeSummaries.Sum(e => e.RegularHours).ToString("F1")h</strong></div>
+            <div class="summary-chip">Total OT: <strong>@employeeSummaries.Sum(e => e.OvertimeHours).ToString("F1")h</strong></div>
+        </div>
+        @foreach (var emp in employeeSummaries.OrderBy(e => e.LastName).ThenBy(e => e.FirstName))
+        {
+            <div class="employee-report-card">
+                <div class="employee-card-header" @onclick="() => ToggleEmployee(emp.EmployeeId)">
+                    <div class="emp-name-block">
+                        <strong>@emp.LastName, @emp.FirstName</strong>
+                        <span class="emp-id">ID: @emp.IdNumber</span>
+                        @if (!string.IsNullOrEmpty(emp.DepartmentName))
+                        {
+                            <span class="emp-dept">@emp.DepartmentName</span>
+                        }
+                    </div>
+                    <div class="emp-hours-summary">
+                        <span class="hours-chip reg">Reg: @emp.RegularHours.ToString("F1")h</span>
+                        @if (emp.OvertimeHours > 0)
+                        {
+                            <span class="hours-chip ot">OT: @emp.OvertimeHours.ToString("F1")h</span>
+                        }
+                        <span class="hours-chip total">Total: @emp.TotalHours.ToString("F1")h</span>
+                        <span class="expand-icon">@(expandedEmployees.Contains(emp.EmployeeId) ? "ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â²" : "ÃƒÂ¢Ã¢â‚¬â€œÃ‚Â¼")</span>
+                    </div>
+                </div>
+                @if (expandedEmployees.Contains(emp.EmployeeId))
+                {
+                    <div class="punch-detail-table">
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Clock In</th>
+                                    <th>Clock Out</th>
+                                    <th>Regular</th>
+                                    <th>OT</th>
+                                    <th>Total</th>
+                                    <th>Campus</th>
+                                    <th>Notes</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var day in emp.DailyRows.OrderBy(d => d.WorkDate))
+                                {
+                                    <tr class="@(day.HasException ? "row-exception" : "")">
+                                        <td>@day.WorkDate.ToString("ddd M/d")</td>
+                                        <td>@(day.ClockIn.HasValue ? day.ClockIn.Value.ToString("h:mm tt") : "—")</td>
+                                        <td>@(day.ClockOut.HasValue ? day.ClockOut.Value.ToString("h:mm tt") : "—")</td>
+                                        <td>@day.RegularHours.ToString("F1")</td>
+                                        <td>@(day.OvertimeHours > 0 ? day.OvertimeHours.ToString("F1") : "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â")</td>
+                                        <td><strong>@day.TotalHours.ToString("F1")</strong></td>
+                                        <td>@day.CampusName</td>
+                                        <td>@day.ExceptionNotes</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+    }
+</div>
+@code {
+    private string dateMode = "payperiod";
+    private int periodOffset = 0;
+    private DateTime customStart = DateTime.Today.AddDays(-13);
+    private DateTime customEnd = DateTime.Today;
+    private string employeeSearch = "";
+    private bool isLoading = false;
+    private bool hasRun = false;
+    private string errorMsg = "";
+    private string reportDateLabel = "";
+    private PayPeriodInfo? currentPayPeriod;
+    private List<EmployeeReportSummary> employeeSummaries = new();
+    private HashSet<int> expandedEmployees = new();
+    protected override void OnInitialized()
+    {
+        currentPayPeriod = PayPeriodService.GetPayPeriodForDate(DateTime.Today);
+    }
+    private void PrevPeriod()
+    {
+        periodOffset--;
+        var anchor = DateTime.Today.AddDays(periodOffset * 15);
+        currentPayPeriod = PayPeriodService.GetPayPeriodForDate(anchor);
+    }
+    private void NextPeriod()
+    {
+        if (periodOffset < 0)
+        {
+            periodOffset++;
+            var anchor = DateTime.Today.AddDays(periodOffset * 15);
+            currentPayPeriod = PayPeriodService.GetPayPeriodForDate(anchor);
+        }
+    }
+    private void ToggleEmployee(int empId)
+    {
+        if (expandedEmployees.Contains(empId)) expandedEmployees.Remove(empId);
+        else expandedEmployees.Add(empId);
+        StateHasChanged();
+    }
+    private async Task RunReport()
+    {
+        isLoading = true;
+        hasRun = true;
+        errorMsg = "";
+        employeeSummaries.Clear();
+        expandedEmployees.Clear();
+        StateHasChanged();
+        DateTime startDate, endDate;
+        if (dateMode == "payperiod" && currentPayPeriod != null)
+        {
+            startDate = currentPayPeriod.StartDate.ToDateTime(TimeOnly.MinValue);
+            endDate = currentPayPeriod.EndDate.ToDateTime(TimeOnly.MaxValue);
+            reportDateLabel = currentPayPeriod.PeriodName;
+        }
+        else
+        {
+            if (customEnd < customStart)
+            {
+                errorMsg = "End date must be on or after start date.";
+                isLoading = false;
+                return;
+            }
+            startDate = customStart;
+            endDate = customEnd;
+            reportDateLabel = $"{customStart:MMM d} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ {customEnd:MMM d, yyyy}";
+        }
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var campuses = await ctx.Campuses.AsNoTracking().ToListAsync();
+            var empQuery = ctx.TcEmployees.AsNoTracking()
+                .Include(e => e.Staff)
+                .Where(e => e.IsActive);
+            if (!string.IsNullOrWhiteSpace(employeeSearch))
+            {
+                var search = employeeSearch.ToLower();
+                empQuery = empQuery.Where(e =>
+                    (e.Staff != null && e.Staff.FirstName != null && e.Staff.FirstName.ToLower().Contains(search)) ||
+                    (e.Staff != null && e.Staff.LastName != null && e.Staff.LastName.ToLower().Contains(search)) ||
+                    e.IdNumber.ToLower().Contains(search));
+            }
+            var employees = await empQuery.ToListAsync();
+            var timecards = await ctx.TcDailyTimecards.AsNoTracking()
+                .Where(tc => tc.WorkDate >= DateOnly.FromDateTime(startDate) && tc.WorkDate <= DateOnly.FromDateTime(endDate))
+                .ToListAsync();
+            var punches = await ctx.TcTimePunches.AsNoTracking()
+                .Where(p => p.PunchDateTime.Date >= startDate && p.PunchDateTime.Date <= endDate)
+                .OrderBy(p => p.PunchDateTime)
+                .ToListAsync();
+            foreach (var emp in employees)
+            {
+                var empTimecards = timecards.Where(tc => tc.EmployeeId == emp.EmployeeId).ToList();
+                var empPunches = punches.Where(p => p.EmployeeId == emp.EmployeeId).ToList();
+                if (!empTimecards.Any() && !empPunches.Any()) continue;
+                var summary = new EmployeeReportSummary
+                {
+                    EmployeeId = emp.EmployeeId,
+                    IdNumber = emp.IdNumber,
+                    FirstName = emp.Staff?.FirstName ?? "",
+                    LastName = emp.Staff?.LastName ?? "",
+                    DepartmentName = emp.DepartmentName ?? "",
+                    RegularHours = empTimecards.Sum(tc => (double)tc.RegularHours),
+                    OvertimeHours = empTimecards.Sum(tc => (double)tc.OvertimeHours),
+                    TotalHours = empTimecards.Sum(tc => (double)tc.TotalHours)
+                };
+                foreach (var tc in empTimecards)
+                {
+                    var dayPunches = empPunches.Where(p => DateOnly.FromDateTime(p.PunchDateTime) == tc.WorkDate).OrderBy(p => p.PunchDateTime).ToList();
+                    var clockIn = dayPunches.FirstOrDefault(p => p.PunchType == PunchType.In);
+                    var clockOut = dayPunches.LastOrDefault(p => p.PunchType == PunchType.Out);
+                    var campus = campuses.FirstOrDefault(c => c.CampusId == tc.CampusId);
+                    summary.DailyRows.Add(new DailyRow
+                    {
+                        WorkDate = tc.WorkDate,
+                        ClockIn = clockIn?.PunchDateTime,
+                        ClockOut = clockOut?.PunchDateTime,
+                        RegularHours = (double)tc.RegularHours,
+                        OvertimeHours = (double)tc.OvertimeHours,
+                        TotalHours = (double)tc.TotalHours,
+                        CampusName = campus?.CampusName ?? "",
+                        HasException = tc.HasException,
+                        ExceptionNotes = tc.ExceptionNotes ?? ""
+                    });
+                }
+                employeeSummaries.Add(summary);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error running timeclock report");
+            errorMsg = "An error occurred loading the report. See application logs.";
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+    private async Task ExportCsv()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Employee,ID,Department,Date,Clock In,Clock Out,Regular,OT,Total,Campus,Exception");
+        foreach (var emp in employeeSummaries.OrderBy(e => e.LastName).ThenBy(e => e.FirstName))
+        {
+            if (!emp.DailyRows.Any())
+            {
+                sb.AppendLine($"{Csv(emp.LastName + ", " + emp.FirstName)},{emp.IdNumber},{Csv(emp.DepartmentName)},,,,{emp.RegularHours:F1},{emp.OvertimeHours:F1},{emp.TotalHours:F1},,");
+                continue;
+            }
+            foreach (var d in emp.DailyRows.OrderBy(r => r.WorkDate))
+            {
+                var ci = d.ClockIn.HasValue ? d.ClockIn.Value.ToString("h:mm tt") : "";
+                var co = d.ClockOut.HasValue ? d.ClockOut.Value.ToString("h:mm tt") : "";
+                var exc = d.HasException ? "Yes" : "";
+                sb.AppendLine($"{Csv(emp.LastName + ", " + emp.FirstName)},{emp.IdNumber},{Csv(emp.DepartmentName)},{d.WorkDate:yyyy-MM-dd},{ci},{co},{d.RegularHours:F1},{d.OvertimeHours:F1},{d.TotalHours:F1},{Csv(d.CampusName)},{exc}");
+            }
+        }
+        var label = reportDateLabel.Replace(" ", "_").Replace(",", "");
+        var fileName = $"TimeClock_{label}.csv";
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        await JS.InvokeVoidAsync("downloadFile", fileName, "text/csv", Convert.ToBase64String(bytes));
+    }
+    private static string Csv(string s) { return "\"" + s.Replace("\"", "'") + "\""; }
+    private class EmployeeReportSummary
+    {
+        public int EmployeeId { get; set; }
+        public string IdNumber { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string DepartmentName { get; set; } = "";
+        public double RegularHours { get; set; }
+        public double OvertimeHours { get; set; }
+        public double TotalHours { get; set; }
+        public List<DailyRow> DailyRows { get; set; } = new();
+    }
+    private class DailyRow
+    {
+        public DateOnly WorkDate { get; set; }
+        public DateTime? ClockIn { get; set; }
+        public DateTime? ClockOut { get; set; }
+        public double RegularHours { get; set; }
+        public double OvertimeHours { get; set; }
+        public double TotalHours { get; set; }
+        public string CampusName { get; set; } = "";
+        public bool HasException { get; set; }
+        public string ExceptionNotes { get; set; } = "";
+    }
+}

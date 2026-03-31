@@ -1,0 +1,490 @@
+@page "/reports/safety"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Text
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IJSRuntime JS
+@inject ILogger<SafetyReport> Logger
+
+<PageTitle>Safety Report - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="report-page">
+    <div class="report-header">
+        <div class="report-title-block">
+            <h1>Campus Safety Report</h1>
+            <p class="report-subtitle">Historical attendance by date</p>
+        </div>
+        <div class="report-controls">
+            <div class="control-group">
+                <label>Date</label>
+                <input type="date" @bind="selectedDate" class="date-input" />
+            </div>
+            <div class="control-group">
+                <label>Campus</label>
+                <select @bind="selectedCampusId" class="campus-select">
+                    <option value="0">All Campuses</option>
+                    @foreach (var campus in campusList)
+                    {
+                        <option value="@campus.CampusId">@campus.CampusName</option>
+                    }
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Person Type</label>
+                <select @bind="personTypeFilter" class="campus-select">
+                    <option value="">All</option>
+                    <option value="STAFF">Staff</option>
+                    <option value="STUDENT">Students</option>
+                </select>
+            </div>
+            <button class="btn-run" @onclick="RunReport" disabled="@isLoading">Run Report</button>
+            @if (reportRows.Any())
+            {
+                <button class="btn-export" @onclick="ExportCsv">Export CSV</button>
+            }
+        </div>
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="report-loading">
+            <div class="loading-spinner"></div>
+            <p>Loading report...</p>
+        </div>
+    }
+    else if (hasRun && !reportRows.Any())
+    {
+        <div class="report-empty">
+            <p>No attendance records found for @selectedDate.ToString("MMMM d, yyyy").</p>
+        </div>
+    }
+    else if (reportRows.Any())
+    {
+        <div class="report-summary-bar">
+            <div class="summary-chip">Date: <strong>@selectedDate.ToString("MMMM d, yyyy")</strong></div>
+            <div class="summary-chip">Total Visitors: <strong>@reportRows.Count</strong></div>
+            <div class="summary-chip">Staff: <strong>@reportRows.Count(r => r.PersonType == "STAFF")</strong></div>
+            <div class="summary-chip">Students: <strong>@reportRows.Count(r => r.PersonType == "STUDENT")</strong></div>
+        </div>
+
+        <div class="report-table-wrap">
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th @onclick='@(() => SortBy("Name"))' class='sortable @(sortCol == "Name" ? "sorted" : "")'>
+                            Name @SortArrow("Name")
+                        </th>
+                        <th>Type</th>
+                        <th>ID</th>
+                        <th>Campus</th>
+                        <th @onclick='@(() => SortBy("ArrivalTime"))' class='sortable @(sortCol == "ArrivalTime" ? "sorted" : "")'>
+                            Arrival @SortArrow("ArrivalTime")
+                        </th>
+                        <th @onclick='@(() => SortBy("DepartureTime"))' class='sortable @(sortCol == "DepartureTime" ? "sorted" : "")'>
+                            Departure @SortArrow("DepartureTime")
+                        </th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in SortedRows)
+                    {
+                        <tr class="@(row.IsOnSite ? "row-onsite" : "")">
+                            <td class="name-col">
+                                @if (row.ScanCount > 1)
+                                {
+                                    <button class="expand-btn" @onclick="@(() => ToggleExpand(row))">
+                                        <span class="expand-icon @(row.IsExpanded ? "expanded" : "")">▶</span>
+                                    </button>
+                                }
+                                <strong>@row.LastName</strong>, @row.FirstName
+                                @if (row.ScanCount > 1)
+                                {
+                                    <span class="scan-count-badge">@row.ScanCount scans</span>
+                                }
+                            </td>
+                            <td><span class="type-badge @row.PersonType.ToLower()">@row.PersonType</span></td>
+                            <td>@row.IdNumber</td>
+                            <td>@row.CampusName</td>
+                            <td>@(row.ArrivalTime?.ToString("h:mm tt") ?? "—")</td>
+                            <td>@(row.DepartureTime?.ToString("h:mm tt") ?? "—")</td>
+                            <td>@row.DurationDisplay</td>
+                            <td>
+                                @if (row.IsOnSite)
+                                {
+                                    <span class="status-badge onsite">On Site</span>
+                                }
+                                else
+                                {
+                                    <span class="status-badge departed">Departed</span>
+                                }
+                            </td>
+                        </tr>
+                        @if (row.IsExpanded && row.AllPunches.Any())
+                        {
+                            <tr class="punch-history-row">
+                                <td colspan="8">
+                                    <div class="punch-history">
+                                        <h4>Punch History</h4>
+                                        <div class="punch-timeline">
+                                            @foreach (var punch in row.AllPunches)
+                                            {
+                                                <div class="punch-item @GetPunchTypeBadge(punch.ScanType)">
+                                                    <span class="punch-time">@punch.ScanTimeCst.ToString("h:mm:ss tt")</span>
+                                                    <span class="punch-type-badge @GetPunchTypeBadge(punch.ScanType)">@FormatScanType(punch.ScanType)</span>
+                                                </div>
+                                            }
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+<style>
+    .expand-btn {
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 0 8px;
+        margin-right: 4px;
+        color: #6b7280;
+        font-size: 0.75rem;
+        transition: color 0.2s;
+    }
+
+    .expand-btn:hover {
+        color: #111827;
+    }
+
+    .expand-icon {
+        display: inline-block;
+        transition: transform 0.2s;
+    }
+
+    .expand-icon.expanded {
+        transform: rotate(90deg);
+    }
+
+    .scan-count-badge {
+        margin-left: 8px;
+        font-size: 0.7rem;
+        color: #6b7280;
+        font-weight: normal;
+    }
+
+    .punch-history-row {
+        background: #f9fafb;
+    }
+
+    .punch-history {
+        padding: 16px 24px;
+        border-left: 3px solid #e5e7eb;
+    }
+
+    .punch-history h4 {
+        margin: 0 0 12px 0;
+        font-size: 0.9rem;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .punch-timeline {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .punch-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 12px;
+        background: white;
+        border-radius: 6px;
+        border-left: 3px solid #e5e7eb;
+    }
+
+    .punch-item.in {
+        border-left-color: #10b981;
+        background: #f0fdf4;
+    }
+
+    .punch-item.out {
+        border-left-color: #ef4444;
+        background: #fef2f2;
+    }
+
+    .punch-time {
+        font-weight: 600;
+        font-size: 0.9rem;
+        color: #111827;
+        min-width: 100px;
+    }
+
+    .punch-type-badge {
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+
+    .punch-type-badge.in {
+        background: #10b981;
+        color: white;
+    }
+
+    .punch-type-badge.out {
+        background: #ef4444;
+        color: white;
+    }
+</style>
+
+@code {
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+
+    private DateTime selectedDate = DateTime.Today;
+    private int selectedCampusId = 0;
+    private string personTypeFilter = "";
+    private bool isLoading = false;
+    private bool hasRun = false;
+    private string sortCol = "ArrivalTime";
+    private bool sortAsc = true;
+
+    private List<Campus> campusList = new();
+    private List<SafetyReportRow> reportRows = new();
+
+    private IEnumerable<SafetyReportRow> SortedRows => sortCol switch
+    {
+        "Name" => sortAsc
+            ? reportRows.OrderBy(r => r.LastName).ThenBy(r => r.FirstName)
+            : reportRows.OrderByDescending(r => r.LastName).ThenByDescending(r => r.FirstName),
+        "DepartureTime" => sortAsc
+            ? reportRows.OrderBy(r => r.DepartureTime)
+            : reportRows.OrderByDescending(r => r.DepartureTime),
+        _ => sortAsc
+            ? reportRows.OrderBy(r => r.ArrivalTime)
+            : reportRows.OrderByDescending(r => r.ArrivalTime)
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        campusList = await ctx.Campuses.AsNoTracking()
+            .OrderBy(c => c.CampusName)
+            .ToListAsync();
+    }
+
+    private async Task RunReport()
+    {
+        isLoading = true;
+        hasRun = true;
+        reportRows.Clear();
+        StateHasChanged();
+
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var campuses = await ctx.Campuses.AsNoTracking().ToListAsync();
+
+            // Convert selected date to UTC for database query
+            var startUtc = TimeZoneInfo.ConvertTimeToUtc(selectedDate.Date, CentralTimeZone);
+            var endUtc = TimeZoneInfo.ConvertTimeToUtc(selectedDate.Date.AddDays(1), CentralTimeZone);
+
+            var query = ctx.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.ScanDateTime >= startUtc && t.ScanDateTime < endUtc);
+
+            if (selectedCampusId > 0)
+                query = query.Where(t => t.CampusId == selectedCampusId);
+
+            if (!string.IsNullOrEmpty(personTypeFilter))
+                query = query.Where(t => t.TransactionType == personTypeFilter);
+
+            var transactions = await query.OrderBy(t => t.ScanDateTime).ToListAsync();
+
+            var grouped = transactions
+                .GroupBy(t => new { t.IdNumber, t.TransactionType, t.CampusId })
+                .ToList();
+
+            foreach (var group in grouped)
+            {
+                var scans = group.OrderBy(t => t.ScanDateTime).ToList();
+                var campus = campuses.FirstOrDefault(c => c.CampusId == group.Key.CampusId);
+
+                // Convert all scan times to CST
+                var allPunches = scans.Select(s => new PunchHistory
+                {
+                    ScanTimeCst = TimeZoneInfo.ConvertTimeFromUtc(s.ScanDateTime, CentralTimeZone),
+                    ScanType = s.ScanType
+                }).ToList();
+
+                var firstIn = scans.FirstOrDefault(s => s.ScanType == "CAMPUS_IN" || s.ScanType == "LUNCH_IN");
+                var lastOut = scans.LastOrDefault(s => s.ScanType == "CAMPUS_OUT" || s.ScanType == "LUNCH_OUT");
+                var lastScan = scans.Last();
+
+                bool isOnSite = lastScan.ScanType == "CAMPUS_IN" || lastScan.ScanType == "LUNCH_IN";
+
+                DateTime? arrivalCst = firstIn != null
+                    ? TimeZoneInfo.ConvertTimeFromUtc(firstIn.ScanDateTime, CentralTimeZone)
+                    : null;
+
+                DateTime? departureCst = null;
+                if (!isOnSite && lastOut != null)
+                {
+                    departureCst = TimeZoneInfo.ConvertTimeFromUtc(lastOut.ScanDateTime, CentralTimeZone);
+                }
+                else if (!isOnSite && lastOut == null)
+                {
+                    departureCst = TimeZoneInfo.ConvertTimeFromUtc(lastScan.ScanDateTime, CentralTimeZone);
+                }
+
+                // Calculate duration in CST
+                string durationDisplay = "";
+                if (arrivalCst.HasValue)
+                {
+                    var endCst = departureCst ?? (isOnSite
+                        ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone)
+                        : TimeZoneInfo.ConvertTimeFromUtc(lastScan.ScanDateTime, CentralTimeZone));
+
+                    var dur = endCst - arrivalCst.Value;
+                    durationDisplay = dur.TotalHours >= 1
+                        ? $"{(int)dur.TotalHours}h {dur.Minutes:D2}m"
+                        : $"{dur.Minutes}m";
+                }
+
+                var sample = scans.First();
+                reportRows.Add(new SafetyReportRow
+                {
+                    IdNumber = sample.IdNumber,
+                    FirstName = sample.FirstName,
+                    LastName = sample.LastName,
+                    PersonType = sample.TransactionType,
+                    CampusId = group.Key.CampusId,
+                    CampusName = campus?.CampusName ?? "Unknown",
+                    ArrivalTime = arrivalCst,
+                    DepartureTime = departureCst,
+                    IsOnSite = isOnSite,
+                    DurationDisplay = durationDisplay,
+                    ScanCount = scans.Count,
+                    AllPunches = allPunches,
+                    IsExpanded = false
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error running safety report for {Date}", selectedDate);
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleExpand(SafetyReportRow row)
+    {
+        row.IsExpanded = !row.IsExpanded;
+        StateHasChanged();
+    }
+
+    private string GetPunchTypeBadge(string scanType)
+    {
+        return scanType switch
+        {
+            "CAMPUS_IN" or "LUNCH_IN" => "in",
+            "CAMPUS_OUT" or "LUNCH_OUT" => "out",
+            _ => ""
+        };
+    }
+
+    private string FormatScanType(string scanType)
+    {
+        return scanType switch
+        {
+            "CAMPUS_IN" => "Check In",
+            "CAMPUS_OUT" => "Check Out",
+            "LUNCH_IN" => "Lunch In",
+            "LUNCH_OUT" => "Lunch Out",
+            _ => scanType
+        };
+    }
+
+    private void SortBy(string col)
+    {
+        if (sortCol == col)
+            sortAsc = !sortAsc;
+        else
+        {
+            sortCol = col;
+            sortAsc = true;
+        }
+        StateHasChanged();
+    }
+
+    private string SortArrow(string col)
+    {
+        if (sortCol != col) return "";
+        return sortAsc ? " ▲" : " ▼";
+    }
+
+    private async Task ExportCsv()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Last Name,First Name,Type,ID,Campus,Arrival,Departure,Duration,Status");
+
+        foreach (var r in SortedRows)
+        {
+            var arr = r.ArrivalTime?.ToString("h:mm tt") ?? "";
+            var dep = r.DepartureTime?.ToString("h:mm tt") ?? "";
+            var status = r.IsOnSite ? "On Site" : "Departed";
+
+            sb.AppendLine($"{Csv(r.LastName)},{Csv(r.FirstName)},{r.PersonType},{r.IdNumber},{Csv(r.CampusName)},{arr},{dep},{r.DurationDisplay},{status}");
+        }
+
+        var fileName = $"SafetyReport_{selectedDate:yyyyMMdd}.csv";
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        await JS.InvokeVoidAsync("downloadFile", fileName, "text/csv", Convert.ToBase64String(bytes));
+    }
+
+    private static string Csv(string s)
+    {
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    private class PunchHistory
+    {
+        public DateTime ScanTimeCst { get; set; }
+        public string ScanType { get; set; } = "";
+    }
+
+    private class SafetyReportRow
+    {
+        public string IdNumber { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string PersonType { get; set; } = "";
+        public int CampusId { get; set; }
+        public string CampusName { get; set; } = "";
+        public DateTime? ArrivalTime { get; set; }
+        public DateTime? DepartureTime { get; set; }
+        public bool IsOnSite { get; set; }
+        public string DurationDisplay { get; set; } = "";
+        public int ScanCount { get; set; }
+        public List<PunchHistory> AllPunches { get; set; } = new();
+        public bool IsExpanded { get; set; }
+    }
+}

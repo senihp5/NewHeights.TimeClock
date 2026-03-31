@@ -1,0 +1,26 @@
+@page "/"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAnyStaff")]
+@using NewHeights.TimeClock.Shared.Constants
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>@AppConstants.Branding.SchoolName</PageTitle>
+
+<div class="home-container" style="@(_checked ? &quot;&quot; : &quot;visibility:hidden&quot;)">
+    <AuthorizeView>
+        <Authorized>
+            <div class="home-auth-layout">
+
+                <div class="home-brand-bar">
+                    <a href="@AppConstants.Branding.Website" target="_blank">
+                        <img src="/images/logo.jpg" alt="New Heights" class="home-logo-small" />
+                    </a>
+                    <div class="home-brand-text">
+                        <span class="home-school-name">@AppConstants.Branding.SchoolName</span>
+                    </div>
+                </div>
+

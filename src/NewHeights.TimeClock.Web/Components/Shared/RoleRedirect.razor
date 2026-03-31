@@ -1,10 +1,13 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @inject NavigationManager Nav
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IJSRuntime JS
 
 @code {
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (!firstRender) return;
+
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         var user = authState.User;
 
@@ -14,7 +17,18 @@
             return;
         }
 
-        // Hourly employees (campus-scoped or flat) and substitutes -> Mobile Clock
+        // Detect mobile device
+        bool isMobile = false;
+        try
+        {
+            var ua = await JS.InvokeAsync<string>("getUserAgent");
+            isMobile = System.Text.RegularExpressions.Regex.IsMatch(ua,
+                @"Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+        catch { }
+
+        // Hourly employees and substitutes -> Mobile Clock
         if (user.IsInRole("TimeClock.Employee") ||
             user.IsInRole("TimeClock.Employee.StopSix") ||
             user.IsInRole("TimeClock.Employee.McCart") ||
@@ -24,7 +38,7 @@
             return;
         }
 
-        // Supervisors (campus-scoped or flat) -> Team Timesheets
+        // Supervisors -> Home dashboard
         if (user.IsInRole("TimeClock.Supervisor") ||
             user.IsInRole("TimeClock.Supervisor.StopSix") ||
             user.IsInRole("TimeClock.Supervisor.McCart"))
@@ -33,28 +47,35 @@
             return;
         }
 
-        // HR staff -> Payroll Review
+        // HR staff -> Home dashboard
         if (user.IsInRole("TimeClock.HR"))
         {
             Nav.NavigateTo("/", forceLoad: false);
             return;
         }
 
-        // Campus admins -> Reception Dashboard
+        // Campus admins -> Home dashboard
         if (user.IsInRole("TimeClock.CampusAdmin"))
         {
             Nav.NavigateTo("/", forceLoad: false);
             return;
         }
 
-        // All other salaried staff (AllStaff) -> Campus Check-In
-        if (user.IsInRole("TimeClock.AllStaff"))
+        // AllStaff (salaried) on mobile -> Campus Check-In
+        if (user.IsInRole("TimeClock.AllStaff") && isMobile)
         {
             Nav.NavigateTo("/mobile/checkin", forceLoad: false);
             return;
         }
 
-        // Authenticated but not in any known TimeClock group -> Access Denied
+        // AllStaff on desktop -> Home
+        if (user.IsInRole("TimeClock.AllStaff"))
+        {
+            Nav.NavigateTo("/", forceLoad: false);
+            return;
+        }
+
+        // Authenticated but no TimeClock group -> Access Denied
         Nav.NavigateTo("/access-denied", forceLoad: false);
     }
 }

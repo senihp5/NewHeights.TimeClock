@@ -1,4 +1,4 @@
-﻿using NewHeights.TimeClock.Shared.Enums;
+using NewHeights.TimeClock.Shared.Enums;
 
 namespace NewHeights.TimeClock.Data.Entities;
 
@@ -20,11 +20,27 @@ public class TcTimePunch
     public PunchStatus PunchStatus { get; set; } = PunchStatus.Active;
     public long? PairedPunchId { get; set; }
     public bool IsManualEntry { get; set; } = false;
+    public bool IsAutoCheckout { get; set; } = false;
     public bool IsModified { get; set; } = false;
     public DateTime? OriginalPunchDateTime { get; set; }
     public string? ModifiedBy { get; set; }
     public string? ModifiedReason { get; set; }
     public string? Notes { get; set; }
+
+    // Added in migration 002
+    // STANDARD, LUNCH, MEETING, MEDICAL, EARLY_ARRIVAL,
+    // CLASS_CHECKIN, CLASS_CHECKOUT, CAMPUS_ARRIVAL, CAMPUS_DEPARTURE
+    public string? PunchSubType { get; set; }
+
+    // PowerSchool section ID for classroom QR punches
+    public string? SectionId { get; set; }
+
+    // KIOSK, MOBILE, MANUAL, SYSTEM, QR_CAMPUS, QR_CLASS
+    public string? PunchSource { get; set; }
+
+    // DAY or NIGHT - derived from punch time vs TC_StaffHoursWindow
+    public string? SessionType { get; set; }
+
     public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
     // Navigation

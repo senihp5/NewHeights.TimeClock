@@ -131,3 +131,42 @@ window.qrScanner = {
         });
     }
 };
+
+window.blazorReconnection = {
+    dotNetHelper: null,
+    retryCount: 0,
+    maxRetries: 999,
+
+    init: function(dotNetRef) {
+        this.dotNetHelper = dotNetRef;
+        this.setupReconnectionHandlers();
+    },
+
+    setupReconnectionHandlers: function() {
+        Blazor.defaultReconnectionHandler._reconnectCallback = async (d) => {
+            console.log('[Kiosk] Blazor reconnection attempt', this.retryCount);
+            
+            for (let i = 0; i < this.maxRetries; i++) {
+                this.retryCount = i + 1;
+                console.log(`[Kiosk] Reconnection attempt ${this.retryCount}/${this.maxRetries}`);
+                
+                await new Promise(resolve => setTimeout(resolve, i < 3 ? 1000 : 5000));
+                
+                if (await Blazor.reconnect()) {
+                    console.log('[Kiosk] Reconnection successful');
+                    this.retryCount = 0;
+                    
+                    if (this.dotNetHelper) {
+                        this.dotNetHelper.invokeMethodAsync('OnReconnected');
+                    }
+                    return;
+                }
+            }
+            
+            console.error('[Kiosk] Reconnection failed after max retries');
+            location.reload();
+        };
+        
+        console.log('[Kiosk] Reconnection handlers configured');
+    }
+};

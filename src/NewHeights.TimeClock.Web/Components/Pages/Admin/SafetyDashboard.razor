@@ -4,14 +4,16 @@
 @layout KioskLayout
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @rendermode InteractiveServer
-@attribute [Authorize(Policy = "RequireCampusAdmin")]
+@attribute [Authorize(Policy = "RequireReception")]
 @using NewHeights.TimeClock.Shared.Constants
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
 @using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Web.Services
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IJSRuntime JS
 @inject ILogger<SafetyDashboard> Logger
+@inject IUserContextService UserCtx
 @implements IAsyncDisposable
 
 <PageTitle>Safety Dashboard - @AppConstants.Branding.ShortName</PageTitle>
@@ -19,23 +21,25 @@
 <div class="safety-dashboard">
     <header class="dashboard-header">
         <div class="header-left">
-            <h1>🛡️ Safety Dashboard</h1>
-            <p class="subtitle">Real-time Campus Presence Monitoring</p>
+            <h1>&#128737; Safety Dashboard</h1>
+            <p class="subtitle">
+                @if (_isDistrictView)
+                {
+                    <span>All Campuses</span>
+                }
+                else
+                {
+                    <span>@_userCampusName</span>
+                }
+            </p>
         </div>
         <div class="header-right">
             <span class="last-updated">Last updated: @lastRefresh.ToString("h:mm:ss tt")</span>
             <button class="btn-refresh" @onclick="RefreshData" disabled="@isLoading">
-                @if (isLoading)
-                {
-                    <span>⏳ Loading...</span>
-                }
-                else
-                {
-                    <span>🔄 Refresh</span>
-                }
+                @if (isLoading) { <span>Loading...</span> } else { <span>&#128260; Refresh</span> }
             </button>
             <button class="btn-emergency" @onclick="ShowEmergencyMuster">
-                🚨 Emergency Muster
+                &#128680; Emergency Muster
             </button>
         </div>
     </header>
@@ -45,7 +49,7 @@
         <div class="campus-cards">
             @foreach (var campus in campusStats)
             {
-                <div class="campus-card @(selectedCampusFilter == campus.CampusCode ? "selected" : "")" 
+                <div class="campus-card @(selectedCampusFilter == campus.CampusCode ? "selected" : "")"
                      @onclick="() => FilterByCampus(campus.CampusCode)">
                     <h3>@campus.CampusName</h3>
                     <div class="occupancy-stats">
@@ -64,46 +68,46 @@
                     </div>
                 </div>
             }
-            <div class="campus-card total-card @(selectedCampusFilter == "ALL" ? "selected" : "")"
-                 @onclick="() => FilterByCampus(null)">
-                <h3>All Campuses</h3>
-                <div class="occupancy-stats">
-                    <div class="stat-item staff">
-                        <span class="stat-value">@campusStats.Sum(c => c.StaffOnSite)</span>
-                        <span class="stat-label">Staff</span>
-                    </div>
-                    <div class="stat-item students">
-                        <span class="stat-value">@campusStats.Sum(c => c.StudentsOnSite)</span>
-                        <span class="stat-label">Students</span>
-                    </div>
-                    <div class="stat-item total">
-                        <span class="stat-value">@campusStats.Sum(c => c.TotalOnSite)</span>
-                        <span class="stat-label">Total</span>
+            @if (_isDistrictView && campusStats.Count > 1)
+            {
+                <div class="campus-card total-card @(selectedCampusFilter == null ? "selected" : "")"
+                     @onclick="@(() => FilterByCampus(null))">
+                    <h3>All Campuses</h3>
+                    <div class="occupancy-stats">
+                        <div class="stat-item staff">
+                            <span class="stat-value">@campusStats.Sum(c => c.StaffOnSite)</span>
+                            <span class="stat-label">Staff</span>
+                        </div>
+                        <div class="stat-item students">
+                            <span class="stat-value">@campusStats.Sum(c => c.StudentsOnSite)</span>
+                            <span class="stat-label">Students</span>
+                        </div>
+                        <div class="stat-item total">
+                            <span class="stat-value">@campusStats.Sum(c => c.TotalOnSite)</span>
+                            <span class="stat-label">Total</span>
+                        </div>
                     </div>
                 </div>
-            </div>
+            }
         </div>
     </div>
 
     <div class="main-content">
         <div class="onsite-panel">
             <div class="panel-header">
-                <h2>👥 Currently On Site</h2>
+                <h2>&#128100; Currently On Site</h2>
                 <div class="panel-controls">
-                    <input type="text" 
-                           @bind="searchTerm" 
+                    <input type="text"
+                           @bind="searchTerm"
                            @bind:event="oninput"
-                           @onkeyup="OnSearchKeyUp"
-                           placeholder="Search by name or ID..." 
+                           placeholder="Search by name or ID..."
                            class="search-input" />
                     <select @bind="personTypeFilter" class="filter-select">
                         <option value="">All People</option>
                         <option value="STAFF">Staff Only</option>
                         <option value="STUDENT">Students Only</option>
                     </select>
-                    <button class="btn-export" @onclick="ExportOnSiteList">
-                        📥 Export List
-                    </button>
+                    <button class="btn-export" @onclick="ExportOnSiteList">&#128196; Export</button>
                 </div>
             </div>
             <div class="onsite-table-container">
@@ -113,9 +117,16 @@
                             <th>Name</th>
                             <th>Type</th>
                             <th>ID</th>
-                            <th>Campus</th>
+                            @if (_isDistrictView)
+                            {
+                                <th>Campus</th>
+                            }
                             <th>Checked In</th>
                             <th>Duration</th>
+                            @if (_canEdit)
+                            {
+                                <th>Actions</th>
+                            }
                         </tr>
                     </thead>
                     <tbody>
@@ -124,33 +135,31 @@
                             @foreach (var person in filteredOnSiteList)
                             {
                                 <tr class="@person.TransactionType.ToLower()">
-                                    <td class="name-cell">
-                                        <strong>@person.LastName, @person.FirstName</strong>
-                                    </td>
-                                    <td>
-                                        <span class="type-badge @person.TransactionType.ToLower()">
-                                            @person.TransactionType
-                                        </span>
-                                    </td>
+                                    <td class="name-cell"><strong>@person.LastName</strong>, @person.FirstName</td>
+                                    <td><span class="type-badge @person.TransactionType.ToLower()">@person.TransactionType</span></td>
                                     <td>@person.IdNumber</td>
-                                    <td>@person.CampusName</td>
+                                    @if (_isDistrictView)
+                                    {
+                                        <td>@person.CampusName</td>
+                                    }
                                     <td>@person.CheckInTime.ToString("h:mm tt")</td>
                                     <td>@FormatDuration(person.CheckInTime)</td>
+                                    @if (_canEdit)
+                                    {
+                                        <td>
+                                            <button class="btn-action" @onclick="() => QuickCheckOut(person)" title="Check Out">
+                                                &#128682; Out
+                                            </button>
+                                        </td>
+                                    }
                                 </tr>
                             }
                         }
                         else
                         {
                             <tr>
-                                <td colspan="6" class="empty-message">
-                                    @if (isLoading)
-                                    {
-                                        <span>Loading...</span>
-                                    }
-                                    else
-                                    {
-                                        <span>No one currently on site matching filters</span>
-                                    }
+                                <td colspan="7" class="empty-message">
+                                    @(isLoading ? "Loading..." : "No one currently on site")
                                 </td>
                             </tr>
                         }
@@ -164,7 +173,7 @@
 
         <div class="activity-panel">
             <div class="panel-header">
-                <h2>📋 Live Activity</h2>
+                <h2>&#128228; Live Activity</h2>
                 <label class="auto-refresh-toggle">
                     <input type="checkbox" @bind="autoRefresh" />
                     Auto-refresh (30s)
@@ -184,16 +193,17 @@
                             <div class="activity-meta">
                                 <span class="activity-action">@FormatScanType(activity.ScanType)</span>
                                 <span class="activity-time">@activity.ScanDateTime.ToString("h:mm:ss tt")</span>
-                                <span class="activity-campus">@activity.CampusName</span>
+                                @if (_isDistrictView)
+                                {
+                                    <span class="activity-campus">@activity.CampusName</span>
+                                }
                             </div>
                         </div>
                     }
                 }
                 else
                 {
-                    <div class="empty-activity">
-                        <p>No activity recorded today</p>
-                    </div>
+                    <div class="empty-activity"><p>No activity recorded today</p></div>
                 }
             </div>
         </div>
@@ -205,98 +215,130 @@
     <div class="modal-overlay" @onclick="CloseEmergencyModal">
         <div class="modal-content emergency-modal" @onclick:stopPropagation>
             <div class="modal-header emergency">
-                <h2>🚨 Emergency Muster Report</h2>
-                <button class="modal-close" @onclick="CloseEmergencyModal">✕</button>
+                <h2>&#128680; Emergency Muster Report</h2>
+                <button class="modal-close" @onclick="CloseEmergencyModal">X</button>
             </div>
             <div class="modal-body">
-                <p class="emergency-notice">
-                    This report shows everyone currently checked in who has NOT checked out.
-                    Use this during emergencies to account for all personnel.
-                </p>
-                <div class="emergency-timestamp">
-                    Generated: @DateTime.Now.ToString("MMMM d, yyyy h:mm:ss tt")
-                </div>
-                
+                <p class="emergency-notice">Everyone currently checked in who has NOT checked out.</p>
+                <div class="emergency-timestamp">Generated: @DateTime.Now.ToString("MMMM d, yyyy h:mm:ss tt")</div>
                 @foreach (var campus in campusStats.Where(c => c.TotalOnSite > 0))
                 {
                     <div class="muster-campus">
                         <h3>@campus.CampusName (@campus.TotalOnSite people)</h3>
-                        <div class="muster-section">
-                            <h4>Staff (@campus.StaffOnSite)</h4>
-                            <ul class="muster-list">
-                                @foreach (var person in onSiteList.Where(p => 
-                                    p.CampusName == campus.CampusName && 
-                                    p.TransactionType == "STAFF").OrderBy(p => p.LastName))
-                                {
-                                    <li>☐ @person.LastName, @person.FirstName (@person.IdNumber)</li>
-                                }
-                            </ul>
-                        </div>
-                        <div class="muster-section">
-                            <h4>Students (@campus.StudentsOnSite)</h4>
-                            <ul class="muster-list">
-                                @foreach (var person in onSiteList.Where(p => 
-                                    p.CampusName == campus.CampusName && 
-                                    p.TransactionType == "STUDENT").OrderBy(p => p.LastName))
-                                {
-                                    <li>☐ @person.LastName, @person.FirstName (@person.IdNumber)</li>
-                                }
-                            </ul>
-                        </div>
+                        <h4>Staff (@campus.StaffOnSite)</h4>
+                        <ul class="muster-list">
+                            @foreach (var p in onSiteList.Where(x => x.CampusId == campus.CampusId && x.TransactionType == "STAFF").OrderBy(x => x.LastName))
+                            {
+                                <li>@p.LastName, @p.FirstName (@p.IdNumber)</li>
+                            }
+                        </ul>
+                        <h4>Students (@campus.StudentsOnSite)</h4>
+                        <ul class="muster-list">
+                            @foreach (var p in onSiteList.Where(x => x.CampusId == campus.CampusId && x.TransactionType == "STUDENT").OrderBy(x => x.LastName))
+                            {
+                                <li>@p.LastName, @p.FirstName (@p.IdNumber)</li>
+                            }
+                        </ul>
                     </div>
                 }
             </div>
             <div class="modal-footer">
-                <button class="btn-print" @onclick="PrintMusterReport">🖨️ Print Report</button>
-                <button class="btn-export" @onclick="ExportMusterReport">📥 Export CSV</button>
+                <button class="btn-print" @onclick="PrintMusterReport">Print Report</button>
+                <button class="btn-export" @onclick="ExportMusterReport">Export CSV</button>
                 <button class="btn-close" @onclick="CloseEmergencyModal">Close</button>
             </div>
         </div>
     </div>
 }
 
+@if (showCheckOutModal && checkOutPerson != null)
+{
+    <div class="modal-overlay" @onclick="CloseCheckOutModal">
+        <div class="modal-content" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>Check Out</h2>
+                <button class="modal-close" @onclick="CloseCheckOutModal">X</button>
+            </div>
+            <div class="modal-body">
+                <p>Check out <strong>@checkOutPerson.FirstName @checkOutPerson.LastName</strong>?</p>
+                <div class="form-group">
+                    <label>Time</label>
+                    <input type="time" @bind="checkOutTime" />
+                </div>
+                <div class="form-group">
+                    <label>Reason (optional)</label>
+                    <input type="text" @bind="checkOutNotes" placeholder="e.g. Left campus" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseCheckOutModal">Cancel</button>
+                <button class="btn-save" @onclick="SaveCheckOut">Confirm Check Out</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
+    private bool _isDistrictView = false;
+    private bool _canEdit = false;
+    private string _userCampusName = "";
+    private int? _userCampusId = null;
+
     private DateTime lastRefresh = DateTime.Now;
     private bool isLoading = false;
     private bool autoRefresh = true;
     private bool showEmergencyModal = false;
+    private bool showCheckOutModal = false;
     private string searchTerm = "";
     private string personTypeFilter = "";
     private string? selectedCampusFilter = null;
-    private string selectedCampusFilterDisplay => selectedCampusFilter ?? "ALL";
+
+    private OnSitePerson? checkOutPerson = null;
+    private TimeOnly checkOutTime = TimeOnly.FromDateTime(DateTime.Now);
+    private string checkOutNotes = "";
+    private string _currentUserName = "";
 
     private List<CampusStats> campusStats = new();
     private List<OnSitePerson> onSiteList = new();
     private List<ActivityItem> recentActivity = new();
-
     private System.Timers.Timer? refreshTimer;
 
     private List<OnSitePerson> filteredOnSiteList => onSiteList
-        .Where(p => string.IsNullOrEmpty(searchTerm) || 
+        .Where(p => string.IsNullOrEmpty(searchTerm) ||
                     p.FirstName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
                     p.LastName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
                     p.IdNumber.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
         .Where(p => string.IsNullOrEmpty(personTypeFilter) || p.TransactionType == personTypeFilter)
         .Where(p => selectedCampusFilter == null || p.CampusCode == selectedCampusFilter)
-        .OrderBy(p => p.LastName)
-        .ThenBy(p => p.FirstName)
+        .OrderBy(p => p.LastName).ThenBy(p => p.FirstName)
         .ToList();
 
     protected override async Task OnInitializedAsync()
     {
+        var ctx = await UserCtx.GetCurrentUserAsync();
+        _currentUserName = ctx.DisplayName;
+
+        // District view: HR, District role, or Admin see all campuses
+        _isDistrictView = ctx.IsHR || ctx.IsAdmin || ctx.IsDistrict;
+
+        // Can edit: HR (all campuses), Admin (all), Supervisor/CampusAdmin (own campus enforced by data scope)
+        _canEdit = ctx.IsHR || ctx.IsAdmin || ctx.IsSupervisor || ctx.IsCampusAdmin;
+
+        // Campus-scoped users: lock filter to their campus
+        if (!_isDistrictView)
+        {
+            _userCampusId = ctx.CampusId;
+            _userCampusName = ctx.CampusDisplayName;
+            selectedCampusFilter = ctx.CampusCode;
+        }
+
         await RefreshData();
-        
+
         refreshTimer = new System.Timers.Timer(30000);
         refreshTimer.Elapsed += async (s, e) =>
         {
             if (autoRefresh)
-            {
-                await InvokeAsync(async () =>
-                {
-                    await RefreshData();
-                    StateHasChanged();
-                });
-            }
+                await InvokeAsync(async () => { await RefreshData(); StateHasChanged(); });
         };
         refreshTimer.Start();
     }
@@ -304,23 +346,32 @@
     private async Task RefreshData()
     {
         if (isLoading) return;
-        
         isLoading = true;
         StateHasChanged();
-
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
             var today = DateTime.Today;
 
-            var campuses = await context.Campuses.AsNoTracking().ToListAsync();
+            // Exclude DISTRICT as a campus — district employees check in at physical campuses
+            var allCampuses = await context.Campuses.AsNoTracking()
+                .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
+                .OrderBy(c => c.CampusName)
+                .ToListAsync();
+
+            // Campus-scoped: filter to user''s campus only
+            var visibleCampuses = _isDistrictView
+                ? allCampuses
+                : allCampuses.Where(c => c.CampusId == _userCampusId).ToList();
+
+            var visibleCampusIds = visibleCampuses.Select(c => c.CampusId).ToList();
 
             var todayTransactions = await context.AttendanceTransactions.AsNoTracking()
-                .Where(t => t.ScanDateTime.Date == today)
+                .Where(t => t.ScanDateTime.Date == today && visibleCampusIds.Contains(t.CampusId))
                 .OrderByDescending(t => t.ScanDateTime)
                 .ToListAsync();
 
-            campusStats = campuses.Select(c => new CampusStats
+            campusStats = visibleCampuses.Select(c => new CampusStats
             {
                 CampusId = c.CampusId,
                 CampusCode = c.CampusCode,
@@ -328,20 +379,14 @@
             }).ToList();
 
             onSiteList.Clear();
-
-            var peopleWithScans = todayTransactions
-                .GroupBy(t => new { t.IdNumber, t.TransactionType })
-                .ToList();
-
-            foreach (var personGroup in peopleWithScans)
+            foreach (var personGroup in todayTransactions.GroupBy(t => new { t.IdNumber, t.TransactionType }))
             {
-                var orderedScans = personGroup.OrderByDescending(t => t.ScanDateTime).ToList();
-                var lastScan = orderedScans.First();
-
+                var ordered = personGroup.OrderByDescending(t => t.ScanDateTime).ToList();
+                var lastScan = ordered.First();
                 if (lastScan.ScanType == "CAMPUS_IN" || lastScan.ScanType == "LUNCH_IN")
                 {
-                    var campus = campuses.FirstOrDefault(c => c.CampusId == lastScan.CampusId);
-                    
+                    var campus = allCampuses.FirstOrDefault(c => c.CampusId == lastScan.CampusId);
+                    var firstIn = ordered.Last(s => s.ScanType == "CAMPUS_IN" || s.ScanType == "LUNCH_IN");
                     onSiteList.Add(new OnSitePerson
                     {
                         IdNumber = lastScan.IdNumber,
@@ -351,7 +396,7 @@
                         CampusId = lastScan.CampusId,
                         CampusCode = campus?.CampusCode ?? "",
                         CampusName = campus?.CampusName ?? "Unknown",
-                        CheckInTime = orderedScans.Last(s => s.ScanType == "CAMPUS_IN" || s.ScanType == "LUNCH_IN").ScanDateTime
+                        CheckInTime = firstIn.ScanDateTime
                     });
                 }
             }
@@ -364,7 +409,7 @@
 
             recentActivity = todayTransactions.Take(100).Select(t =>
             {
-                var campus = campuses.FirstOrDefault(c => c.CampusId == t.CampusId);
+                var campus = allCampuses.FirstOrDefault(c => c.CampusId == t.CampusId);
                 return new ActivityItem
                 {
                     TransactionId = t.TransactionId,
@@ -382,7 +427,7 @@
         }
         catch (Exception ex)
         {
-            Logger.LogError(ex, "Error refreshing safety dashboard data");
+            Logger.LogError(ex, "Error refreshing safety dashboard");
         }
         finally
         {
@@ -393,87 +438,103 @@
 
     private void FilterByCampus(string? campusCode)
     {
+        // Campus-scoped users cannot change filter
+        if (!_isDistrictView) return;
         selectedCampusFilter = campusCode;
         StateHasChanged();
     }
 
-    private void OnSearchKeyUp(KeyboardEventArgs e)
+    private void QuickCheckOut(OnSitePerson person)
     {
-        StateHasChanged();
+        checkOutPerson = person;
+        checkOutTime = TimeOnly.FromDateTime(DateTime.Now);
+        checkOutNotes = "";
+        showCheckOutModal = true;
     }
 
-    private void ShowEmergencyMuster()
+    private void CloseCheckOutModal() { showCheckOutModal = false; checkOutPerson = null; }
+
+    private async Task SaveCheckOut()
     {
-        showEmergencyModal = true;
+        if (checkOutPerson == null) return;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var t = new AttendanceTransaction
+            {
+                TransactionType = checkOutPerson.TransactionType,
+                IdNumber = checkOutPerson.IdNumber,
+                FirstName = checkOutPerson.FirstName,
+                LastName = checkOutPerson.LastName,
+                CampusId = checkOutPerson.CampusId,
+                LocationId = 1,
+                ScanDateTime = DateTime.Today.Add(checkOutTime.ToTimeSpan()),
+                ScanType = "CAMPUS_OUT",
+                ScanMethod = "MANUAL",
+                TerminalId = 0,
+                DataSource = "LOCAL",
+                ValidationStatus = "VALID",
+                Notes = string.IsNullOrWhiteSpace(checkOutNotes)
+                    ? $"[Safety Dashboard checkout by {_currentUserName}]"
+                    : $"[Safety Dashboard by {_currentUserName}] {checkOutNotes}",
+                CreatedDate = DateTime.UtcNow
+            };
+            context.AttendanceTransactions.Add(t);
+            await context.SaveChangesAsync();
+            Logger.LogInformation("Safety dashboard checkout: {Person} by {User}", checkOutPerson.IdNumber, _currentUserName);
+            CloseCheckOutModal();
+            await RefreshData();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving checkout");
+        }
     }
 
-    private void CloseEmergencyModal()
-    {
-        showEmergencyModal = false;
-    }
-
-    private async Task PrintMusterReport()
-    {
-        await JS.InvokeVoidAsync("print");
-    }
-
-    private async Task ExportMusterReport()
-    {
-        await ExportToCsv(onSiteList, "EmergencyMuster");
-    }
-
-    private async Task ExportOnSiteList()
-    {
-        await ExportToCsv(filteredOnSiteList, "OnSiteList");
-    }
+    private void ShowEmergencyMuster() { showEmergencyModal = true; }
+    private void CloseEmergencyModal() { showEmergencyModal = false; }
+    private async Task PrintMusterReport() { await JS.InvokeVoidAsync("print"); }
+    private async Task ExportMusterReport() { await ExportToCsv(onSiteList, "EmergencyMuster"); }
+    private async Task ExportOnSiteList() { await ExportToCsv(filteredOnSiteList, "OnSiteList"); }
 
     private async Task ExportToCsv(List<OnSitePerson> list, string prefix)
     {
         var csv = "Last Name,First Name,Type,ID,Campus,Check-In Time,Duration\n";
         foreach (var p in list.OrderBy(x => x.CampusName).ThenBy(x => x.LastName))
-        {
-            csv += $"\"{p.LastName}\",\"{p.FirstName}\",\"{p.TransactionType}\",\"{p.IdNumber}\",\"{p.CampusName}\",\"{p.CheckInTime:h:mm tt}\",\"{FormatDuration(p.CheckInTime)}\"\n";
-        }
-
+            csv += Q(p.LastName) + "," + Q(p.FirstName) + "," + p.TransactionType + "," + p.IdNumber + "," + Q(p.CampusName) + "," + p.CheckInTime.ToString("h:mm tt") + "," + FormatDuration(p.CheckInTime) + "\n";
         var fileName = $"{prefix}_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
         var bytes = System.Text.Encoding.UTF8.GetBytes(csv);
-        var base64 = Convert.ToBase64String(bytes);
-
-        await JS.InvokeVoidAsync("downloadFile", fileName, "text/csv", base64);
+        await JS.InvokeVoidAsync("downloadFile", fileName, "text/csv", Convert.ToBase64String(bytes));
     }
 
-    private static string FormatDuration(DateTime checkInTime)
+    private static string Q(string s)
     {
-        var duration = DateTime.Now - checkInTime;
-        if (duration.TotalHours >= 1)
-            return $"{(int)duration.TotalHours}h {duration.Minutes}m";
-        return $"{duration.Minutes}m";
+        return "\"" + s.Replace("\"", "''") + "\"";
+    }
+    private static string FormatDuration(DateTime t)
+    {
+        var d = DateTime.Now - t;
+        if (d.TotalHours >= 1) return ((int)d.TotalHours).ToString() + "h " + d.Minutes.ToString() + "m";
+        return d.Minutes.ToString() + "m";
+    }
+    private static string GetActivityIcon(string scanType)
+    {
+        if (scanType == "CAMPUS_IN") return "In";
+        if (scanType == "CAMPUS_OUT") return "Out";
+        if (scanType == "LUNCH_OUT") return "Lunch";
+        if (scanType == "LUNCH_IN") return "Back";
+        return "-";
+    }
+    private static string FormatScanType(string scanType)
+    {
+        if (scanType == "CAMPUS_IN") return "Checked In";
+        if (scanType == "CAMPUS_OUT") return "Checked Out";
+        if (scanType == "LUNCH_OUT") return "Left for Lunch";
+        if (scanType == "LUNCH_IN") return "Returned from Lunch";
+        return scanType;
     }
 
-    private static string GetActivityIcon(string scanType) => scanType switch
-    {
-        "CAMPUS_IN" => "➡️",
-        "CAMPUS_OUT" => "⬅️",
-        "LUNCH_OUT" => "🍽️",
-        "LUNCH_IN" => "🔙",
-        _ => "📍"
-    };
-
-    private static string FormatScanType(string scanType) => scanType switch
-    {
-        "CAMPUS_IN" => "Checked In",
-        "CAMPUS_OUT" => "Checked Out",
-        "LUNCH_OUT" => "Left for Lunch",
-        "LUNCH_IN" => "Returned from Lunch",
-        _ => scanType
-    };
-
-    public ValueTask DisposeAsync()
-    {
-        refreshTimer?.Stop();
-        refreshTimer?.Dispose();
-        return ValueTask.CompletedTask;
-    }
+    public ValueTask DisposeAsync() { refreshTimer?.Stop(); refreshTimer?.Dispose(); return ValueTask.CompletedTask; }
 
     private class CampusStats
     {
@@ -484,7 +545,6 @@
         public int StudentsOnSite { get; set; }
         public int TotalOnSite => StaffOnSite + StudentsOnSite;
     }
-
     private class OnSitePerson
     {
         public string IdNumber { get; set; } = "";
@@ -496,7 +556,6 @@
         public string CampusName { get; set; } = "";
         public DateTime CheckInTime { get; set; }
     }
-
     private class ActivityItem
     {
         public long TransactionId { get; set; }
@@ -509,5 +568,3 @@
         public string CampusName { get; set; } = "";
     }
 }
-
-

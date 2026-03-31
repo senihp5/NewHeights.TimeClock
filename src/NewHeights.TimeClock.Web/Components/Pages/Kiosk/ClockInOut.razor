@@ -16,14 +16,21 @@
 @inject ILogger<ClockInOut> Logger
 @implements IAsyncDisposable
 
-<div class="kiosk-container">
+<div class="kiosk-container" @onclick="RequestFullscreen">
     <header class="kiosk-header">
-        <a href="@AppConstants.Branding.Website" target="_blank" class="logo-link">
+        <a href="@AppConstants.Branding.Website" target="_blank" class="logo-link" @onclick:stopPropagation>
             <img src="/images/logo.jpg" alt="New Heights" class="header-logo" />
         </a>
         <h1>@AppConstants.Branding.SchoolName</h1>
         <p class="current-time">@currentTime.ToString("h:mm:ss tt")</p>
         <p class="current-date">@currentTime.ToString("dddd, MMMM d, yyyy")</p>
+        <button class="fullscreen-btn" title="@(_isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen")"
+                @onclick="ToggleFullscreen" @onclick:stopPropagation>
+            @if (_isFullscreen) { <span>&#x26F6;</span> } else { <span>&#x26F6;</span> }
+        </button>
+        <button class="debug-btn" title="Scanner Debug" onclick="event.stopPropagation();window.kioskInterop&&window.kioskInterop.showDebugWindow();">
+            🔍
+        </button>
     </header>
 
     <div class="scan-area">
@@ -63,35 +70,150 @@
         }
         else
         {
-            <div class="scan-prompt">
+            <div class="scan-prompt" @onclick="RequestFullscreen">
                 <img src="/images/phoenix.png" alt="Phoenix" class="scan-icon-img" />
                 <h3>Scan Your ID Badge</h3>
                 <p>Hold your badge up to the scanner</p>
+                @if (!_isFullscreen)
+                {
+                    <p class="fullscreen-hint">Tap anywhere to go fullscreen</p>
+                }
             </div>
         }
 
         <form @onsubmit="HandleScan" @onsubmit:preventDefault class="scan-form">
-            <input type="text" 
+            <input type="text"
                    @ref="scanInputRef"
                    @bind="scannedValue"
                    @onfocus="OnInputFocus"
                    autocomplete="off"
-                   class="scan-input" />
+                   spellcheck="false"
+                   class="scan-input"
+                   tabindex="0" />
         </form>
     </div>
 
     <footer class="kiosk-footer">
         <p>@selectedCampusName</p>
+        @if (!_isFullscreen)
+        {
+            <button class="fullscreen-footer-btn" @onclick="ToggleFullscreen" @onclick:stopPropagation>
+                ⛶ Fullscreen
+            </button>
+        }
     </footer>
 </div>
+
+@if (showEarlyOutModal)
+{
+    <div class="early-out-overlay" @onclick="() => SubmitEarlyOut(null)">
+        <div class="early-out-modal" @onclick:stopPropagation>
+            <h2>Leaving Early?</h2>
+            <p class="early-out-name">@personName</p>
+            <div class="early-out-reasons">
+                @foreach (var reason in EarlyOutReasons)
+                {
+                    <button class="early-out-reason-btn @(selectedEarlyOutReason == reason.Code ? "selected" : "")"
+                            @onclick="() => SelectEarlyOutReason(reason.Code)">
+                        @reason.Label
+                    </button>
+                }
+            </div>
+            <p class="early-out-countdown">
+                Auto-submitting in <strong>@earlyOutCountdown</strong>s
+                @if (!string.IsNullOrEmpty(selectedEarlyOutReason))
+                {
+                    <span> with selected reason</span>
+                }
+                else
+                {
+                    <span> with no reason</span>
+                }
+            </p>
+            <div class="early-out-actions">
+                <button class="early-out-skip" @onclick="() => SubmitEarlyOut(null)">Skip</button>
+                <button class="early-out-confirm"
+                        disabled="@string.IsNullOrEmpty(selectedEarlyOutReason)"
+                        @onclick="() => SubmitEarlyOut(selectedEarlyOutReason)">
+                    Confirm Reason
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .fullscreen-btn {
+        position: absolute;
+        top: .75rem;
+        right: .75rem;
+        background: rgba(255,255,255,.15);
+        border: 1px solid rgba(255,255,255,.3);
+        color: #fff;
+        border-radius: 6px;
+        padding: .35rem .6rem;
+        font-size: 1.1rem;
+        cursor: pointer;
+        line-height: 1;
+        transition: background .2s;
+    }
+    .fullscreen-btn:hover { background: rgba(255,255,255,.3); }
+
+    .debug-btn {
+        position: absolute;
+        top: .75rem;
+        right: 4rem;
+        background: rgba(255,255,255,.15);
+        border: 1px solid rgba(255,255,255,.3);
+        color: #fff;
+        border-radius: 6px;
+        padding: .35rem .6rem;
+        font-size: 1.1rem;
+        cursor: pointer;
+        line-height: 1;
+        transition: background .2s;
+    }
+    .debug-btn:hover { background: rgba(255,255,255,.3); }
+
+    .kiosk-header { position: relative; }
+    .fullscreen-hint { font-size: .8rem; color: rgba(255,255,255,.6); margin-top: .5rem; }
+    .fullscreen-footer-btn {
+        background: transparent;
+        border: 1px solid rgba(255,255,255,.4);
+        color: rgba(255,255,255,.7);
+        border-radius: 4px;
+        padding: .2rem .6rem;
+        font-size: .75rem;
+        cursor: pointer;
+        margin-top: .25rem;
+    }
+    .scan-form {
+        position: absolute;
+        width: 0; height: 0;
+        overflow: hidden;
+        opacity: 0;
+    }
+    .scan-input {
+        position: absolute;
+        width: 1px; height: 1px;
+        opacity: 0;
+        pointer-events: none;
+    }
+</style>
+
 @code {
     [Parameter]
     public string? CampusCode { get; set; }
 
     private ElementReference scanInputRef;
     private string scannedValue = "";
-    private DateTime currentTime = DateTime.Now;
+
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+    private DateTime currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+
     private System.Timers.Timer? clockTimer;
+    private DotNetObjectReference<ClockInOut>? _dotNetRef;
+    private bool _isFullscreen = false;
 
     private bool showResult = false;
     private bool isSuccess = false;
@@ -115,13 +237,30 @@
 
     private CancellationTokenSource? autoResetCts;
 
+    // ── Early-out modal state ──────────────────────────────────────────────
+    private bool showEarlyOutModal = false;
+    private string? selectedEarlyOutReason;
+    private int earlyOutCountdown = 10;
+    private System.Timers.Timer? earlyOutTimer;
+    private TaskCompletionSource<string?>? earlyOutTcs;
+
+    private static readonly (string Code, string Label)[] EarlyOutReasons =
+    {
+        ("LUNCH",     "Lunch / Meal Break"),
+        ("MEDICAL",   "Medical / Appt"),
+        ("MEETING",   "Meeting / Prof. Dev"),
+        ("PERSONAL",  "Personal / Family"),
+        ("EMERGENCY", "Campus Emergency"),
+    };
+    // ──────────────────────────────────────────────────────────────────────
+
     protected override async Task OnInitializedAsync()
     {
         clockTimer = new System.Timers.Timer(1000);
         clockTimer.Elapsed += (s, e) =>
         {
-            currentTime = DateTime.Now;
-            InvokeAsync(StateHasChanged);
+            currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+            try { InvokeAsync(StateHasChanged); } catch { }
         };
         clockTimer.Start();
 
@@ -159,6 +298,19 @@
     {
         if (firstRender)
         {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            try
+            {
+                await JS.InvokeVoidAsync("kioskInterop.installScannerFocusGuard", scanInputRef, _dotNetRef);
+            }
+            catch (Exception ex) { Logger.LogWarning(ex, "Could not install scanner focus guard"); }
+
+            try
+            {
+                await JS.InvokeVoidAsync("kioskInterop.requestFullscreen");
+            }
+            catch (Exception ex) { Logger.LogWarning(ex, "Could not request fullscreen"); }
+
             await FocusScanInput();
         }
     }
@@ -170,21 +322,49 @@
             await Task.Delay(100);
             await JS.InvokeVoidAsync("kioskInterop.focusInput", scanInputRef);
         }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Could not focus scan input");
-        }
+        catch (Exception ex) { Logger.LogWarning(ex, "Could not focus scan input"); }
+    }
+
+    private async Task RequestFullscreen()
+    {
+        await JS.InvokeVoidAsync("kioskInterop.requestFullscreen");
+    }
+
+    private async Task ToggleFullscreen()
+    {
+        if (_isFullscreen)
+            await JS.InvokeVoidAsync("kioskInterop.exitFullscreen");
+        else
+            await JS.InvokeVoidAsync("kioskInterop.requestFullscreen");
+    }
+
+    [JSInvokable]
+    public void OnFullscreenChanged(bool isFullscreen)
+    {
+        _isFullscreen = isFullscreen;
+        InvokeAsync(StateHasChanged);
     }
 
     private void OnInputFocus() { }
 
+    [JSInvokable]
+    public async Task OnScannerInput(string raw)
+    {
+        Logger.LogInformation("OnScannerInput called from JS: '{Raw}'", raw);
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            scannedValue = raw.Trim();
+            await HandleScan();
+        }
+    }
+
     private async Task HandleScan()
     {
-        if (string.IsNullOrWhiteSpace(scannedValue))
-            return;
+        if (string.IsNullOrWhiteSpace(scannedValue)) return;
 
         var rawScan = scannedValue.Trim();
         scannedValue = "";
+        await JS.InvokeVoidAsync("console.log", "[KIOSK] HandleScan START: " + rawScan);
 
         autoResetCts?.Cancel();
         autoResetCts = new CancellationTokenSource();
@@ -193,8 +373,8 @@
         {
             var (firstName, lastName, idNumber) = ParseScanData(rawScan);
             Logger.LogInformation("Kiosk scan - Raw: {Raw}, Parsed: {First} {Last} ID:{Id}", rawScan, firstName, lastName, idNumber);
-
             await ProcessUnifiedCheckin(idNumber, firstName, lastName);
+            await JS.InvokeVoidAsync("console.log", "[KIOSK] ProcessUnifiedCheckin complete");
         }
         catch (Exception ex)
         {
@@ -207,78 +387,82 @@
 
     private static (string firstName, string lastName, string idNumber) ParseScanData(string rawScan)
     {
-        if (string.IsNullOrWhiteSpace(rawScan))
-            return ("", "", "");
+        if (string.IsNullOrWhiteSpace(rawScan)) return ("", "", "");
 
         var trimmed = rawScan.Trim();
 
         if (trimmed.Contains('|'))
         {
             var parts = trimmed.Split('|');
+
             if (parts.Length >= 3)
+            {
+                var first = parts[0].Trim();
+                var last  = parts[parts.Length - 1].Trim();
+                bool isReversed = first.Length > 0 && first.All(char.IsDigit)
+                                && last.Length > 0 && last.All(char.IsLetter);
+                if (isReversed)
+                    parts = parts.Reverse()
+                               .Select(p => new string(p.Trim().Reverse().ToArray()))
+                               .ToArray();
                 return (parts[0].Trim(), parts[1].Trim(), parts[2].Trim());
+            }
+
             if (parts.Length == 2)
-                return ("", "", parts[1].Trim());
+            {
+                var p0 = parts[0].Trim();
+                var p1 = parts[1].Trim();
+                bool isReversed = p0.All(char.IsDigit) && p1.All(char.IsLetter);
+                if (isReversed)
+                    return ("", "", new string(p1.Reverse().ToArray()));
+                return ("", "", p1);
+            }
         }
 
         return ("", "", trimmed);
     }
+
     private async Task ProcessUnifiedCheckin(string idNumber, string scannedFirstName, string scannedLastName)
     {
         using var context = await DbFactory.CreateDbContextAsync();
         bool hasNameFromScan = !string.IsNullOrEmpty(scannedFirstName) && !string.IsNullOrEmpty(scannedLastName);
 
-        // 1. Check hourly employees first
-        TcEmployee? hourlyEmployee = null;
-        if (hasNameFromScan)
-        {
-            hourlyEmployee = await context.TcEmployees
-                .Include(e => e.Staff)
-                .AsNoTracking()
-                .FirstOrDefaultAsync(e => e.IdNumber == idNumber && e.IsActive && 
-                    e.EmployeeType == EmployeeType.HourlyStaff &&
-                    e.Staff != null &&
-                    e.Staff.FirstName != null && e.Staff.LastName != null &&
-                    e.Staff.FirstName.ToLower() == scannedFirstName.ToLower() &&
-                    e.Staff.LastName.ToLower() == scannedLastName.ToLower());
-        }
-        else
-        {
-            hourlyEmployee = await context.TcEmployees
-                .Include(e => e.Staff)
-                .AsNoTracking()
-                .FirstOrDefaultAsync(e => e.IdNumber == idNumber && e.IsActive && e.EmployeeType == EmployeeType.HourlyStaff);
-        }
+        string paddedIdNumber = idNumber.PadLeft(6, (char)48);
+        string unpaddedIdNumber = idNumber.TrimStart((char)48);
+        Staff? staff = await context.Staff.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.IsActive &&
+                (s.IdNumber == idNumber || s.IdNumber == paddedIdNumber || s.IdNumber == unpaddedIdNumber));
 
-        if (hourlyEmployee != null)
+        if (staff != null && hasNameFromScan)
         {
-            await ProcessHourlyEmployee(hourlyEmployee, context);
-            return;
-        }
-
-        // 2. Check Staff table
-        Staff? staff = null;
-        if (hasNameFromScan)
-        {
-            staff = await context.Staff.AsNoTracking()
-                .FirstOrDefaultAsync(s => s.IdNumber == idNumber &&
-                    s.FirstName != null && s.LastName != null &&
-                    s.FirstName.ToLower() == scannedFirstName.ToLower() &&
-                    s.LastName.ToLower() == scannedLastName.ToLower());
-        }
-        else
-        {
-            staff = await context.Staff.AsNoTracking()
-                .FirstOrDefaultAsync(s => s.IdNumber == idNumber);
+            bool nameMatches = string.Equals(staff.FirstName, scannedFirstName, StringComparison.OrdinalIgnoreCase) &&
+                               string.Equals(staff.LastName, scannedLastName, StringComparison.OrdinalIgnoreCase);
+            if (!nameMatches)
+            {
+                var byName = await context.Staff.AsNoTracking()
+                    .FirstOrDefaultAsync(s => s.IdNumber == idNumber && s.IsActive &&
+                        s.FirstName != null && s.LastName != null &&
+                        s.FirstName.ToLower() == scannedFirstName.ToLower() &&
+                        s.LastName.ToLower() == scannedLastName.ToLower());
+                if (byName != null) staff = byName;
+            }
         }
 
         if (staff != null)
         {
-            await ProcessStaffCheckin(staff, context);
+            var paddedId = idNumber.PadLeft(6, '0');
+            var hourlyEmployee = await context.TcEmployees.AsNoTracking()
+                .FirstOrDefaultAsync(e => e.IsActive &&
+                    (e.IdNumber == idNumber || e.IdNumber == paddedId) &&
+                    (e.EmployeeType == EmployeeType.HourlyStaff || e.EmployeeType == EmployeeType.Substitute));
+
+            if (hourlyEmployee != null)
+                await ProcessHourlyEmployee(staff, hourlyEmployee, context);
+            else
+                await ProcessStaffCheckin(staff, context);
             return;
         }
 
-        // 3. Check Students table
         Student? student = null;
         if (hasNameFromScan)
         {
@@ -300,26 +484,96 @@
             return;
         }
 
-        if (hasNameFromScan)
+        ShowError($"Badge not recognized (ID:{idNumber}). Please see reception.");
+    }
+
+    // ── Early-out helpers ─────────────────────────────────────────────────
+
+    private async Task<bool> ShouldPromptEarlyOut(TimeClockDbContext context, int campusId)
+    {
+        var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+        var nowTime = TimeOnly.FromDateTime(now);
+        var today = now.DayOfWeek;
+
+        if (today == DayOfWeek.Saturday || today == DayOfWeek.Sunday) return false;
+
+        var windows = await context.TcStaffHoursWindows.AsNoTracking()
+            .Where(w => w.CampusId == campusId && w.IsActive)
+            .ToListAsync();
+
+        foreach (var w in windows)
         {
-            Logger.LogWarning("No match found for scan: ID={Id}, Name={First} {Last}", idNumber, scannedFirstName, scannedLastName);
+            if (w.SessionType == "NIGHT" && today == DayOfWeek.Friday) continue;
+            if (nowTime >= w.ExpectedArrivalTime && nowTime < w.ExpectedDepartureTime)
+                return true;
         }
 
-        ShowError("Badge not recognized. Please see reception.");
+        return false;
     }
-    private async Task ProcessHourlyEmployee(TcEmployee employee, TimeClockDbContext context)
+
+    private void SelectEarlyOutReason(string code)
     {
+        selectedEarlyOutReason = code;
+        StateHasChanged();
+    }
+
+    private async Task<string?> ShowEarlyOutPrompt()
+    {
+        selectedEarlyOutReason = null;
+        earlyOutCountdown = 10;
+        earlyOutTcs = new TaskCompletionSource<string?>();
+
+        showEarlyOutModal = true;
+        StateHasChanged();
+
+        autoResetCts?.Cancel();
+
+        earlyOutTimer = new System.Timers.Timer(1000);
+        earlyOutTimer.Elapsed += async (s, e) =>
+        {
+            earlyOutCountdown--;
+            if (earlyOutCountdown <= 0)
+            {
+                earlyOutTimer?.Stop();
+                earlyOutTimer?.Dispose();
+                earlyOutTimer = null;
+                earlyOutTcs.TrySetResult(selectedEarlyOutReason);
+            }
+            try { await InvokeAsync(StateHasChanged); } catch { }
+        };
+        earlyOutTimer.Start();
+
+        return await earlyOutTcs.Task;
+    }
+
+    private async Task SubmitEarlyOut(string? reason)
+    {
+        earlyOutTimer?.Stop();
+        earlyOutTimer?.Dispose();
+        earlyOutTimer = null;
+        earlyOutTcs?.TrySetResult(reason);
+        showEarlyOutModal = false;
+        StateHasChanged();
+    }
+
+    // ── Staff punch processing ────────────────────────────────────────────
+
+    private async Task ProcessHourlyEmployee(Staff staff, TcEmployee employee, TimeClockDbContext context)
+    {
+        await JS.InvokeVoidAsync("console.log", "[KIOSK-HOURLY] START - ID: " + employee.IdNumber);
         try
         {
+            var campusId = resolvedCampusId > 0 ? resolvedCampusId : employee.HomeCampusId;
             var punchRequest = new PunchRequest
             {
                 IdNumber = employee.IdNumber,
-                CampusId = resolvedCampusId > 0 ? resolvedCampusId : employee.HomeCampusId,
+                CampusId = campusId,
                 ScanMethod = "KIOSK",
                 IsMobileMode = false
             };
 
             var punchResult = await TimePunchService.ProcessPunchAsync(punchRequest);
+            await JS.InvokeVoidAsync("console.log", "[KIOSK-HOURLY] ProcessPunchAsync done - Success: " + punchResult.Success + " Type: " + punchResult.PunchType);
 
             if (!punchResult.Success)
             {
@@ -327,17 +581,40 @@
                 return;
             }
 
-            var scanType = DetermineScanTypeFromPunch(punchResult.PunchType);
-            await RecordAttendanceTransaction(context, "STAFF", employee.IdNumber,
-                employee.Staff?.FirstName ?? "", employee.Staff?.LastName ?? "",
-                resolvedCampusId > 0 ? resolvedCampusId : employee.HomeCampusId, scanType, "KIOSK");
+            string? earlyOutReason = null;
+            if (punchResult.PunchType?.ToUpper() == "OUT")
+            {
+                if (await ShouldPromptEarlyOut(context, campusId))
+                {
+                    personName = staff.FullName;
+                    earlyOutReason = await ShowEarlyOutPrompt();
+                    if (!string.IsNullOrEmpty(earlyOutReason))
+                        await StampRecentPunchSubType(employee.IdNumber, earlyOutReason);
+                }
+            }
 
-            personName = employee.Staff?.FullName ?? "Employee";
-            photoBase64 = punchResult.EmployeePhotoBase64 ?? "";
+            var scanType = DetermineScanTypeFromPunch(punchResult.PunchType);
+            await JS.InvokeVoidAsync("console.log", "[KIOSK-HOURLY] About to RecordAttendance - ScanType: " + scanType);
+            await RecordAttendanceTransaction(context, "STAFF", staff.IdNumber ?? employee.IdNumber,
+                staff.FirstName ?? "", staff.LastName ?? "", campusId, scanType, "KIOSK",
+                earlyOutReason);
+
+            var photo = punchResult.EmployeePhotoBase64;
+            if (string.IsNullOrEmpty(photo))
+            {
+                var photoRecord = await context.Photos.AsNoTracking()
+                    .FirstOrDefaultAsync(p => p.SubjectDcid == staff.Dcid && p.SubjectType == 1);
+                photo = photoRecord?.PhotoData != null ? Convert.ToBase64String(photoRecord.PhotoData) : "";
+            }
+
+            personName = staff.FullName;
+            photoBase64 = photo ?? "";
             totalHoursToday = punchResult.TotalHoursToday;
             scanTypeDisplay = GetScanTypeDisplay(punchResult.PunchType);
             scanTypeBadgeClass = GetScanTypeBadgeClass(punchResult.PunchType);
-            personTypeDisplay = "Hourly Staff";
+            personTypeDisplay = !string.IsNullOrEmpty(earlyOutReason)
+                ? $"Hourly Staff — {GetReasonLabel(earlyOutReason)}"
+                : "Hourly Staff";
             resultMessage = punchResult.Message;
             isSuccess = true;
             showResult = true;
@@ -345,6 +622,7 @@
         }
         catch (Exception ex)
         {
+            await JS.InvokeVoidAsync("console.error", "[KIOSK-HOURLY] EXCEPTION: " + ex.Message);
             Logger.LogError(ex, "Error processing hourly employee: {Id}", employee.IdNumber);
             ShowError("Error processing - please try again");
         }
@@ -352,13 +630,29 @@
 
     private async Task ProcessStaffCheckin(Staff staff, TimeClockDbContext context)
     {
+        await JS.InvokeVoidAsync("console.log", "[KIOSK-STAFF] START - ID: " + staff.IdNumber);
         try
         {
             var campusId = resolvedCampusId > 0 ? resolvedCampusId : 1;
             var scanType = await DetermineAttendanceScanType(context, staff.IdNumber ?? "", campusId);
+            await JS.InvokeVoidAsync("console.log", "[KIOSK-STAFF] Determined scanType: " + scanType);
+
+            string? earlyOutReason = null;
+            if (scanType == "CAMPUS_OUT")
+            {
+                if (await ShouldPromptEarlyOut(context, campusId))
+                {
+                    personName = staff.FullName ?? "Staff";
+                    earlyOutReason = await ShowEarlyOutPrompt();
+                }
+            }
 
             await RecordAttendanceTransaction(context, "STAFF", staff.IdNumber ?? "",
-                staff.FirstName ?? "", staff.LastName ?? "", campusId, scanType, "KIOSK");
+                staff.FirstName ?? "", staff.LastName ?? "", campusId, scanType, "KIOSK",
+                earlyOutReason);
+
+            if (scanType == "CAMPUS_IN")
+                await CheckAndMarkReturn(context, staff.IdNumber ?? "", campusId);
 
             var photo = await context.Photos.AsNoTracking()
                 .FirstOrDefaultAsync(p => p.SubjectDcid == staff.Dcid && p.SubjectType == 1);
@@ -368,7 +662,9 @@
             totalHoursToday = null;
             scanTypeDisplay = scanType == "CAMPUS_IN" ? "CHECKED IN" : "CHECKED OUT";
             scanTypeBadgeClass = scanType == "CAMPUS_IN" ? "in" : "out";
-            personTypeDisplay = "Staff";
+            personTypeDisplay = !string.IsNullOrEmpty(earlyOutReason)
+                ? $"Staff — {GetReasonLabel(earlyOutReason)}"
+                : "Staff";
             resultMessage = GetGreeting(staff.FirstName ?? "Staff", scanType == "CAMPUS_IN");
             isSuccess = true;
             showResult = true;
@@ -376,10 +672,83 @@
         }
         catch (Exception ex)
         {
+            await JS.InvokeVoidAsync("console.error", "[KIOSK-STAFF] EXCEPTION: " + ex.Message);
             Logger.LogError(ex, "Error processing staff checkin: {Id}", staff.IdNumber);
             ShowError("Error processing - please try again");
         }
     }
+
+    private async Task StampRecentPunchSubType(string idNumber, string subType)
+    {
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var cutoff = DateTime.UtcNow.AddSeconds(-30);
+            var punch = await context.TcTimePunches
+                .Where(p => p.Employee!.IdNumber == idNumber &&
+                            p.PunchType == PunchType.Out &&
+                            p.CreatedDate >= cutoff)
+                .OrderByDescending(p => p.CreatedDate)
+                .FirstOrDefaultAsync();
+            if (punch != null)
+            {
+                punch.PunchSubType = subType;
+                await context.SaveChangesAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error stamping PunchSubType for employee {IdNumber}", idNumber);
+        }
+    }
+
+    private async Task CheckAndMarkReturn(TimeClockDbContext context, string idNumber, int campusId)
+    {
+        try
+        {
+            var today = DateTime.Today;
+            var lastOut = await context.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.IdNumber == idNumber
+                         && t.CampusId == campusId
+                         && t.ScanDateTime.Date == today
+                         && t.ScanType == "CAMPUS_OUT"
+                         && t.PunchSubType != null)
+                .OrderByDescending(t => t.ScanDateTime)
+                .FirstOrDefaultAsync();
+
+            if (lastOut == null) return;
+
+            var returnTx = await context.AttendanceTransactions
+                .Where(t => t.IdNumber == idNumber
+                         && t.CampusId == campusId
+                         && t.ScanDateTime.Date == today
+                         && t.ScanType == "CAMPUS_IN")
+                .OrderByDescending(t => t.ScanDateTime)
+                .FirstOrDefaultAsync();
+
+            if (returnTx != null)
+            {
+                returnTx.PunchSubType = $"RETURN_{lastOut.PunchSubType}";
+                await context.SaveChangesAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error marking return punch for {IdNumber}", idNumber);
+        }
+    }
+
+    private static string GetReasonLabel(string code) => code switch
+    {
+        "LUNCH"     => "Lunch Break",
+        "MEDICAL"   => "Medical / Appt",
+        "MEETING"   => "Meeting / Prof. Dev",
+        "PERSONAL"  => "Personal / Family",
+        "EMERGENCY" => "Campus Emergency",
+        _           => code
+    };
+
+    // ── Student ───────────────────────────────────────────────────────────
 
     private async Task ProcessStudentCheckin(Student student, TimeClockDbContext context)
     {
@@ -411,6 +780,9 @@
             ShowError("Error processing - please try again");
         }
     }
+
+    // ── Shared helpers ────────────────────────────────────────────────────
+
     private async Task<string> DetermineAttendanceScanType(TimeClockDbContext context, string idNumber, int campusId)
     {
         var today = DateTime.Today;
@@ -419,8 +791,7 @@
             .OrderByDescending(t => t.ScanDateTime)
             .FirstOrDefaultAsync();
 
-        if (lastTrans == null)
-            return "CAMPUS_IN";
+        if (lastTrans == null) return "CAMPUS_IN";
 
         return lastTrans.ScanType switch
         {
@@ -430,7 +801,8 @@
     }
 
     private async Task RecordAttendanceTransaction(TimeClockDbContext context, string transactionType,
-        string idNumber, string firstName, string lastName, int campusId, string scanType, string scanMethod)
+        string idNumber, string firstName, string lastName, int campusId, string scanType, string scanMethod,
+        string? punchSubType = null)
     {
         var transaction = new AttendanceTransaction
         {
@@ -440,12 +812,13 @@
             LastName = lastName,
             CampusId = campusId,
             LocationId = 1,
-            ScanDateTime = DateTime.Now,
+            ScanDateTime = DateTime.UtcNow,
             ScanType = scanType,
             ScanMethod = scanMethod,
             TerminalId = 0,
             DataSource = "LOCAL",
             ValidationStatus = "VALID",
+            PunchSubType = punchSubType,
             CreatedDate = DateTime.UtcNow
         };
         context.AttendanceTransactions.Add(transaction);
@@ -469,11 +842,11 @@
     {
         return punchType?.ToUpper() switch
         {
-            "IN" => "CAMPUS_IN",
-            "OUT" => "CAMPUS_OUT",
+            "IN"       => "CAMPUS_IN",
+            "OUT"      => "CAMPUS_OUT",
             "LUNCHOUT" => "LUNCH_OUT",
-            "LUNCHIN" => "LUNCH_IN",
-            _ => "CAMPUS_IN"
+            "LUNCHIN"  => "LUNCH_IN",
+            _          => "CAMPUS_IN"
         };
     }
 
@@ -481,11 +854,11 @@
     {
         return punchType?.ToUpper() switch
         {
-            "IN" => "CLOCKED IN",
-            "OUT" => "CLOCKED OUT",
+            "IN"       => "CLOCKED IN",
+            "OUT"      => "CLOCKED OUT",
             "LUNCHOUT" => "LUNCH OUT",
-            "LUNCHIN" => "LUNCH IN",
-            _ => "CHECKED IN"
+            "LUNCHIN"  => "LUNCH IN",
+            _          => "CHECKED IN"
         };
     }
 
@@ -493,17 +866,17 @@
     {
         return punchType?.ToUpper() switch
         {
-            "IN" or "LUNCHIN" => "in",
+            "IN" or "LUNCHIN"   => "in",
             "OUT" or "LUNCHOUT" => "out",
-            _ => "in"
+            _                   => "in"
         };
     }
 
     private static string GetGreeting(string firstName, bool isCheckIn)
     {
-        var hour = DateTime.Now.Hour;
-        var greeting = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
-        return isCheckIn ? $"Good {greeting}, {firstName}!" : $"Goodbye, {firstName}!";
+        var cstNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+        var greeting = cstNow.Hour < 12 ? "morning" : cstNow.Hour < 17 ? "afternoon" : "evening";
+        return isCheckIn ? "Good " + greeting + ", " + firstName + "!" : "Goodbye, " + firstName + "!";
     }
 
     private async Task AutoResetAfterDelay(CancellationToken ct)
@@ -526,12 +899,15 @@
         catch (TaskCanceledException) { }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         clockTimer?.Stop();
         clockTimer?.Dispose();
         autoResetCts?.Cancel();
         autoResetCts?.Dispose();
-        return ValueTask.CompletedTask;
+        earlyOutTimer?.Stop();
+        earlyOutTimer?.Dispose();
+        try { await JS.InvokeVoidAsync("kioskInterop.removeScannerFocusGuard"); } catch { }
+        _dotNetRef?.Dispose();
     }
 }

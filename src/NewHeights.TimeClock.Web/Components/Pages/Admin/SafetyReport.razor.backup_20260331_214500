@@ -1,0 +1,239 @@
+@page "/reports/safety"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Text
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IJSRuntime JS
+@inject ILogger<SafetyReport> Logger
+<PageTitle>Safety Report - @AppConstants.Branding.ShortName</PageTitle>
+<div class="report-page">
+    <div class="report-header">
+        <div class="report-title-block">
+            <h1>Campus Safety Report</h1>
+            <p class="report-subtitle">Historical attendance by date</p>
+        </div>
+        <div class="report-controls">
+            <div class="control-group">
+                <label>Date</label>
+                <input type="date" @bind="selectedDate" class="date-input" />
+            </div>
+            <div class="control-group">
+                <label>Campus</label>
+                <select @bind="selectedCampusId" class="campus-select">
+                    <option value="0">All Campuses</option>
+                    @foreach (var campus in campusList)
+                    {
+                        <option value="@campus.CampusId">@campus.CampusName</option>
+                    }
+                </select>
+            </div>
+            <div class="control-group">
+                <label>Person Type</label>
+                <select @bind="personTypeFilter" class="campus-select">
+                    <option value="">All</option>
+                    <option value="STAFF">Staff</option>
+                    <option value="STUDENT">Students</option>
+                </select>
+            </div>
+            <button class="btn-run" @onclick="RunReport" disabled="@isLoading">Run Report</button>
+            @if (reportRows.Any())
+            {
+                <button class="btn-export" @onclick="ExportCsv">Export CSV</button>
+            }
+        </div>
+    </div>
+    @if (isLoading)
+    {
+        <div class="report-loading"><div class="loading-spinner"></div><p>Loading report...</p></div>
+    }
+    else if (hasRun && !reportRows.Any())
+    {
+        <div class="report-empty">
+            <p>No attendance records found for @selectedDate.ToString("MMMM d, yyyy").</p>
+        </div>
+    }
+    else if (reportRows.Any())
+    {
+        <div class="report-summary-bar">
+            <div class="summary-chip">Date: <strong>@selectedDate.ToString("MMMM d, yyyy")</strong></div>
+            <div class="summary-chip">Total Visitors: <strong>@reportRows.Count</strong></div>
+            <div class="summary-chip">Staff: <strong>@reportRows.Count(r => r.PersonType == "STAFF")</strong></div>
+            <div class="summary-chip">Students: <strong>@reportRows.Count(r => r.PersonType == "STUDENT")</strong></div>
+        </div>
+        <div class="report-table-wrap">
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th @onclick='@(() => SortBy("Name"))' class='sortable @(sortCol == "Name" ? "sorted" : "")'>Name @SortArrow("Name")</th>
+                        <th>Type</th>
+                        <th>ID</th>
+                        <th>Campus</th>
+                        <th @onclick='@(() => SortBy("ArrivalTime"))' class='sortable @(sortCol == "ArrivalTime" ? "sorted" : "")'>Arrival @SortArrow("ArrivalTime")</th>
+                        <th @onclick='@(() => SortBy("DepartureTime"))' class='sortable @(sortCol == "DepartureTime" ? "sorted" : "")'>Departure @SortArrow("DepartureTime")</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in SortedRows)
+                    {
+                        <tr class="@(row.IsOnSite ? "row-onsite" : "")">
+                            <td class="name-col"><strong>@row.LastName</strong>, @row.FirstName</td>
+                            <td><span class="type-badge @row.PersonType.ToLower()">@row.PersonType</span></td>
+                            <td>@row.IdNumber</td>
+                            <td>@row.CampusName</td>
+                            <td>@row.ArrivalTime?.ToString("h:mm tt")</td>
+                            <td>@(row.DepartureTime.HasValue ? row.DepartureTime.Value.ToString("h:mm tt") : "—")</td>
+                            <td>@row.DurationDisplay</td>
+                            <td>
+                                @if (row.IsOnSite)
+                                {
+                                    <span class="status-badge onsite">On Site</span>
+                                }
+                                else
+                                {
+                                    <span class="status-badge departed">Departed</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+@code {
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+    private DateTime selectedDate = DateTime.Today;
+    private int selectedCampusId = 0;
+    private string personTypeFilter = "";
+    private bool isLoading = false;
+    private bool hasRun = false;
+    private string sortCol = "ArrivalTime";
+    private bool sortAsc = true;
+    private List<Campus> campusList = new();
+    private List<SafetyReportRow> reportRows = new();
+    private IEnumerable<SafetyReportRow> SortedRows => sortCol switch
+    {
+        "Name" => sortAsc ? reportRows.OrderBy(r => r.LastName).ThenBy(r => r.FirstName) : reportRows.OrderByDescending(r => r.LastName).ThenByDescending(r => r.FirstName),
+        "DepartureTime" => sortAsc ? reportRows.OrderBy(r => r.DepartureTime) : reportRows.OrderByDescending(r => r.DepartureTime),
+        _ => sortAsc ? reportRows.OrderBy(r => r.ArrivalTime) : reportRows.OrderByDescending(r => r.ArrivalTime)
+    };
+    protected override async Task OnInitializedAsync()
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        campusList = await ctx.Campuses.AsNoTracking().OrderBy(c => c.CampusName).ToListAsync();
+    }
+    private async Task RunReport()
+    {
+        isLoading = true;
+        hasRun = true;
+        reportRows.Clear();
+        StateHasChanged();
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var campuses = await ctx.Campuses.AsNoTracking().ToListAsync();
+            var query = ctx.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.ScanDateTime.Date == selectedDate.Date);
+            if (selectedCampusId > 0)
+                query = query.Where(t => t.CampusId == selectedCampusId);
+            if (!string.IsNullOrEmpty(personTypeFilter))
+                query = query.Where(t => t.TransactionType == personTypeFilter);
+            var transactions = await query.OrderBy(t => t.ScanDateTime).ToListAsync();
+            var grouped = transactions
+                .GroupBy(t => new { t.IdNumber, t.TransactionType, t.CampusId })
+                .ToList();
+            foreach (var group in grouped)
+            {
+                var scans = group.OrderBy(t => t.ScanDateTime).ToList();
+                var campus = campuses.FirstOrDefault(c => c.CampusId == group.Key.CampusId);
+                var firstIn = scans.FirstOrDefault(s => s.ScanType == "CAMPUS_IN" || s.ScanType == "LUNCH_IN");
+                var lastOut = scans.LastOrDefault(s => s.ScanType == "CAMPUS_OUT" || s.ScanType == "LUNCH_OUT");
+                var lastScan = scans.Last();
+                bool isOnSite = lastScan.ScanType == "CAMPUS_IN" || lastScan.ScanType == "LUNCH_IN";
+                DateTime? departure = lastOut?.ScanDateTime;
+                if (!isOnSite && lastOut == null) departure = lastScan.ScanDateTime;
+                string durationDisplay = "";
+                if (firstIn != null)
+                {
+                    var end = departure ?? (isOnSite ? DateTime.Now : lastScan.ScanDateTime);
+                    var dur = end - firstIn.ScanDateTime;
+                    durationDisplay = dur.TotalHours >= 1
+                        ? $"{(int)dur.TotalHours}h {dur.Minutes:D2}m"
+                        : $"{dur.Minutes}m";
+                }
+                var sample = scans.First();
+                reportRows.Add(new SafetyReportRow
+                {
+                    IdNumber = sample.IdNumber,
+                    FirstName = sample.FirstName,
+                    LastName = sample.LastName,
+                    PersonType = sample.TransactionType,
+                    CampusId = group.Key.CampusId,
+                    CampusName = campus?.CampusName ?? "Unknown",
+                    ArrivalTime = firstIn?.ScanDateTime,
+                    DepartureTime = departure,
+                    IsOnSite = isOnSite,
+                    DurationDisplay = durationDisplay,
+                    ScanCount = scans.Count
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error running safety report for {Date}", selectedDate);
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+    private void SortBy(string col)
+    {
+        if (sortCol == col) sortAsc = !sortAsc;
+        else { sortCol = col; sortAsc = true; }
+        StateHasChanged();
+    }
+    private string SortArrow(string col)
+    {
+        if (sortCol != col) return "";
+        return sortAsc ? " &#9650;" : " &#9660;";
+    }
+    private async Task ExportCsv()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Last Name,First Name,Type,ID,Campus,Arrival,Departure,Duration,Status");
+        foreach (var r in SortedRows)
+        {
+            var dep = r.DepartureTime.HasValue ? r.DepartureTime.Value.ToString("h:mm tt") : "";
+            var arr = r.ArrivalTime.HasValue ? r.ArrivalTime.Value.ToString("h:mm tt") : "";
+            var status = r.IsOnSite ? "On Site" : "Departed";
+            sb.AppendLine($"{Csv(r.LastName)},{Csv(r.FirstName)},{r.PersonType},{r.IdNumber},{Csv(r.CampusName)},{arr},{dep},{r.DurationDisplay},{status}");
+        }
+        var fileName = $"SafetyReport_{selectedDate:yyyyMMdd}.csv";
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        await JS.InvokeVoidAsync("downloadFile", fileName, "text/csv", Convert.ToBase64String(bytes));
+    }
+    private static string Csv(string s) { return "\"" + s.Replace("\"", "'") + "\""; }
+    private class SafetyReportRow
+    {
+        public string IdNumber { get; set; } = "";
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string PersonType { get; set; } = "";
+        public int CampusId { get; set; }
+        public string CampusName { get; set; } = "";
+        public DateTime? ArrivalTime { get; set; }
+        public DateTime? DepartureTime { get; set; }
+        public bool IsOnSite { get; set; }
+        public string DurationDisplay { get; set; } = "";
+        public int ScanCount { get; set; }
+    }
+}

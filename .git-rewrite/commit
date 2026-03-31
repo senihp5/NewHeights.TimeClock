@@ -1,0 +1,6 @@
+tree f1b1f8326fc7b2c18524512f758b4ecc088dfc4d
+parent 2338ef3f44fa0caafcdb6e3ead546c86a031b079
+author senihp5 <senihp5@gmail.com> 1773166163 -0500
+committer senihp5 <senihp5@gmail.com> 1773166163 -0500
+
+Restore appsettings.json with no secrets - secrets in Azure App Service

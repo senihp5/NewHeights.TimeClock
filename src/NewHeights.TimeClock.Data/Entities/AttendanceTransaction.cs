@@ -1,4 +1,4 @@
-﻿namespace NewHeights.TimeClock.Data.Entities;
+namespace NewHeights.TimeClock.Data.Entities;
 
 public class AttendanceTransaction
 {
@@ -20,6 +20,11 @@ public class AttendanceTransaction
     public string ValidationStatus { get; set; } = string.Empty;  // VALID, INVALID
     public string? ValidationMessage { get; set; }
     public string? Notes { get; set; }
+
+    // LUNCH, MEDICAL, MEETING, PERSONAL, EMERGENCY (early-out reason)
+    // RETURN_LUNCH, RETURN_MEDICAL, etc. (same-day return punch)
+    public string? PunchSubType { get; set; }
+
     public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
 
     // Navigation

@@ -1,0 +1,37 @@
+@page "/debug/claims"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@inject AuthenticationStateProvider AuthStateProvider
+<PageTitle>Claims Debug</PageTitle>
+<h2>Token Claims</h2>
+<p><strong>Identity Name:</strong> @_name</p>
+<p><strong>Is Authenticated:</strong> @_auth</p>
+<h3>All Claims</h3>
+<table border="1" cellpadding="4" style="border-collapse:collapse;font-family:monospace;font-size:13px">
+    <thead><tr><th>Type</th><th>Value</th></tr></thead>
+    <tbody>
+        @foreach (var c in _claims)
+        {
+            <tr style="@(c.Type=="roles" || c.Type.EndsWith("/role") ? "background:#fffacd" : "")">
+                <td>@c.Type</td>
+                <td>@c.Value</td>
+            </tr>
+        }
+    </tbody>
+</table>
+@code {
+    private string _name = "";
+    private bool _auth = false;
+    private IEnumerable<Claim> _claims = Enumerable.Empty<Claim>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = state.User;
+        _auth = user.Identity?.IsAuthenticated == true;
+        _name = user.Identity?.Name ?? "(none)";
+        _claims = user.Claims.OrderBy(c => c.Type);
+    }
+}

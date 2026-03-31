@@ -3,18 +3,24 @@
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireAnyStaff")]
 @using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
 @using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Nav
 @inject IJSRuntime JS
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ILogger<Home> Logger
+@inject NewHeights.TimeClock.Web.Services.IGeofenceService GeofenceService
+@implements IAsyncDisposable
 
 <PageTitle>@AppConstants.Branding.SchoolName</PageTitle>
 
-<div class="home-container" style="@(_checked ? &quot;&quot; : &quot;visibility:hidden&quot;)">
+<div class="home-container" style="@(_checked ? "" : "visibility:hidden")">
     <AuthorizeView>
         <Authorized>
             <div class="home-auth-layout">
-
                 <div class="home-brand-bar">
                     <a href="@AppConstants.Branding.Website" target="_blank">
                         <img src="/images/logo.jpg" alt="New Heights" class="home-logo-small" />
@@ -24,3 +30,470 @@
                     </div>
                 </div>
 
+                <div class="home-sections">
+
+                    @* ── Reception live dashboard (RequireReception policy roles only) ────────── *@
+                    <AuthorizeView Context="roleCtxR" Policy="RequireReception">
+                        <Authorized>
+                            <div class="home-section home-section--full">
+                                <div class="reception-home-header">
+                                    <h2 class="section-title">
+                                        🛡️ Campus Safety — Live
+                                        <span class="live-badge">LIVE</span>
+                                    </h2>
+                                    <div class="reception-home-actions">
+                                        <span class="last-updated-sm">Updated @ToCst(_lastRefresh).ToString("h:mm:ss tt")</span>
+                                        <button class="btn-refresh-sm" @onclick="RefreshLiveData" disabled="@_liveLoading" title="Refresh">🔄</button>
+                                        <a class="btn-open-full" href="/reception" title="Open full reception dashboard">⛶ Full Dashboard</a>
+                                        <a class="btn-open-full btn-open-safety" href="/safety" title="Open safety dashboard">🛡️ Safety View</a>
+                                    </div>
+                                </div>
+
+                                @* Campus selector tabs *@
+                                <div class="campus-tabs">
+                                    @foreach (var c in _campuses)
+                                    {
+                                        <button class="campus-tab @(_selectedCampusId == c.CampusId ? "active" : "")"
+                                                @onclick="() => SelectHomeCampus(c)">
+                                            @c.CampusName
+                                        </button>
+                                    }
+                                </div>
+
+                                @* Stat pills *@
+                                <div class="live-stats-row">
+                                    <div class="live-stat staff">
+                                        <span class="live-stat-count">@_staffCount</span>
+                                        <span class="live-stat-label">Staff On Site</span>
+                                    </div>
+                                    <div class="live-stat students">
+                                        <span class="live-stat-count">@_studentCount</span>
+                                        <span class="live-stat-label">Students On Site</span>
+                                    </div>
+                                    <div class="live-stat total">
+                                        <span class="live-stat-count">@(_staffCount + _studentCount)</span>
+                                        <span class="live-stat-label">Total On Site</span>
+                                    </div>
+                                    <div class="live-stat activity">
+                                        <span class="live-stat-count">@_todayTotal</span>
+                                        <span class="live-stat-label">Scans Today</span>
+                                    </div>
+                                </div>
+
+                                @* Two-column: recent activity + quick actions *@
+                                <div class="live-body">
+                                    <div class="live-activity">
+                                        <h3 class="live-sub-title">📋 Recent Activity</h3>
+                                        <div class="live-feed">
+                                            @foreach (var item in _recentActivity.Take(15))
+                                            {
+                                                <div class="feed-row @item.ScanType.ToLower().Replace("_", "-")">
+                                                    <span class="feed-icon">@GetIcon(item.ScanType)</span>
+                                                    <span class="feed-name">@item.FirstName @item.LastName</span>
+                                                    <span class="feed-type @item.TransactionType.ToLower()">@item.TransactionType</span>
+                                                    <span class="feed-time">@ToCst(item.ScanDateTime).ToString("h:mm tt")</span>
+                                                </div>
+                                            }
+                                            @if (!_recentActivity.Any())
+                                            {
+                                                <div class="feed-empty">No activity today</div>
+                                            }
+                                        </div>
+                                    </div>
+
+                                    <div class="live-links">
+                                        <h3 class="live-sub-title">⚡ Quick Actions</h3>
+                                        <div class="home-card-grid">
+                                            <button class="home-card" @onclick="NavigateToReception" disabled="@_navigatingReception">
+                                                <span class="card-icon">🖥️</span>
+                                                <span class="card-label">Reception Kiosk</span>
+                                                <span class="card-desc">@(_navigatingReception ? "Detecting campus..." : "Full live scanner view")</span>
+                                            </button>
+                                            <a class="home-card" href="/safety">
+                                                <span class="card-icon">✅</span>
+                                                <span class="card-label">Safety Dashboard</span>
+                                                <span class="card-desc">Muster &amp; accountability</span>
+                                            </a>
+                                            <a class="home-card" href="/kiosk/stopsix">
+                                                <span class="card-icon">🔴</span>
+                                                <span class="card-label">Stop Six Kiosk</span>
+                                                <span class="card-desc">Badge scanner</span>
+                                            </a>
+                                            <a class="home-card" href="/kiosk/mccart">
+                                                <span class="card-icon">🔴</span>
+                                                <span class="card-label">McCart Kiosk</span>
+                                                <span class="card-desc">Badge scanner</span>
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
+                    @* ── Staff: Check In ───────────────────────────────────────────────────── *@
+                    <AuthorizeView Context="roleCtx1" Policy="RequireAnyStaff">
+                        <Authorized>
+                            <div class="home-section">
+                                <h2 class="section-title">Check In</h2>
+                                <div class="home-card-grid">
+                                    <a class="home-card" href="/mobile/checkin">
+                                        <span class="card-icon">📍</span>
+                                        <span class="card-label">Mobile Check-In</span>
+                                        <span class="card-desc">GPS campus presence</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
+                    @* ── Hourly employees: My Time ─────────────────────────────────────────── *@
+                    <AuthorizeView Context="roleCtx2" Policy="RequireHourly">
+                        <Authorized>
+                            <div class="home-section">
+                                <h2 class="section-title">My Time</h2>
+                                <div class="home-card-grid">
+                                    <a class="home-card" href="/mobile/clock">
+                                        <span class="card-icon">⏰</span>
+                                        <span class="card-label">Mobile Clock</span>
+                                        <span class="card-desc">Clock in / out</span>
+                                    </a>
+                                    <a class="home-card" href="/my/timesheet">
+                                        <span class="card-icon">📋</span>
+                                        <span class="card-label">My Timesheet</span>
+                                        <span class="card-desc">View &amp; submit hours</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
+                    @* ── Supervisors: Team Management ──────────────────────────────────────── *@
+                    <AuthorizeView Context="roleCtx3" Policy="RequireSupervisor">
+                        <Authorized>
+                            <div class="home-section">
+                                <h2 class="section-title">Team Management</h2>
+                                <div class="home-card-grid">
+                                    <a class="home-card" href="/supervisor/timesheets">
+                                        <span class="card-icon">👥</span>
+                                        <span class="card-label">Team Timesheets</span>
+                                        <span class="card-desc">Review &amp; approve</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
+                    @* ── HR: Payroll ────────────────────────────────────────────────────────── *@
+                    <AuthorizeView Context="roleCtx4" Policy="RequireHR">
+                        <Authorized>
+                            <div class="home-section">
+                                <h2 class="section-title">HR &amp; Payroll</h2>
+                                <div class="home-card-grid">
+                                    <a class="home-card" href="/hr/payroll">
+                                        <span class="card-icon">💰</span>
+                                        <span class="card-label">Payroll Review</span>
+                                        <span class="card-desc">Approve &amp; export</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
+                    @* ── Supervisors/CampusAdmin: Reports ─────────────────────────────────── *@
+                    <AuthorizeView Context="roleCtx5" Policy="RequireSupervisor">
+                        <Authorized>
+                            <div class="home-section">
+                                <h2 class="section-title">Reports</h2>
+                                <div class="home-card-grid">
+                                    <a class="home-card" href="/reports/safety">
+                                        <span class="card-icon">🛡️</span>
+                                        <span class="card-label">Safety Report</span>
+                                        <span class="card-desc">Campus presence by date</span>
+                                    </a>
+                                    <a class="home-card" href="/reports/timeclock">
+                                        <span class="card-icon">🕐️</span>
+                                        <span class="card-label">TimeClock Report</span>
+                                        <span class="card-desc">Historical punch history</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
+                    @* ── Admin ──────────────────────────────────────────────────────────────── *@
+                    <AuthorizeView Context="roleCtx7" Policy="RequireAdmin">
+                        <Authorized>
+                            <div class="home-section">
+                                <h2 class="section-title">Admin</h2>
+                                <div class="home-card-grid">
+                                    <a class="home-card" href="/admin/employees/sync">
+                                        <span class="card-icon">👥</span>
+                                        <span class="card-label">Employees</span>
+                                        <span class="card-desc">Manage employee records</span>
+                                    </a>
+                                    <a class="home-card" href="/admin/payperiods">
+                                        <span class="card-icon">📅</span>
+                                        <span class="card-label">Pay Periods</span>
+                                        <span class="card-desc">Configure pay calendar</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
+                </div>
+            </div>
+        </Authorized>
+    </AuthorizeView>
+</div>
+
+@code {
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+    private bool _checked = false;
+
+    // Live dashboard state — fires for any role covered by RequireReception policy
+    private bool _liveLoading = false;
+    private DateTime _lastRefresh = DateTime.UtcNow;
+    private int _staffCount = 0;
+    private int _studentCount = 0;
+    private int _todayTotal = 0;
+    private int _selectedCampusId = 0;
+    private string _selectedCampusCode = "";
+    private List<Campus> _campuses = new();
+    private List<ActivityItem> _recentActivity = new();
+    private System.Timers.Timer? _refreshTimer;
+    private bool _isReception = false;
+    private bool _navigatingReception = false;
+
+    private async Task NavigateToReception()
+    {
+        _navigatingReception = true;
+        StateHasChanged();
+        
+        try
+        {
+            await JS.InvokeVoidAsync("console.log", "[GPS] Requesting GPS position...");
+            Logger.LogInformation("Requesting GPS position for Reception Kiosk navigation");
+            
+            var position = await JS.InvokeAsync<GeolocationPosition>("geolocation.getPosition");
+            
+            await JS.InvokeVoidAsync("console.log", $"[GPS] Position received: Lat={position.Latitude}, Lon={position.Longitude}, Accuracy={position.Accuracy}m");
+            Logger.LogInformation("GPS position received: Lat={Latitude}, Lon={Longitude}, Accuracy={Accuracy}m", 
+                position.Latitude, position.Longitude, position.Accuracy);
+            
+            var nearest = await GeofenceService.GetNearestCampusAsync(
+                position.Latitude,
+                position.Longitude
+            );
+            
+            if (nearest != null)
+            {
+                await JS.InvokeVoidAsync("console.log", $"[GPS] Detected nearest campus: {nearest.CampusName} ({nearest.CampusCode})");
+                Logger.LogInformation("GPS detected nearest campus: {CampusName} ({CampusCode}) at CampusId={CampusId}", 
+                    nearest.CampusName, nearest.CampusCode, nearest.CampusId);
+                
+                await JS.InvokeVoidAsync("console.log", $"[GPS] Navigating to /reception/{nearest.CampusCode}");
+                Nav.NavigateTo($"/reception/{nearest.CampusCode}");
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("console.log", "[GPS] ERROR: GeofenceService returned null!");
+                Logger.LogWarning("GeofenceService returned null - no campuses configured with GPS coordinates");
+                Nav.NavigateTo("/reception");
+            }
+        }
+        catch (Exception ex)
+        {
+            await JS.InvokeVoidAsync("console.error", $"[GPS] EXCEPTION: {ex.Message}");
+            Logger.LogError(ex, "GPS detection failed: {ErrorMessage}", ex.Message);
+            Nav.NavigateTo("/reception");
+        }
+        finally
+        {
+            _navigatingReception = false;
+            StateHasChanged();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+
+        // Mirror exactly the RequireReception policy from Program.cs
+        _isReception = user.IsInRole("TimeClock.Reception") ||
+                       user.IsInRole("TimeClock.Supervisor") ||
+                       user.IsInRole("TimeClock.Supervisor.StopSix") ||
+                       user.IsInRole("TimeClock.Supervisor.McCart") ||
+                       user.IsInRole("TimeClock.Admin");
+
+        if (_isReception)
+        {
+            try
+            {
+                using var context = await DbFactory.CreateDbContextAsync();
+                _campuses = await context.Campuses.AsNoTracking().OrderBy(c => c.CampusName).ToListAsync();
+
+                if (_campuses.Any())
+                {
+                    var first = _campuses.First();
+                    _selectedCampusId = first.CampusId;
+                    _selectedCampusCode = first.CampusCode;
+                }
+
+                await RefreshLiveData();
+
+                _refreshTimer = new System.Timers.Timer(15000);
+                _refreshTimer.Elapsed += async (s, e) =>
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await RefreshLiveData();
+                        StateHasChanged();
+                    });
+                };
+                _refreshTimer.Start();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "Could not load live dashboard data on home page");
+            }
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _checked = true;
+
+            // Restore preferred campus from localStorage if available
+            if (_isReception && _campuses.Any())
+            {
+                try
+                {
+                    var saved = await JS.InvokeAsync<string>("localStorage.getItem", "reception_campus");
+                    if (!string.IsNullOrEmpty(saved))
+                    {
+                        var match = _campuses.FirstOrDefault(c =>
+                            c.CampusCode.Equals(saved, StringComparison.OrdinalIgnoreCase));
+                        if (match != null)
+                        {
+                            _selectedCampusId = match.CampusId;
+                            _selectedCampusCode = match.CampusCode;
+                            await RefreshLiveData();
+                        }
+                    }
+                }
+                catch { /* localStorage unavailable — use default */ }
+            }
+
+            StateHasChanged();
+        }
+    }
+
+    private async Task SelectHomeCampus(Campus campus)
+    {
+        _selectedCampusId = campus.CampusId;
+        _selectedCampusCode = campus.CampusCode;
+        await RefreshLiveData();
+        try { await JS.InvokeVoidAsync("localStorage.setItem", "reception_campus", campus.CampusCode); }
+        catch { }
+    }
+
+    private async Task RefreshLiveData()
+    {
+        if (_liveLoading) return;
+        _liveLoading = true;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var cstNow = ToCst(DateTime.UtcNow);
+            var today = cstNow.Date;
+
+            // Fetch recent transactions and filter by CST date in memory
+            var recentTx = await context.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.CampusId == _selectedCampusId && t.ScanDateTime >= DateTime.UtcNow.AddDays(-1))
+                .OrderByDescending(t => t.ScanDateTime)
+                .ToListAsync();
+
+            var todayTx = recentTx
+                .Where(t => ToCst(t.ScanDateTime).Date == today)
+                .ToList();
+
+            _todayTotal = todayTx.Count;
+
+            var groups = todayTx
+                .GroupBy(t => new { t.IdNumber, t.TransactionType })
+                .ToList();
+
+            int staff = 0, students = 0;
+            foreach (var grp in groups)
+            {
+                var lastScan = grp.OrderByDescending(t => t.ScanDateTime).First();
+                if (lastScan.ScanType == "CAMPUS_IN" || lastScan.ScanType == "LUNCH_IN")
+                {
+                    if (grp.Key.TransactionType == "STAFF") staff++;
+                    else if (grp.Key.TransactionType == "STUDENT") students++;
+                }
+            }
+            _staffCount = staff;
+            _studentCount = students;
+
+            _recentActivity = todayTx.Take(15).Select(t => new ActivityItem
+            {
+                FirstName = t.FirstName,
+                LastName = t.LastName,
+                TransactionType = t.TransactionType,
+                ScanType = t.ScanType,
+                ScanDateTime = t.ScanDateTime
+            }).ToList();
+
+            _lastRefresh = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading live home dashboard data");
+        }
+        finally
+        {
+            _liveLoading = false;
+        }
+    }
+
+    private static DateTime ToCst(DateTime utcTime) => TimeZoneInfo.ConvertTimeFromUtc(utcTime, CentralTimeZone);
+
+    private static string GetIcon(string scanType) => scanType switch
+    {
+        "CAMPUS_IN"  => "➡️",
+        "CAMPUS_OUT" => "⬅️",
+        "LUNCH_OUT"  => "🍽️",
+        "LUNCH_IN"   => "🔙",
+        _            => "📍"
+    };
+
+    public ValueTask DisposeAsync()
+    {
+        _refreshTimer?.Stop();
+        _refreshTimer?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private class ActivityItem
+    {
+        public string FirstName { get; set; } = "";
+        public string LastName { get; set; } = "";
+        public string TransactionType { get; set; } = "";
+        public string ScanType { get; set; } = "";
+        public DateTime ScanDateTime { get; set; }
+    }
+
+    private class GeolocationPosition
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+        public double Accuracy { get; set; }
+        public long Timestamp { get; set; }
+    }
+}

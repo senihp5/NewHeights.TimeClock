@@ -81,7 +81,7 @@ public class TimePunchService : ITimePunchService
         if (!todayPunches.Any()) return PunchType.In;
 
         var lastPunch = todayPunches.Last();
-        var now = DateTime.Now;
+        var now = DateTime.UtcNow;
         var campus = await _context.Campuses.FindAsync(campusId);
         var lunchStart = campus?.LunchStartTime?.ToTimeSpan() ?? new TimeSpan(11, 0, 0);
         var lunchEnd = campus?.LunchEndTime?.ToTimeSpan() ?? new TimeSpan(13, 0, 0);
@@ -119,7 +119,7 @@ public class TimePunchService : ITimePunchService
         }
 
         if (lastIn != null)
-            totalMinutes += (decimal)(DateTime.Now - lastIn.PunchDateTime).TotalMinutes;
+            totalMinutes += (decimal)(DateTime.UtcNow - lastIn.PunchDateTime).TotalMinutes;
 
         return Math.Round(totalMinutes / 60, 2);
     }
@@ -159,7 +159,7 @@ public class TimePunchService : ITimePunchService
             }
 
             var punchType = await DeterminePunchTypeAsync(employee.EmployeeId, campusId);
-            var now = DateTime.Now;
+            var now = DateTime.UtcNow;
             var roundedTime = RoundTime(now, 15);
 
             var punch = new TcTimePunch
@@ -186,7 +186,7 @@ public class TimePunchService : ITimePunchService
 
             await UpdateDailyTimecardAsync(employee.EmployeeId, campusId, now.Date);
             var totalHours = await GetTodayHoursAsync(employee.EmployeeId);
-            var photoBase64 = await GetEmployeePhotoBase64Async(employee.StaffDcid);
+            var photoBase64 = await GetEmployeePhotoBase64Async(employee.StaffDcid ?? 0);
 
             var greeting = punchType switch
             {

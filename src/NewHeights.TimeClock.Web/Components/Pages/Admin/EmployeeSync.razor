@@ -1,0 +1,249 @@
+@page "/admin/employees/sync"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@inject IEmployeeSyncService SyncService
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ILogger<EmployeeSync> Logger
+
+<PageTitle>Employee Sync - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <h1>Employee Sync</h1>
+        <p class="admin-subtitle">Sync hourly employees and substitutes from Entra ID groups into TC_Employees.</p>
+    </div>
+
+    @if (_lastResult != null)
+    {
+        <div class="sync-result @(_lastResult.Success ? "result-success" : "result-error")">
+            <div class="result-summary">
+                <span class="result-badge added">+@_lastResult.Added Added</span>
+                <span class="result-badge updated">&#8635; @_lastResult.Updated Updated</span>
+                <span class="result-badge deactivated">&#8856; @_lastResult.Deactivated Deactivated</span>
+                <span class="result-badge skipped">&#9135; @_lastResult.Skipped Skipped</span>
+                <span class="result-time">@_lastResult.CompletedAt.ToLocalTime().ToString("M/d h:mm tt")</span>
+            </div>
+            @if (_lastResult.Warnings.Any())
+            {
+                <details class="result-details">
+                    <summary>@_lastResult.Warnings.Count Warning(s)</summary>
+                    <ul>@foreach (var w in _lastResult.Warnings) { <li>@w</li> }</ul>
+                </details>
+            }
+            @if (_lastResult.Errors.Any())
+            {
+                <details class="result-details error-details" open>
+                    <summary>@_lastResult.Errors.Count Error(s)</summary>
+                    <ul>@foreach (var e in _lastResult.Errors) { <li>@e</li> }</ul>
+                </details>
+            }
+        </div>
+    }
+
+    <div class="admin-card sync-card">
+        <div class="sync-info">
+            <h3>Configured Groups</h3>
+            <table class="groups-table">
+                <thead><tr><th>Config Key</th><th>Group ID</th><th>Type</th></tr></thead>
+                <tbody>
+                    @foreach (var row in _groupRows)
+                    {
+                        <tr class="@(row.Configured ? "" : "unconfigured")">
+                            <td>@row.Label</td>
+                            <td class="group-id">@(row.GroupId ?? "NOT CONFIGURED")</td>
+                            <td>@row.Type</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="sync-actions">
+            <button class="btn-sync" @onclick="RunSync" disabled="@(_syncing || !_groupRows.Any(r => r.Configured))">
+                @if (_syncing)
+                {
+                    <span class="spinner"></span><span>Syncing...</span>
+                }
+                else
+                {
+                    <span>&#9654; Run Sync Now</span>
+                }
+            </button>
+            <p class="sync-note">Syncs membership from Entra ID groups. Adds new employees, updates existing, deactivates removed. Supervisor links are set from each employee''s Entra manager.</p>
+        </div>
+    </div>
+
+    @if (_employees.Any())
+    {
+        <div class="admin-card">
+            <div class="table-header">
+                <h3>TC_Employees (@_employees.Count)</h3>
+                <input class="search-box" placeholder="Search name or email..." @bind="_search" @bind:event="oninput" />
+            </div>
+            <table class="emp-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Type</th>
+                        <th>Campus</th>
+                        <th>Supervisor</th>
+                        <th>Active</th>
+                        <th>Modified</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var e in FilteredEmployees)
+                    {
+                        <tr class="@(e.IsActive ? "" : "inactive-row")">
+                            <td>@e.Staff?.FirstName @e.Staff?.LastName</td>
+                            <td>@e.Email</td>
+                            <td><span class="type-badge @e.EmployeeType.ToString().ToLower()">@e.EmployeeType</span></td>
+                            <td>@e.HomeCampus?.CampusCode</td>
+                            <td>@(e.Supervisor != null ? $"{e.Supervisor.Staff?.FirstName} {e.Supervisor.Staff?.LastName}" : "—")</td>
+                            <td><span class="@(e.IsActive ? "active-dot" : "inactive-dot")">@(e.IsActive ? "Yes" : "No")</span></td>
+                            <td>@e.ModifiedDate.ToLocalTime().ToString("M/d/yy h:mm tt")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+<style>
+    .admin-page { padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
+    .admin-header { margin-bottom: 1.5rem; }
+    .admin-header h1 { color: #1e3a5f; margin: 0 0 .25rem; }
+    .admin-subtitle { color: #6b7280; margin: 0; }
+    .admin-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .sync-card { display: grid; grid-template-columns: 1fr auto; gap: 2rem; align-items: start; }
+    .sync-info h3 { margin: 0 0 .75rem; color: #1e3a5f; }
+    .groups-table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    .groups-table th { text-align: left; color: #6b7280; font-weight: 500; padding: .25rem .75rem .25rem 0; border-bottom: 1px solid #e5e7eb; }
+    .groups-table td { padding: .4rem .75rem .4rem 0; border-bottom: 1px solid #f3f4f6; }
+    .group-id { font-family: monospace; font-size: .8rem; color: #374151; }
+    .unconfigured td { color: #ef4444; }
+    .sync-actions { display: flex; flex-direction: column; gap: .75rem; align-items: flex-start; min-width: 220px; }
+    .btn-sync { background: #1e3a5f; color: #fff; border: none; border-radius: 6px; padding: .75rem 1.5rem; font-size: 1rem; cursor: pointer; display: flex; align-items: center; gap: .5rem; white-space: nowrap; }
+    .btn-sync:hover:not(:disabled) { background: #2d5282; }
+    .btn-sync:disabled { opacity: .6; cursor: not-allowed; }
+    .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; }
+    @@keyframes spin { to { transform: rotate(360deg); } }
+    .sync-note { font-size: .8rem; color: #6b7280; margin: 0; max-width: 220px; }
+    .sync-result { border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1.5rem; }
+    .result-success { background: #f0fdf4; border: 1px solid #86efac; }
+    .result-error   { background: #fef2f2; border: 1px solid #fca5a5; }
+    .result-summary { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-bottom: .5rem; }
+    .result-badge { padding: .2rem .6rem; border-radius: 9999px; font-size: .8rem; font-weight: 600; }
+    .result-badge.added       { background: #dcfce7; color: #166534; }
+    .result-badge.updated     { background: #dbeafe; color: #1e40af; }
+    .result-badge.deactivated { background: #fee2e2; color: #991b1b; }
+    .result-badge.skipped     { background: #f3f4f6; color: #374151; }
+    .result-time { font-size: .8rem; color: #6b7280; margin-left: auto; }
+    .result-details { font-size: .875rem; margin-top: .5rem; }
+    .result-details ul { margin: .25rem 0 0 1rem; padding: 0; }
+    .result-details li { margin-bottom: .2rem; }
+    .error-details summary { color: #dc2626; }
+    .table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+    .table-header h3 { margin: 0; color: #1e3a5f; }
+    .search-box { border: 1px solid #d1d5db; border-radius: 6px; padding: .4rem .75rem; font-size: .875rem; width: 240px; }
+    .emp-table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    .emp-table th { text-align: left; color: #6b7280; font-weight: 500; padding: .5rem; border-bottom: 2px solid #e5e7eb; }
+    .emp-table td { padding: .5rem; border-bottom: 1px solid #f3f4f6; }
+    .emp-table tr:hover { background: #f9fafb; }
+    .inactive-row { opacity: .5; }
+    .type-badge { padding: .15rem .5rem; border-radius: 9999px; font-size: .75rem; font-weight: 500; }
+    .type-badge.hourlystaff { background: #dbeafe; color: #1e40af; }
+    .type-badge.substitute  { background: #fef9c3; color: #854d0e; }
+    .active-dot   { color: #16a34a; font-weight: 600; }
+    .inactive-dot { color: #9ca3af; }
+</style>
+
+@code {
+    private bool _syncing = false;
+    private EmployeeSyncResult? _lastResult;
+    private string _search = "";
+    private List<TcEmployee> _employees = new();
+    private List<GroupRow> _groupRows = new();
+
+    [Inject] private IConfiguration Config { get; set; } = default!;
+
+    private static readonly (string Key, string Label, string Type)[] GroupDefs =
+    {
+        ("GraphSync:EmployeeGroupIds:StopSix",             "Stop Six Employees",    "HourlyStaff"),
+        ("GraphSync:EmployeeGroupIds:McCart",               "McCart Employees",     "HourlyStaff"),
+        ("GraphSync:EmployeeGroupIds:Substitute",           "Substitutes",          "Substitute"),
+        ("GraphSync:SupervisorGroupIds:StopSix",          "Stop Six Supervisors", "SalariedStaff"),
+        ("GraphSync:SupervisorGroupIds:McCart",            "McCart Supervisors",   "SalariedStaff"),
+    };
+
+
+    protected override async Task OnInitializedAsync()
+    {
+        _groupRows = GroupDefs.Select(g => new GroupRow
+        {
+            Label      = g.Label,
+            GroupId    = Config[g.Key],
+            Type       = g.Type,
+            Configured = !string.IsNullOrWhiteSpace(Config[g.Key]),
+        }).ToList();
+
+        await LoadEmployeesAsync();
+    }
+
+    private async Task LoadEmployeesAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _employees = await db.TcEmployees
+            .Include(e => e.Staff)
+            .Include(e => e.HomeCampus)
+            .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
+            .OrderBy(e => e.Staff!.LastName).ThenBy(e => e.Staff!.FirstName)
+            .ToListAsync();
+    }
+
+    private async Task RunSync()
+    {
+        _syncing = true;
+        _lastResult = null;
+        StateHasChanged();
+        try
+        {
+            _lastResult = await Task.Run(() => SyncService.SyncFromEntraAsync());
+            await LoadEmployeesAsync();
+        }
+        catch (Exception ex)
+        {
+            _lastResult = new EmployeeSyncResult();
+            _lastResult.Errors.Add($"Unhandled exception: {ex.Message}");
+            Logger.LogError(ex, "Unhandled exception during sync");
+        }
+        finally
+        {
+            _syncing = false;
+            StateHasChanged();
+        }
+    }
+
+    private IEnumerable<TcEmployee> FilteredEmployees => string.IsNullOrWhiteSpace(_search)
+        ? _employees
+        : _employees.Where(e =>
+            (e.Staff?.FirstName ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+            (e.Staff?.LastName  ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+            (e.Email            ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase));
+
+    private class GroupRow
+    {
+        public string Label { get; set; } = "";
+        public string? GroupId { get; set; }
+        public string Type { get; set; } = "";
+        public bool Configured { get; set; }
+    }
+}

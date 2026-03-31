@@ -1,0 +1,789 @@
+@page "/admin/schedule/import"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@using ClosedXML.Excel
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ILogger<ScheduleImport> Logger
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>Schedule Import</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <div>
+            <h1>Master Schedule Import</h1>
+            <p class="admin-subtitle">Upload the campus master schedule spreadsheet to import teacher assignments.</p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger">@errorMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+
+    @if (phase == ImportPhase.Upload)
+    {
+        <div class="si-upload-card">
+            <h2>Step 1: Select Spreadsheet</h2>
+            <p>
+                Upload the campus master schedule XLSX file using the consolidated format:<br />
+                <strong>Col A:</strong> Last, First &nbsp;|&nbsp; <strong>Col B:</strong> Room &nbsp;|&nbsp;
+                <strong>Col C:</strong> DAYS (DAY/MW/TTH) &nbsp;|&nbsp;
+                <strong>Cols D–I:</strong> Mon/Wed periods 1–6 &nbsp;|&nbsp;
+                <strong>Cols J–O:</strong> Tue/Thu periods 1–6
+            </p>
+
+            <div class="si-field-row">
+                <label>Campus</label>
+                <select class="form-select si-select" @bind="selectedCampusId">
+                    <option value="0">-- Select Campus --</option>
+                    @foreach (var c in campuses)
+                    {
+                        <option value="@c.CampusId">@c.CampusName</option>
+                    }
+                </select>
+            </div>
+
+            <div class="si-field-row">
+                <label>Term</label>
+                <select class="form-select si-select" @bind="selectedTerm">
+                    <option value="">-- Select Term --</option>
+                    <option value="TERM2">Term 2</option>
+                    <option value="TERM3">Term 3</option>
+                    <option value="TERM4">Term 4</option>
+                </select>
+            </div>
+
+            <div class="si-field-row">
+                <label>School Year</label>
+                <input class="form-control si-input" type="text" @bind="schoolYear" placeholder="e.g. 2025-26" />
+            </div>
+
+            <div class="si-field-row">
+                <label>Spreadsheet File (.xlsx)</label>
+                <InputFile OnChange="HandleFileSelected" accept=".xlsx" class="form-control si-file-input" />
+            </div>
+
+            <div class="si-button-row">
+                <button class="btn btn-primary"
+                        @onclick="ParseSpreadsheet"
+                        disabled="@(isProcessing || selectedFile == null || selectedCampusId == 0 || string.IsNullOrEmpty(selectedTerm))">
+                    @if (isProcessing)
+                    {
+                        <span>Parsing...</span>
+                    }
+                    else
+                    {
+                        <span>Parse &amp; Match Teachers</span>
+                    }
+                </button>
+            </div>
+        </div>
+    }
+
+    @if (phase == ImportPhase.Review && parsedRows.Count > 0)
+    {
+        <div class="si-review-section">
+            <h2>Step 2: Review Teacher Matches</h2>
+
+            <div class="si-summary-bar">
+                <span class="si-badge si-badge-green">✓ Confident: @parsedRows.Count(r => r.TeacherMatchMethod is "Exact" or "LastName" or "Manual")</span>
+                <span class="si-badge si-badge-yellow">⚠ Fuzzy: @parsedRows.Count(r => r.TeacherMatchMethod == "Fuzzy")</span>
+                <span class="si-badge si-badge-red">✗ Unmatched: @parsedRows.Count(r => r.TeacherMatchMethod == "Unmatched")</span>
+                <span class="si-badge si-badge-gray">Total rows: @parsedRows.Count</span>
+            </div>
+
+            <p class="si-hint">
+                Green rows are ready to save. Yellow rows need verification. Red rows must be matched manually.
+                Click any teacher name to reassign.
+            </p>
+
+            <table class="si-table">
+                <thead>
+                    <tr>
+                        <th>Raw Name</th>
+                        <th>Resolved Teacher</th>
+                        <th>Match</th>
+                        <th>Room</th>
+                        <th>Pattern</th>
+                        <th>Shift</th>
+                        <th>MW Periods</th>
+                        <th>TTh Periods</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in parsedRows)
+                    {
+                        <tr class="@GetRowClass(row)">
+                            <td class="si-raw-cell">@row.RawTeacherCell</td>
+                            <td>
+                                @if (editingRow == row)
+                                {
+                                    <div class="si-inline-search">
+                                        <input class="form-control form-control-sm"
+                                               value="@searchText"
+                                               @oninput="OnSearchChanged"
+                                               placeholder="Search by last name..." />
+                                        @if (searchResults.Count > 0)
+                                        {
+                                            <ul class="si-search-dropdown">
+                                                @foreach (var s in searchResults)
+                                                {
+                                                    <li @onclick="() => AssignTeacher(row, s)">
+                                                        @s.LastName, @s.FirstName (@s.IdNumber)
+                                                    </li>
+                                                }
+                                            </ul>
+                                        }
+                                        <button class="btn btn-sm btn-secondary mt-1" @onclick="CancelEdit">Cancel</button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span class="@(row.TeacherMatchMethod == "Unmatched" ? "si-unmatched-link" : "si-matched-name")"
+                                          @onclick="() => StartEdit(row)">
+                                        @(row.ResolvedTeacherName ?? row.RawTeacherCell)
+                                    </span>
+                                }
+                            </td>
+                            <td>
+                                <span class="si-method-badge si-method-@(row.TeacherMatchMethod?.ToLower() ?? "unmatched")">
+                                    @(row.TeacherMatchMethod ?? "Unmatched")
+                                </span>
+                            </td>
+                            <td>@row.Room</td>
+                            <td>@row.DayPattern</td>
+                            <td>
+                                <span class="si-shift-badge si-shift-@(row.Shift?.ToLower() ?? "day")">
+                                    @row.Shift
+                                </span>
+                            </td>
+                            <td class="si-periods">@FormatPeriods(row.MW_P1, row.MW_P2, row.MW_P3, row.MW_P4, row.MW_P5, row.MW_P6)</td>
+                            <td class="si-periods">@FormatPeriods(row.TTh_P1, row.TTh_P2, row.TTh_P3, row.TTh_P4, row.TTh_P5, row.TTh_P6)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            <div class="si-button-row">
+                <button class="btn btn-secondary" @onclick="() => phase = ImportPhase.Upload">← Back</button>
+                <button class="btn btn-success"
+                        @onclick="SaveImport"
+                        disabled="@(isProcessing || parsedRows.Any(r => r.TeacherMatchMethod == "Unmatched" && r.TeacherStaffDcid == null))">
+                    @if (isProcessing)
+                    {
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <span>Save @parsedRows.Count Row(s) to Database</span>
+                    }
+                </button>
+            </div>
+
+            @if (parsedRows.Any(r => r.TeacherMatchMethod == "Unmatched" && r.TeacherStaffDcid == null))
+            {
+                <p class="si-warning">Cannot save until all red rows are manually matched. Click the teacher name to search and assign.</p>
+            }
+        </div>
+    }
+</div>
+
+<style>
+    .si-upload-card {
+        background: var(--card-bg, #fff);
+        border: 1px solid var(--border-color, #dee2e6);
+        border-radius: 8px;
+        padding: 1.5rem;
+        max-width: 680px;
+    }
+
+    .si-upload-card p {
+        font-size: 0.875rem;
+        color: #4b5563;
+        margin-bottom: 1rem;
+    }
+
+    .si-field-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-bottom: 1rem;
+    }
+
+    .si-field-row label {
+        font-weight: 600;
+        font-size: 0.875rem;
+    }
+
+    .si-select, .si-input, .si-file-input {
+        max-width: 400px;
+    }
+
+    .si-button-row {
+        display: flex;
+        gap: 0.75rem;
+        margin-top: 1.25rem;
+        flex-wrap: wrap;
+    }
+
+    .si-review-section { margin-top: 1rem; }
+
+    .si-summary-bar {
+        display: flex;
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .si-badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+
+    .si-badge-green  { background: #d1fae5; color: #065f46; }
+    .si-badge-yellow { background: #fef3c7; color: #92400e; }
+    .si-badge-red    { background: #fee2e2; color: #991b1b; }
+    .si-badge-gray   { background: #f3f4f6; color: #374151; }
+
+    .si-hint {
+        font-size: 0.875rem;
+        color: #6b7280;
+        margin-bottom: 0.75rem;
+    }
+
+    .si-warning {
+        color: #b91c1c;
+        font-size: 0.875rem;
+        margin-top: 0.5rem;
+    }
+
+    .si-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.8rem;
+        margin-bottom: 1rem;
+    }
+
+    .si-table th {
+        background: #1e3a5f;
+        color: #fff;
+        padding: 8px 10px;
+        text-align: left;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .si-table td {
+        padding: 6px 10px;
+        border-bottom: 1px solid #e5e7eb;
+        vertical-align: top;
+    }
+
+    .si-row-green  { background: #f0fdf4; }
+    .si-row-yellow { background: #fffbeb; }
+    .si-row-red    { background: #fef2f2; }
+
+    .si-raw-cell {
+        font-size: 0.78rem;
+        color: #6b7280;
+        max-width: 130px;
+        word-break: break-word;
+    }
+
+    .si-matched-name {
+        cursor: pointer;
+        text-decoration: underline dotted;
+        color: #1e3a5f;
+    }
+
+    .si-unmatched-link {
+        cursor: pointer;
+        font-weight: 600;
+        color: #dc2626;
+        text-decoration: underline;
+    }
+
+    .si-method-badge {
+        padding: 2px 7px;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .si-method-exact, .si-method-lastname { background: #d1fae5; color: #065f46; }
+    .si-method-fuzzy   { background: #fef3c7; color: #92400e; }
+    .si-method-manual  { background: #dbeafe; color: #1e40af; }
+    .si-method-unmatched { background: #fee2e2; color: #991b1b; }
+
+    .si-shift-badge {
+        padding: 2px 7px;
+        border-radius: 4px;
+        font-size: 0.72rem;
+        font-weight: 600;
+    }
+
+    .si-shift-day     { background: #dbeafe; color: #1e3a5f; }
+    .si-shift-evening { background: #f3e8ff; color: #6b21a8; }
+
+    .si-periods {
+        font-size: 0.75rem;
+        color: #374151;
+        max-width: 160px;
+    }
+
+    .si-inline-search {
+        position: relative;
+        min-width: 220px;
+    }
+
+    .si-search-dropdown {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        background: #fff;
+        position: absolute;
+        z-index: 100;
+        width: 100%;
+        max-height: 200px;
+        overflow-y: auto;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+
+    .si-search-dropdown li {
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 0.8rem;
+    }
+
+    .si-search-dropdown li:hover { background: #eff6ff; }
+</style>
+
+@code {
+    // ── Enums & inner models ──────────────────────────────────────────────────
+
+    private enum ImportPhase { Upload, Review }
+
+    private class ParsedRow
+    {
+        public string? RawTeacherCell    { get; set; }
+        public string? RawPartnerNames  { get; set; }
+        public int?    TeacherStaffDcid { get; set; }
+        public string? ResolvedTeacherName { get; set; }
+        public string? Room             { get; set; }
+        public string  DayPattern       { get; set; } = string.Empty;
+        public string  Shift            { get; set; } = "DAY";
+        public string? ContentArea      { get; set; }
+
+        // MW periods 1-6
+        public string? MW_P1 { get; set; }
+        public string? MW_P2 { get; set; }
+        public string? MW_P3 { get; set; }
+        public string? MW_P4 { get; set; }
+        public string? MW_P5 { get; set; }
+        public string? MW_P6 { get; set; }
+
+        // TTh periods 1-6
+        public string? TTh_P1 { get; set; }
+        public string? TTh_P2 { get; set; }
+        public string? TTh_P3 { get; set; }
+        public string? TTh_P4 { get; set; }
+        public string? TTh_P5 { get; set; }
+        public string? TTh_P6 { get; set; }
+
+        public string? TeacherMatchMethod  { get; set; }
+        public string? Partner1MatchMethod { get; set; }
+        public string? Partner2MatchMethod { get; set; }
+        public int?    Partner1StaffDcid   { get; set; }
+        public int?    Partner2StaffDcid   { get; set; }
+    }
+
+    // ── State ─────────────────────────────────────────────────────────────────
+
+    private ImportPhase    phase          = ImportPhase.Upload;
+    private List<Campus>   campuses       = new();
+    private List<Staff>    allStaff       = new();
+    private List<ParsedRow> parsedRows    = new();
+
+    private int    selectedCampusId = 0;
+    private string selectedTerm     = string.Empty;
+    private string schoolYear       = "2025-26";
+    private IBrowserFile? selectedFile;
+
+    private bool   isProcessing    = false;
+    private string errorMessage    = string.Empty;
+    private string successMessage  = string.Empty;
+
+    // Inline edit state
+    private ParsedRow?  editingRow    = null;
+    private string      searchText    = string.Empty;
+    private List<Staff> searchResults = new();
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        campuses = await db.Campuses.OrderBy(c => c.CampusName).ToListAsync();
+        allStaff = await db.Staff.OrderBy(s => s.LastName).ToListAsync();
+    }
+
+    // ── File ──────────────────────────────────────────────────────────────────
+
+    private void HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        selectedFile  = e.File;
+        errorMessage  = string.Empty;
+        successMessage = string.Empty;
+    }
+
+    // ── Parse ─────────────────────────────────────────────────────────────────
+
+    private async Task ParseSpreadsheet()
+    {
+        if (selectedFile == null || selectedCampusId == 0 || string.IsNullOrEmpty(selectedTerm))
+            return;
+
+        isProcessing = true;
+        errorMessage = string.Empty;
+        parsedRows.Clear();
+
+        try
+        {
+            using var ms = new MemoryStream();
+            await using var stream = selectedFile.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+
+            using var wb = new XLWorkbook(ms);
+
+            // Prefer a sheet whose name contains the selected term, else use first sheet
+            string termKey = selectedTerm.Replace("TERM", "TERM "); // "TERM4" -> "TERM 4"
+            IXLWorksheet ws = wb.Worksheets.FirstOrDefault(s =>
+                    s.Name.Replace(" ", "").ToUpper().Contains(selectedTerm) ||
+                    s.Name.ToUpper().Contains(termKey))
+                ?? wb.Worksheets.First();
+
+            parsedRows = ParseConsolidatedSheet(ws);
+            MatchAllTeachers();
+
+            phase = ImportPhase.Review;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error parsing spreadsheet: {ex.Message}";
+            Logger.LogError(ex, "Schedule import parse error");
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    // ── Consolidated format parser ─────────────────────────────────────────────
+    //
+    // Expected layout (rows 1-3 are header rows, data starts at row 4):
+    //   Row 1: "CAMPUS NAME - TERM X"  (campus label, cols 4/10 = MW/TTH labels)
+    //   Row 2: DAY / EVENING sub-headers per column group
+    //   Row 3: TEACHER | ROOM | DAYS | PER01..PER06 (MW) | PER01..PER06 (TTH)
+    //
+    // Col mapping (1-based):
+    //   1=Teacher  2=Room  3=Days
+    //   4=MW_P1  5=MW_P2  6=MW_P3  7=MW_P4  8=MW_P5  9=MW_P6
+    //   10=TTh_P1 11=TTh_P2 12=TTh_P3 13=TTh_P4 14=TTh_P5 15=TTh_P6
+    //   16+ = KEY legend columns — ignored
+
+    private List<ParsedRow> ParseConsolidatedSheet(IXLWorksheet ws)
+    {
+        var rows = new List<ParsedRow>();
+        int lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
+
+        // Find the header row: the row whose col A contains "TEACHER" (case-insensitive)
+        int dataStartRow = 4; // default
+        for (int r = 1; r <= Math.Min(10, lastRow); r++)
+        {
+            if (ws.Cell(r, 1).GetString().Trim().ToUpper() == "TEACHER")
+            {
+                dataStartRow = r + 1;
+                break;
+            }
+        }
+
+        for (int r = dataStartRow; r <= lastRow; r++)
+        {
+            string cellA = ws.Cell(r, 1).GetString().Trim();
+            if (string.IsNullOrWhiteSpace(cellA)) continue;
+
+            // Skip KEY/legend rows: col 1 is blank or col 17+ has content while col A is a keyword
+            string upper = cellA.ToUpper();
+            if (upper == "TEACHER" || upper == "NAME" || upper.StartsWith("KEY")) continue;
+
+            string cellB  = ws.Cell(r, 2).GetString().Trim(); // Room
+            string cellC  = ws.Cell(r, 3).GetString().Trim(); // Days pattern
+
+            // Period columns
+            string mwP1   = NullIfEmpty(ws.Cell(r, 4).GetString().Trim());
+            string mwP2   = NullIfEmpty(ws.Cell(r, 5).GetString().Trim());
+            string mwP3   = NullIfEmpty(ws.Cell(r, 6).GetString().Trim());
+            string mwP4   = NullIfEmpty(ws.Cell(r, 7).GetString().Trim());
+            string mwP5   = NullIfEmpty(ws.Cell(r, 8).GetString().Trim());
+            string mwP6   = NullIfEmpty(ws.Cell(r, 9).GetString().Trim());
+            string tthP1  = NullIfEmpty(ws.Cell(r, 10).GetString().Trim());
+            string tthP2  = NullIfEmpty(ws.Cell(r, 11).GetString().Trim());
+            string tthP3  = NullIfEmpty(ws.Cell(r, 12).GetString().Trim());
+            string tthP4  = NullIfEmpty(ws.Cell(r, 13).GetString().Trim());
+            string tthP5  = NullIfEmpty(ws.Cell(r, 14).GetString().Trim());
+            string tthP6  = NullIfEmpty(ws.Cell(r, 15).GetString().Trim());
+
+            // Strip parenthetical suffixes from teacher name: "Smith, J (PE)" -> last="Smith"
+            string rawName = cellA;
+            string normalizedName = StripSuffix(cellA);
+
+            string dayPattern = NormalizeDayPattern(cellC);
+            string shift      = DetermineShift(dayPattern, mwP5, mwP6, tthP5, tthP6);
+
+            rows.Add(new ParsedRow
+            {
+                RawTeacherCell  = rawName,
+                Room            = NullIfEmpty(cellB),
+                DayPattern      = dayPattern,
+                Shift           = shift,
+                MW_P1  = mwP1,  MW_P2  = mwP2,  MW_P3  = mwP3,
+                MW_P4  = mwP4,  MW_P5  = mwP5,  MW_P6  = mwP6,
+                TTh_P1 = tthP1, TTh_P2 = tthP2, TTh_P3 = tthP3,
+                TTh_P4 = tthP4, TTh_P5 = tthP5, TTh_P6 = tthP6
+            });
+        }
+
+        return rows;
+    }
+
+    // Strip "(PE)", "(Art)", "(Spanish)" etc. from end of name token
+    private string StripSuffix(string raw)
+    {
+        var idx = raw.IndexOf('(');
+        return idx > 0 ? raw[..idx].Trim() : raw.Trim();
+    }
+
+    private static string? NullIfEmpty(string? s)
+        => string.IsNullOrWhiteSpace(s) ? null : s;
+
+    private string NormalizeDayPattern(string raw)
+    {
+        var upper = raw.ToUpper().Replace(" ", "").Replace("/", "");
+        if (upper.Contains("DAYTTH") || upper.Contains("DAY&TTH")) return "DAY/TTH";
+        if (upper.Contains("TTH") || upper.Contains("TTH"))         return "TTH";
+        if (upper.Contains("MW"))                                    return "MW";
+        if (upper.Contains("DAY"))                                   return "DAY";
+        return string.IsNullOrWhiteSpace(upper) ? "DAY" : raw.Trim().ToUpper();
+    }
+
+    // Determine shift from day pattern AND whether evening period columns are filled
+    private string DetermineShift(string dayPattern, string? mwP5, string? mwP6, string? tthP5, string? tthP6)
+    {
+        bool hasEvening = mwP5 != null || mwP6 != null || tthP5 != null || tthP6 != null;
+        return dayPattern switch
+        {
+            "MW"      => "EVENING",
+            "TTH"     => "EVENING",
+            "DAY/TTH" => "EVENING",
+            "DAY"     => hasEvening ? "EVENING" : "DAY",  // DAY teachers who also teach evening
+            _         => hasEvening ? "EVENING" : "DAY"
+        };
+    }
+
+    // ── Teacher matching ──────────────────────────────────────────────────────
+
+    private void MatchAllTeachers()
+    {
+        foreach (var row in parsedRows)
+        {
+            if (string.IsNullOrWhiteSpace(row.RawTeacherCell)) continue;
+            string nameTok = StripSuffix(row.RawTeacherCell);
+            (row.TeacherStaffDcid, row.ResolvedTeacherName, row.TeacherMatchMethod) = MatchTeacher(nameTok);
+        }
+    }
+
+    private (int? dcid, string? name, string method) MatchTeacher(string rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName))
+            return (null, null, "Unmatched");
+
+        // Extract last name — handles "Last, First", "Last, T", and plain "Last"
+        string lastName = (rawName.Contains(",")
+            ? rawName.Split(',')[0]
+            : rawName).Trim().ToUpper();
+
+        // Handle compound last names without spaces: "GarrettSmith" won't match "Garrett" —
+        // try exact first, then progressively shorter prefixes
+        var exact = allStaff.Where(s => s.LastName?.ToUpper() == lastName).ToList();
+        if (exact.Count == 1)
+            return (exact[0].Dcid, $"{exact[0].LastName}, {exact[0].FirstName}", "LastName");
+
+        // Multiple exact matches — disambiguate by first-name initial
+        if (exact.Count > 1 && rawName.Contains(","))
+        {
+            string firstInit = rawName.Split(',').Skip(1).FirstOrDefault()?.Trim().ToUpper() ?? string.Empty;
+            if (firstInit.Length > 0)
+            {
+                var byInit = exact.Where(s => s.FirstName?.ToUpper().StartsWith(firstInit[0].ToString()) == true).ToList();
+                if (byInit.Count == 1)
+                    return (byInit[0].Dcid, $"{byInit[0].LastName}, {byInit[0].FirstName}", "Exact");
+            }
+        }
+
+        // Fuzzy: staff last name starts with the token or token starts with staff last name
+        var fuzzy = allStaff.Where(s =>
+            (s.LastName?.ToUpper().StartsWith(lastName) == true) ||
+            (lastName.Length >= 4 && lastName.StartsWith(s.LastName?.ToUpper() ?? string.Empty))).ToList();
+        if (fuzzy.Count == 1)
+            return (fuzzy[0].Dcid, $"{fuzzy[0].LastName}, {fuzzy[0].FirstName}", "Fuzzy");
+
+        return (null, rawName, "Unmatched");
+    }
+
+    // ── Inline edit / search ──────────────────────────────────────────────────
+
+    private void StartEdit(ParsedRow row)
+    {
+        editingRow    = row;
+        searchText    = string.Empty;
+        searchResults.Clear();
+    }
+
+    private void CancelEdit()
+    {
+        editingRow = null;
+        searchText = string.Empty;
+        searchResults.Clear();
+    }
+
+    private void OnSearchChanged(ChangeEventArgs e)
+    {
+        searchText = e.Value?.ToString() ?? string.Empty;
+        searchResults = searchText.Length >= 2
+            ? allStaff
+                .Where(s => s.LastName?.ToUpper().Contains(searchText.ToUpper()) == true
+                         || s.FirstName?.ToUpper().Contains(searchText.ToUpper()) == true)
+                .OrderBy(s => s.LastName)
+                .Take(10)
+                .ToList()
+            : new List<Staff>();
+    }
+
+    private void AssignTeacher(ParsedRow row, Staff staff)
+    {
+        row.TeacherStaffDcid    = staff.Dcid;
+        row.ResolvedTeacherName = $"{staff.LastName}, {staff.FirstName}";
+        row.TeacherMatchMethod  = "Manual";
+        editingRow   = null;
+        searchText   = string.Empty;
+        searchResults.Clear();
+    }
+
+    // ── Save ──────────────────────────────────────────────────────────────────
+
+    private async Task SaveImport()
+    {
+        if (parsedRows.Any(r => r.TeacherStaffDcid == null)) return;
+
+        isProcessing  = true;
+        errorMessage  = string.Empty;
+
+        try
+        {
+            var authState   = await AuthStateProvider.GetAuthenticationStateAsync();
+            string importedBy = authState.User.FindFirst(ClaimTypes.Email)?.Value
+                             ?? authState.User.FindFirst(ClaimTypes.Name)?.Value
+                             ?? "Unknown";
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            // Deactivate prior import for the same campus / term / year
+            var existing = await db.TcMasterSchedules
+                .Where(s => s.CampusId   == selectedCampusId
+                         && s.TermName   == selectedTerm
+                         && s.SchoolYear == schoolYear
+                         && s.IsActive)
+                .ToListAsync();
+            foreach (var e in existing) e.IsActive = false;
+
+            var now = DateTime.UtcNow;
+            foreach (var row in parsedRows)
+            {
+                db.TcMasterSchedules.Add(new TcMasterSchedule
+                {
+                    CampusId            = selectedCampusId,
+                    TermName            = selectedTerm,
+                    SchoolYear          = schoolYear,
+                    RawTeacherCell      = row.RawTeacherCell,
+                    RawPartnerNames     = row.RawPartnerNames,
+                    TeacherStaffDcid    = row.TeacherStaffDcid,
+                    Partner1StaffDcid   = row.Partner1StaffDcid,
+                    Partner2StaffDcid   = row.Partner2StaffDcid,
+                    Room                = row.Room,
+                    DayPattern          = row.DayPattern,
+                    Shift               = row.Shift,
+                    ContentArea         = row.ContentArea,
+                    MW_P1  = row.MW_P1,  MW_P2  = row.MW_P2,  MW_P3  = row.MW_P3,
+                    MW_P4  = row.MW_P4,  MW_P5  = row.MW_P5,  MW_P6  = row.MW_P6,
+                    TTh_P1 = row.TTh_P1, TTh_P2 = row.TTh_P2, TTh_P3 = row.TTh_P3,
+                    TTh_P4 = row.TTh_P4, TTh_P5 = row.TTh_P5, TTh_P6 = row.TTh_P6,
+                    TeacherMatchMethod  = row.TeacherMatchMethod,
+                    Partner1MatchMethod = row.Partner1MatchMethod,
+                    Partner2MatchMethod = row.Partner2MatchMethod,
+                    IsActive            = true,
+                    ImportedDate        = now,
+                    ImportedBy          = importedBy
+                });
+            }
+
+            await db.SaveChangesAsync();
+
+            successMessage = $"✓ Imported {parsedRows.Count} rows for {selectedTerm} {schoolYear}. " +
+                             $"Previous import deactivated ({existing.Count} rows).";
+            phase     = ImportPhase.Upload;
+            parsedRows.Clear();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error saving import: {ex.Message}";
+            Logger.LogError(ex, "Schedule import save error");
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private string GetRowClass(ParsedRow row) => row.TeacherMatchMethod switch
+    {
+        "Exact" or "LastName" or "Manual" => "si-row-green",
+        "Fuzzy"                           => "si-row-yellow",
+        _                                 => "si-row-red"
+    };
+
+    private string FormatPeriods(string? p1, string? p2, string? p3, string? p4, string? p5, string? p6)
+    {
+        var filled = new[] { (1, p1), (2, p2), (3, p3), (4, p4), (5, p5), (6, p6) }
+            .Where(x => x.Item2 != null)
+            .Select(x => $"P{x.Item1}:{x.Item2}");
+        return string.Join(" | ", filled);
+    }
+}

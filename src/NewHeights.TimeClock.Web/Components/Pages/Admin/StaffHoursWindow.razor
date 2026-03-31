@@ -1,0 +1,460 @@
+@page "/admin/staff-hours"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ILogger<StaffHoursWindow> Logger
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>Staff Hours Windows</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <div>
+            <h1>Staff Hours Windows</h1>
+            <p class="admin-subtitle">
+                Set expected arrival and departure times per campus and session.
+                These windows determine when the early-out reason prompt appears on the kiosk and mobile check-in.
+            </p>
+        </div>
+        <button class="btn-primary" @onclick="OpenAddModal">+ Add Window</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-error">@errorMessage</div>
+    }
+
+    <div class="admin-card wide" style="margin-top:1.5rem">
+        <div class="shw-filter-row">
+            <label class="shw-filter-label">School Year</label>
+            <select class="form-input shw-year-select" @bind="filterYear" @bind:after="ApplyFilter">
+                @foreach (var y in allYears)
+                {
+                    <option value="@y">@y</option>
+                }
+            </select>
+            @if (dirtyRowIds.Count > 0)
+            {
+                <span class="shw-dirty-hint">⚠ @dirtyRowIds.Count unsaved change(s)</span>
+            }
+        </div>
+
+        @if (isLoading)
+        {
+            <div class="loading-msg">Loading...</div>
+        }
+        else if (filteredRows.Count == 0)
+        {
+            <div class="empty-state">
+                <p>No staff hours windows configured for @filterYear. Use &ldquo;Add Window&rdquo; to create one.</p>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrapper">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Campus</th>
+                            <th>Session</th>
+                            <th>Year</th>
+                            <th>Expected Arrival</th>
+                            <th>Expected Departure</th>
+                            <th>Active</th>
+                            <th>Notes</th>
+                            <th style="width:90px">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in filteredRows)
+                        {
+                            var isDirty = dirtyRowIds.Contains(row.WindowId);
+                            <tr class="@(isDirty ? "shw-dirty-row" : "")">
+                                <td><strong>@(row.Campus?.CampusName ?? row.CampusId.ToString())</strong></td>
+                                <td>
+                                    <span class="shw-session-badge @row.SessionType.ToLower()">@row.SessionType</span>
+                                </td>
+                                <td>@row.SchoolYear</td>
+                                <td>
+                                    <input type="time"
+                                           class="form-input shw-time-input"
+                                           value="@row.ExpectedArrivalTime.ToString("HH:mm")"
+                                           @onchange="e => OnTimeChanged(row, true, e.Value?.ToString())" />
+                                </td>
+                                <td>
+                                    <input type="time"
+                                           class="form-input shw-time-input"
+                                           value="@row.ExpectedDepartureTime.ToString("HH:mm")"
+                                           @onchange="e => OnTimeChanged(row, false, e.Value?.ToString())" />
+                                </td>
+                                <td style="text-align:center">
+                                    <input type="checkbox"
+                                           class="shw-checkbox"
+                                           checked="@row.IsActive"
+                                           @onchange="e => OnActiveChanged(row, e.Value is bool b && b)" />
+                                </td>
+                                <td>
+                                    <input type="text"
+                                           class="form-input shw-notes-input"
+                                           placeholder="Optional note"
+                                           value="@row.Notes"
+                                           @onchange="e => OnNotesChanged(row, e.Value?.ToString())" />
+                                </td>
+                                <td>
+                                    <div style="display:flex; gap:0.25rem; align-items:center">
+                                        <button class="shw-btn-save"
+                                                disabled="@(!isDirty || savingRowId == row.WindowId)"
+                                                @onclick="() => SaveRow(row)">
+                                            @(savingRowId == row.WindowId ? "..." : "Save")
+                                        </button>
+                                        <button class="btn-danger-sm"
+                                                @onclick="() => ConfirmDelete(row)">Del</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@if (showAddModal)
+{
+    <div class="modal-overlay" @onclick="CloseAddModal">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:460px">
+            <div class="modal-header">
+                <h2>Add Staff Hours Window</h2>
+                <button class="modal-close" @onclick="CloseAddModal">✕</button>
+            </div>
+            <div class="modal-body">
+                @if (!string.IsNullOrEmpty(addErrorMessage))
+                {
+                    <div class="alert alert-error" style="margin-bottom:1rem">@addErrorMessage</div>
+                }
+                <div class="form-group">
+                    <label>Campus</label>
+                    <select class="form-input" @bind="addCampusId">
+                        <option value="0">-- Select Campus --</option>
+                        @foreach (var c in allCampuses)
+                        {
+                            <option value="@c.CampusId">@c.CampusName</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Session Type</label>
+                    <select class="form-input" @bind="addSessionType">
+                        <option value="DAY">DAY</option>
+                        <option value="NIGHT">NIGHT</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>School Year</label>
+                    <input type="text" class="form-input" @bind="addSchoolYear"
+                           placeholder="e.g. 2025-2026" maxlength="9" />
+                </div>
+                <div class="form-group">
+                    <label>Expected Arrival Time</label>
+                    <input type="time" class="form-input" @bind="addArrivalTime" />
+                </div>
+                <div class="form-group">
+                    <label>Expected Departure Time</label>
+                    <input type="time" class="form-input" @bind="addDepartureTime" />
+                </div>
+                <div class="form-group">
+                    <label>Notes (optional)</label>
+                    <input type="text" class="form-input" @bind="addNotes" placeholder="e.g. Day session M-F" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseAddModal">Cancel</button>
+                <button class="btn-save" @onclick="SaveNewRow" disabled="@isAdding">
+                    @(isAdding ? "Saving..." : "Add Window")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showDeleteConfirm && deleteTarget != null)
+{
+    <div class="modal-overlay" @onclick="() => showDeleteConfirm = false">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:380px">
+            <div class="modal-header" style="background:#7c2d12">
+                <h2>Delete Window</h2>
+                <button class="modal-close" @onclick="() => showDeleteConfirm = false">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Delete the <strong>@(deleteTarget.Campus?.CampusName ?? "")</strong>
+                   <strong>@deleteTarget.SessionType</strong> window for
+                   <strong>@deleteTarget.SchoolYear</strong>?</p>
+                <p style="color:#dc2626; font-size:0.875rem">This cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="() => showDeleteConfirm = false">Cancel</button>
+                <button class="btn-save" style="background:#dc2626" @onclick="DeleteRow">Delete</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool isLoading = true;
+    private string successMessage = "";
+    private string errorMessage = "";
+    private string currentUserEmail = "";
+
+    private List<TcStaffHoursWindow> allRows = new();
+    private List<TcStaffHoursWindow> filteredRows = new();
+    private List<Campus> allCampuses = new();
+    private List<string> allYears = new();
+    private HashSet<int> dirtyRowIds = new();
+    private string filterYear = "";
+    private int savingRowId = 0;
+
+    private bool showAddModal = false;
+    private bool isAdding = false;
+    private string addErrorMessage = "";
+    private int addCampusId = 0;
+    private string addSessionType = "DAY";
+    private string addSchoolYear = "2025-2026";
+    private TimeOnly addArrivalTime = new TimeOnly(8, 0);
+    private TimeOnly addDepartureTime = new TimeOnly(16, 30);
+    private string addNotes = "";
+
+    private bool showDeleteConfirm = false;
+    private TcStaffHoursWindow? deleteTarget;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ?? "";
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        isLoading = true;
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            allCampuses = await context.Campuses.AsNoTracking()
+                .OrderBy(c => c.CampusName)
+                .ToListAsync();
+
+            allRows = await context.TcStaffHoursWindows
+                .Include(w => w.Campus)
+                .AsNoTracking()
+                .OrderBy(w => w.SchoolYear)
+                .ThenBy(w => w.CampusId)
+                .ThenBy(w => w.SessionType)
+                .ToListAsync();
+
+            allYears = allRows
+                .Select(w => w.SchoolYear)
+                .Distinct()
+                .OrderByDescending(y => y)
+                .ToList();
+
+            if (allYears.Count == 0)
+                allYears.Add("2025-2026");
+
+            if (string.IsNullOrEmpty(filterYear))
+                filterYear = allYears.First();
+
+            ApplyFilter();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Load failed: {ex.Message}";
+            Logger.LogError(ex, "Error loading staff hours windows");
+        }
+        finally { isLoading = false; }
+    }
+
+    private void ApplyFilter()
+    {
+        filteredRows = allRows
+            .Where(w => w.SchoolYear == filterYear)
+            .ToList();
+    }
+
+    private void OnTimeChanged(TcStaffHoursWindow row, bool isArrival, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (!TimeOnly.TryParse(value, out var t)) return;
+        if (isArrival)
+            row.ExpectedArrivalTime = t;
+        else
+            row.ExpectedDepartureTime = t;
+        dirtyRowIds.Add(row.WindowId);
+    }
+
+    private void OnActiveChanged(TcStaffHoursWindow row, bool value)
+    {
+        row.IsActive = value;
+        dirtyRowIds.Add(row.WindowId);
+    }
+
+    private void OnNotesChanged(TcStaffHoursWindow row, string? value)
+    {
+        row.Notes = value;
+        dirtyRowIds.Add(row.WindowId);
+    }
+
+    private async Task SaveRow(TcStaffHoursWindow row)
+    {
+        savingRowId = row.WindowId;
+        errorMessage = "";
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var entity = await context.TcStaffHoursWindows.FindAsync(row.WindowId);
+            if (entity == null)
+            {
+                errorMessage = "Record not found. Reload the page.";
+                return;
+            }
+            entity.ExpectedArrivalTime = row.ExpectedArrivalTime;
+            entity.ExpectedDepartureTime = row.ExpectedDepartureTime;
+            entity.IsActive = row.IsActive;
+            entity.Notes = row.Notes;
+            entity.ModifiedDate = DateTime.UtcNow;
+            await context.SaveChangesAsync();
+
+            dirtyRowIds.Remove(row.WindowId);
+            successMessage = $"Saved {row.Campus?.CampusName} {row.SessionType} window.";
+            Logger.LogInformation("StaffHoursWindow {Id} updated by {User}", row.WindowId, currentUserEmail);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Save failed: {ex.Message}";
+            Logger.LogError(ex, "Error saving window {Id}", row.WindowId);
+        }
+        finally { savingRowId = 0; }
+    }
+
+    private void OpenAddModal()
+    {
+        addErrorMessage = "";
+        addCampusId = allCampuses.FirstOrDefault()?.CampusId ?? 0;
+        addSessionType = "DAY";
+        addSchoolYear = filterYear;
+        addArrivalTime = new TimeOnly(8, 0);
+        addDepartureTime = new TimeOnly(16, 30);
+        addNotes = "";
+        showAddModal = true;
+    }
+
+    private void CloseAddModal()
+    {
+        showAddModal = false;
+        addErrorMessage = "";
+    }
+
+    private async Task SaveNewRow()
+    {
+        addErrorMessage = "";
+        if (addCampusId == 0) { addErrorMessage = "Select a campus."; return; }
+        if (string.IsNullOrWhiteSpace(addSchoolYear)) { addErrorMessage = "Enter a school year."; return; }
+        if (addArrivalTime >= addDepartureTime) { addErrorMessage = "Arrival must be before departure."; return; }
+
+        isAdding = true;
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            bool duplicate = await context.TcStaffHoursWindows
+                .AnyAsync(w => w.CampusId == addCampusId
+                            && w.SessionType == addSessionType
+                            && w.SchoolYear == addSchoolYear);
+            if (duplicate)
+            {
+                addErrorMessage = "A window for that campus, session, and year already exists.";
+                return;
+            }
+
+            var newWindow = new TcStaffHoursWindow
+            {
+                CampusId = addCampusId,
+                SessionType = addSessionType,
+                SchoolYear = addSchoolYear,
+                ExpectedArrivalTime = addArrivalTime,
+                ExpectedDepartureTime = addDepartureTime,
+                LateArrivalThresholdMin = 5,
+                EarlyDepartureThresholdMin = 10,
+                MissedPunchAlertMin = 15,
+                IsActive = true,
+                Notes = string.IsNullOrWhiteSpace(addNotes) ? null : addNotes.Trim(),
+                CreatedBy = currentUserEmail,
+                CreatedDate = DateTime.UtcNow,
+                ModifiedDate = DateTime.UtcNow
+            };
+
+            context.TcStaffHoursWindows.Add(newWindow);
+            await context.SaveChangesAsync();
+
+            successMessage = "New staff hours window added.";
+            Logger.LogInformation("StaffHoursWindow created by {User}: Campus={Campus} {Session} {Year}",
+                currentUserEmail, addCampusId, addSessionType, addSchoolYear);
+            showAddModal = false;
+            await LoadData();
+
+            if (!allYears.Contains(addSchoolYear))
+            {
+                filterYear = addSchoolYear;
+                allYears.Insert(0, addSchoolYear);
+            }
+            ApplyFilter();
+        }
+        catch (Exception ex)
+        {
+            addErrorMessage = $"Save failed: {ex.Message}";
+            Logger.LogError(ex, "Error creating staff hours window");
+        }
+        finally { isAdding = false; }
+    }
+
+    private void ConfirmDelete(TcStaffHoursWindow row)
+    {
+        deleteTarget = row;
+        showDeleteConfirm = true;
+    }
+
+    private async Task DeleteRow()
+    {
+        showDeleteConfirm = false;
+        if (deleteTarget == null) return;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var entity = await context.TcStaffHoursWindows.FindAsync(deleteTarget.WindowId);
+            if (entity != null)
+            {
+                context.TcStaffHoursWindows.Remove(entity);
+                await context.SaveChangesAsync();
+            }
+            successMessage = $"Deleted {deleteTarget.Campus?.CampusName} {deleteTarget.SessionType} window.";
+            dirtyRowIds.Remove(deleteTarget.WindowId);
+            deleteTarget = null;
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Delete failed: {ex.Message}";
+        }
+    }
+}

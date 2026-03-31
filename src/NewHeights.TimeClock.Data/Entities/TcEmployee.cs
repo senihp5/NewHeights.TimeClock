@@ -1,14 +1,24 @@
-﻿using NewHeights.TimeClock.Shared.Enums;
+using NewHeights.TimeClock.Shared.Enums;
 
 namespace NewHeights.TimeClock.Data.Entities;
 
 public class TcEmployee
 {
     public int EmployeeId { get; set; }
-    public int StaffDcid { get; set; }
+    public int? StaffDcid { get; set; }
     public required string IdNumber { get; set; }
     public string? AscenderEmployeeId { get; set; }
     public EmployeeType EmployeeType { get; set; } = EmployeeType.HourlyStaff;
+
+    /// <summary>
+    /// Which session(s) this employee is scheduled to work.
+    /// Day = day session only (default).
+    /// Evening = evening session only (evening teachers).
+    /// Both = can work either session (substitutes).
+    /// Used by ShouldPromptEarlyOut to match the correct TC_StaffHoursWindow.
+    /// </summary>
+    public EmployeeShift Shift { get; set; } = EmployeeShift.Day;
+
     public int HomeCampusId { get; set; }
     public int? SupervisorEmployeeId { get; set; }
     public string? DepartmentCode { get; set; }

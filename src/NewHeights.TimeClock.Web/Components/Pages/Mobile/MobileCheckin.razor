@@ -1,7 +1,7 @@
-@page "/mobile/checkin"
+﻿@page "/mobile/checkin"
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
-@rendermode InteractiveServer
 @layout KioskLayout
+@rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireAnyStaff")]
 @using NewHeights.TimeClock.Web.Services
 @using NewHeights.TimeClock.Data
@@ -16,8 +16,8 @@
 
 <div class="kiosk-container mobile-clock-container">
     <header class="mobile-header">
-        <div class="user-info"><span>@userName</span></div>
-        <div class="current-time" style="font-size: 1.5rem;">@currentTime.ToString("h:mm tt")</div>
+        <div class="user-info" style="color: white;"><span>@userName</span></div>
+        <div class="current-time" style="font-size: 1.5rem; color: white; font-weight: 600;">@currentTime.ToString("h:mm tt")</div>
     </header>
 
     @if (showResult)
@@ -44,10 +44,10 @@
             {
                 @if (isSuccess)
                 {
-                    <button class="btn @(lastCheckType == ""IN"" ? ""btn-warning"" : ""btn-success"")" style="padding: 16px 48px; font-size: 1.2rem; border-radius: 12px;" @onclick="ProcessNextAction">
-                        @(lastCheckType == "IN" ? "Check Out" : "Check In")
+                    <button class="@nextActionButtonCss" style="padding: 16px 48px; font-size: 1.2rem; border-radius: 12px;" @onclick="ProcessNextAction">
+                        @nextActionButtonText
                     </button>
-                    <p style="color: rgba(255,255,255,0.7); margin-top: 12px; font-size: 0.9rem;">Tap to @(lastCheckType == ""IN"" ? ""check out"" : ""check back in"")</p>
+                    <p style="color: rgba(255,255,255,0.7); margin-top: 12px; font-size: 0.9rem;">Tap to @nextActionTapLabel</p>
                 }
                 else
                 {
@@ -135,11 +135,47 @@
     <footer class="kiosk-footer"><p>Campus Check-In</p></footer>
 </div>
 
+@if (showEarlyOutModal)
+{
+    <div class="early-out-overlay" @onclick="() => SubmitEarlyOut(null)">
+        <div class="early-out-modal" @onclick:stopPropagation>
+            <h2>Leaving Early?</h2>
+            <p class="early-out-name">@earlyOutPersonName</p>
+            <div class="early-out-reasons">
+                @foreach (var reason in EarlyOutReasons)
+                {
+                    <button class="early-out-reason-btn @(selectedEarlyOutReason == reason.Code? "selected" : "")"
+                            @onclick="() => SelectEarlyOutReason(reason.Code)">
+                        @reason.Label
+                    </button>
+                }
+            </div>
+            <p class="early-out-countdown">
+                Auto-submitting in <strong>@earlyOutCountdown</strong>s
+                @if (!string.IsNullOrEmpty(selectedEarlyOutReason))
+                {
+                    <span> with selected reason</span>
+                }
+                else
+                {
+                    <span> with no reason</span>
+                }
+            </p>
+            <div class="early-out-actions">
+                <button class="early-out-skip" @onclick="() => SubmitEarlyOut(null)">Skip</button>
+                <button class="early-out-confirm"
+                        disabled="@string.IsNullOrEmpty(selectedEarlyOutReason)"
+                        @onclick="() => SubmitEarlyOut(selectedEarlyOutReason)">
+                    Confirm Reason
+                </button>
+            </div>
+        </div>
+    </div>
+}
 @code {
-    private DateTime currentTime = DateTime.Now;
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
     private System.Timers.Timer? clockTimer;
-
-    // Auth / desktop identity
+    private DateTime currentTime = DateTime.UtcNow;
     private string userName = "";
     private string? staffIdNumber;
     private string? staffFirstName;
@@ -171,6 +207,22 @@
     private bool nextActionIsCheckIn = true;
 
     // JS interop reference for QR scanner callbacks
+
+    // Early-out modal state
+    private bool showEarlyOutModal = false;
+    private string? selectedEarlyOutReason;
+    private int earlyOutCountdown = 10;
+    private System.Timers.Timer? earlyOutTimer;
+    private TaskCompletionSource<string?>? earlyOutTcs;
+    private string earlyOutPersonName = string.Empty;
+    private static readonly (string Code, string Label)[] EarlyOutReasons =
+    {
+        ("LUNCH",     "Lunch / Meal Break"),
+        ("MEDICAL",   "Medical / Appt"),
+        ("MEETING",   "Meeting / Prof. Dev"),
+        ("PERSONAL",  "Personal / Family"),
+        ("EMERGENCY", "Campus Emergency"),
+    };
     private DotNetObjectReference<MobileCheckin>? dotNetRef;
 
     private string photoSrc => "data:image/jpeg;base64," + photoBase64;
@@ -179,6 +231,9 @@
     private string punchBadgeText => string.IsNullOrEmpty(lastCheckType) ? "" : (lastCheckType == "IN" ? "CHECKED IN" : "CHECKED OUT");
     private string actionButtonClass => nextActionIsCheckIn ? "btn-success" : "btn-warning";
     private string actionButtonText => nextActionIsCheckIn ? "CHECK IN" : "CHECK OUT";
+    private string nextActionButtonCss => lastCheckType == "IN" ? "btn btn-warning" : "btn btn-success";
+    private string nextActionButtonText => lastCheckType == "IN" ? "Check Out" : "Check In";
+    private string nextActionTapLabel => lastCheckType == "IN" ? "check out" : "check back in";
 
     protected override async Task OnInitializedAsync()
     {
@@ -202,8 +257,8 @@
 
     private void OnClockTick(object? sender, System.Timers.ElapsedEventArgs e)
     {
-        currentTime = DateTime.Now;
-        InvokeAsync(StateHasChanged);
+        currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+        try { InvokeAsync(StateHasChanged); } catch { }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -435,6 +490,23 @@
 
             var scanType = isCheckIn ? "CAMPUS_IN" : "CAMPUS_OUT";
 
+            // Look up shift so early-out check only fires for the employee's session
+            var qrEmployee = await context.TcEmployees.AsNoTracking()
+                .Where(e => e.IsActive && e.StaffDcid == staff.Dcid)
+                .Select(e => new { e.Shift })
+                .FirstOrDefaultAsync();
+            var qrShift = qrEmployee?.Shift ?? EmployeeShift.Day;
+
+            string? earlyOutReason = null;
+            if (!isCheckIn && nearestCampusId.HasValue)
+            {
+                if (await ShouldPromptEarlyOut(context, nearestCampusId.Value, qrShift))
+                {
+                    earlyOutPersonName = staff.FirstName + " " + staff.LastName;
+                    earlyOutReason = await ShowEarlyOutPrompt();
+                }
+            }
+
             var transaction = new AttendanceTransaction
             {
                 TransactionType = "STAFF",
@@ -443,12 +515,13 @@
                 LastName = staff.LastName,
                 CampusId = nearestCampusId.Value,
                 LocationId = 1,
-                ScanDateTime = DateTime.Now,
+                ScanDateTime = DateTime.UtcNow,
                 ScanType = scanType,
                 ScanMethod = "QR_MOBILE",
                 TerminalId = 0,
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
+                PunchSubType = earlyOutReason,
                 CreatedDate = DateTime.UtcNow
             };
 
@@ -457,8 +530,8 @@
 
             isSuccess = true;
             lastCheckType = isCheckIn ? "IN" : "OUT";
-            var hour = DateTime.Now.Hour;
-            var greeting = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+            var cstNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+            var greeting = GetGreeting(cstNow.Hour);
             resultMessage = isCheckIn
                 ? $"Good {greeting}, {staff.FirstName}!"
                 : $"Goodbye, {staff.FirstName}!";
@@ -563,6 +636,23 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
             var scanType = nextActionIsCheckIn ? "CAMPUS_IN" : "CAMPUS_OUT";
+
+            // Look up shift so early-out check only fires for the employee's session
+            var desktopEmployee = await context.TcEmployees.AsNoTracking()
+                .Where(e => e.IsActive && e.IdNumber == staffIdNumber)
+                .Select(e => new { e.Shift })
+                .FirstOrDefaultAsync();
+            var desktopShift = desktopEmployee?.Shift ?? EmployeeShift.Day;
+
+            string? earlyOutReason = null;
+            if (!nextActionIsCheckIn && nearestCampusId.HasValue)
+            {
+                if (await ShouldPromptEarlyOut(context, nearestCampusId.Value, desktopShift))
+                {
+                    earlyOutPersonName = staffFirstName + " " + staffLastName;
+                    earlyOutReason = await ShowEarlyOutPrompt();
+                }
+            }
             var transaction = new AttendanceTransaction
             {
                 TransactionType = "STAFF",
@@ -571,12 +661,13 @@
                 LastName = staffLastName ?? "",
                 CampusId = nearestCampusId.Value,
                 LocationId = 1,
-                ScanDateTime = DateTime.Now,
+                ScanDateTime = DateTime.UtcNow,
                 ScanType = scanType,
                 ScanMethod = "GPS",
                 TerminalId = 0,
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
+                PunchSubType = earlyOutReason,
                 CreatedDate = DateTime.UtcNow
             };
             context.AttendanceTransactions.Add(transaction);
@@ -584,8 +675,8 @@
 
             isSuccess = true;
             lastCheckType = nextActionIsCheckIn ? "IN" : "OUT";
-            var hour = DateTime.Now.Hour;
-            var greeting = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+            var cstNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+            var greeting = GetGreeting(cstNow.Hour);
             resultMessage = nextActionIsCheckIn
                 ? $"Good {greeting}, {staffFirstName}!"
                 : $"Goodbye, {staffFirstName}!";
@@ -654,10 +745,99 @@
         });
     }
 
+    // ── Early-out helpers ────────────────────────────────────────────────
+
+    private async Task<bool> ShouldPromptEarlyOut(TimeClockDbContext context, int campusId, EmployeeShift shift = EmployeeShift.Day)
+    {
+        var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+        var nowTime = TimeOnly.FromDateTime(now);
+        var today = now.DayOfWeek;
+
+        if (today == DayOfWeek.Saturday || today == DayOfWeek.Sunday) return false;
+
+        var windows = await context.TcStaffHoursWindows.AsNoTracking()
+            .Where(w => w.CampusId == campusId && w.IsActive)
+            .ToListAsync();
+
+        foreach (var w in windows)
+        {
+            if (w.SessionType == "NIGHT" && today == DayOfWeek.Friday) continue;
+
+            // Only check windows that match the employee's shift
+            if (shift == EmployeeShift.Day     && w.SessionType != "DAY")   continue;
+            if (shift == EmployeeShift.Evening && w.SessionType != "NIGHT") continue;
+            // EmployeeShift.Both: check all windows (no filter)
+
+            if (nowTime >= w.ExpectedArrivalTime && nowTime < w.ExpectedDepartureTime)
+                return true;
+        }
+        return false;
+    }
+
+    private void SelectEarlyOutReason(string code)
+    {
+        selectedEarlyOutReason = code;
+        StateHasChanged();
+    }
+
+    private async Task<string?> ShowEarlyOutPrompt()
+    {
+        selectedEarlyOutReason = null;
+        earlyOutCountdown = 10;
+        earlyOutTcs = new TaskCompletionSource<string?>();
+        showEarlyOutModal = true;
+        StateHasChanged();
+
+        earlyOutTimer = new System.Timers.Timer(1000);
+        earlyOutTimer.Elapsed += async (s, e) =>
+        {
+            earlyOutCountdown--;
+            if (earlyOutCountdown <= 0)
+            {
+                earlyOutTimer?.Stop();
+                earlyOutTimer?.Dispose();
+                earlyOutTimer = null;
+                earlyOutTcs.TrySetResult(selectedEarlyOutReason);
+            }
+            try { await InvokeAsync(StateHasChanged); } catch { }
+        };
+        earlyOutTimer.Start();
+
+        return await earlyOutTcs.Task;
+    }
+
+    private async Task SubmitEarlyOut(string? reason)
+    {
+        earlyOutTimer?.Stop();
+        earlyOutTimer?.Dispose();
+        earlyOutTimer = null;
+        earlyOutTcs?.TrySetResult(reason);
+        showEarlyOutModal = false;
+        StateHasChanged();
+        await Task.CompletedTask;
+    }
+
+    private static string GetReasonLabel(string code) => code switch
+    {
+        "LUNCH"     => "Lunch Break",
+        "MEDICAL"   => "Medical / Appt",
+        "MEETING"   => "Meeting / Prof. Dev",
+        "PERSONAL"  => "Personal / Family",
+        "EMERGENCY" => "Campus Emergency",
+        _           => code
+    };
+
+    // ──────────────────────────────────────────────────────────────────────
+
+    private static string GetGreeting(int hour) =>
+        hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+
     public async ValueTask DisposeAsync()
     {
         clockTimer?.Stop();
         clockTimer?.Dispose();
+        earlyOutTimer?.Stop();
+        earlyOutTimer?.Dispose();
         dotNetRef?.Dispose();
         if (isMobileDevice && locationVerified)
             await StopScanner();
@@ -668,4 +848,5 @@
         public double Latitude { get; set; }
         public double Longitude { get; set; }
     }
+
 }

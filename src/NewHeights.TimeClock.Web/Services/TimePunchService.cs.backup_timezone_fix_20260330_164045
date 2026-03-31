@@ -1,0 +1,269 @@
+﻿using Microsoft.EntityFrameworkCore;
+using NewHeights.TimeClock.Data;
+using NewHeights.TimeClock.Data.Entities;
+using NewHeights.TimeClock.Shared.Enums;
+using NewHeights.TimeClock.Shared.DTOs;
+
+namespace NewHeights.TimeClock.Web.Services;
+
+public interface ITimePunchService
+{
+    Task<PunchResult> ProcessPunchAsync(PunchRequest request);
+    Task<TcTimePunch?> GetLastPunchAsync(int employeeId);
+    Task<List<TcTimePunch>> GetTodayPunchesAsync(int employeeId);
+    Task<PunchType> DeterminePunchTypeAsync(int employeeId, int campusId);
+    Task<TcEmployee?> GetEmployeeByIdNumberAsync(string idNumber);
+    Task<decimal> GetTodayHoursAsync(int employeeId);
+    string ParseIdFromQrCode(string scannedValue);
+}
+
+public class TimePunchService : ITimePunchService
+{
+    private readonly TimeClockDbContext _context;
+    private readonly IGeofenceService _geofenceService;
+    private readonly ILogger<TimePunchService> _logger;
+
+    public TimePunchService(TimeClockDbContext context, IGeofenceService geofenceService, ILogger<TimePunchService> logger)
+    {
+        _context = context;
+        _geofenceService = geofenceService;
+        _logger = logger;
+    }
+
+    public string ParseIdFromQrCode(string scannedValue)
+    {
+        if (string.IsNullOrWhiteSpace(scannedValue))
+            return string.Empty;
+
+        var trimmed = scannedValue.Trim();
+
+        if (trimmed.Contains('|'))
+        {
+            var parts = trimmed.Split('|');
+            if (parts.Length >= 3)
+            {
+                return parts[2].Trim();
+            }
+        }
+
+        return trimmed;
+    }
+
+    public async Task<TcEmployee?> GetEmployeeByIdNumberAsync(string idNumber)
+    {
+        return await _context.TcEmployees
+            .Include(e => e.Staff)
+            .Include(e => e.HomeCampus)
+            .Include(e => e.PayRule)
+            .FirstOrDefaultAsync(e => e.IdNumber == idNumber && e.IsActive);
+    }
+
+    public async Task<TcTimePunch?> GetLastPunchAsync(int employeeId)
+    {
+        return await _context.TcTimePunches
+            .Where(p => p.EmployeeId == employeeId && p.PunchStatus == PunchStatus.Active)
+            .OrderByDescending(p => p.PunchDateTime)
+            .FirstOrDefaultAsync();
+    }
+
+    public async Task<List<TcTimePunch>> GetTodayPunchesAsync(int employeeId)
+    {
+        var today = DateTime.Today;
+        return await _context.TcTimePunches
+            .Where(p => p.EmployeeId == employeeId && p.PunchDateTime.Date == today && p.PunchStatus == PunchStatus.Active)
+            .OrderBy(p => p.PunchDateTime)
+            .ToListAsync();
+    }
+
+    public async Task<PunchType> DeterminePunchTypeAsync(int employeeId, int campusId)
+    {
+        var todayPunches = await GetTodayPunchesAsync(employeeId);
+        if (!todayPunches.Any()) return PunchType.In;
+
+        var lastPunch = todayPunches.Last();
+        var now = DateTime.UtcNow;
+        var campus = await _context.Campuses.FindAsync(campusId);
+        var lunchStart = campus?.LunchStartTime?.ToTimeSpan() ?? new TimeSpan(11, 0, 0);
+        var lunchEnd = campus?.LunchEndTime?.ToTimeSpan() ?? new TimeSpan(13, 0, 0);
+        var currentTime = now.TimeOfDay;
+        var hasLunchOut = todayPunches.Any(p => p.PunchType == PunchType.LunchOut);
+
+        return lastPunch.PunchType switch
+        {
+            PunchType.In when currentTime >= lunchStart && currentTime <= lunchEnd && !hasLunchOut => PunchType.LunchOut,
+            PunchType.In => PunchType.Out,
+            PunchType.LunchOut => PunchType.LunchIn,
+            PunchType.LunchIn => PunchType.Out,
+            PunchType.Out => PunchType.In,
+            _ => PunchType.In
+        };
+    }
+
+    public async Task<decimal> GetTodayHoursAsync(int employeeId)
+    {
+        var punches = await GetTodayPunchesAsync(employeeId);
+        if (!punches.Any()) return 0;
+
+        decimal totalMinutes = 0;
+        TcTimePunch? lastIn = null;
+
+        foreach (var punch in punches)
+        {
+            if (punch.PunchType == PunchType.In || punch.PunchType == PunchType.LunchIn)
+                lastIn = punch;
+            else if ((punch.PunchType == PunchType.Out || punch.PunchType == PunchType.LunchOut) && lastIn != null)
+            {
+                totalMinutes += (decimal)(punch.PunchDateTime - lastIn.PunchDateTime).TotalMinutes;
+                lastIn = null;
+            }
+        }
+
+        if (lastIn != null)
+            totalMinutes += (decimal)(DateTime.Now - lastIn.PunchDateTime).TotalMinutes;
+
+        return Math.Round(totalMinutes / 60, 2);
+    }
+
+    public async Task<PunchResult> ProcessPunchAsync(PunchRequest request)
+    {
+        try
+        {
+            var idNumber = ParseIdFromQrCode(request.IdNumber);
+            _logger.LogInformation("Processing punch - Raw: {Raw}, Parsed ID: {IdNumber}", request.IdNumber, idNumber);
+
+            var employee = await GetEmployeeByIdNumberAsync(idNumber);
+            if (employee == null)
+            {
+                _logger.LogWarning("Punch attempt with unknown ID: {IdNumber}", idNumber);
+                return new PunchResult { Success = false, Message = "Badge not registered in system.", ErrorCode = "UNKNOWN_ID" };
+            }
+
+            if (!employee.IsActive)
+                return new PunchResult { Success = false, Message = "Employee account is inactive", ErrorCode = "INACTIVE" };
+
+            int campusId = request.CampusId;
+            if (campusId <= 0 && !string.IsNullOrEmpty(request.CampusCode))
+            {
+                var campus = await _context.Campuses.FirstOrDefaultAsync(c => c.CampusCode == request.CampusCode);
+                campusId = campus?.CampusId ?? employee.HomeCampusId;
+            }
+            else if (campusId <= 0)
+            {
+                campusId = employee.HomeCampusId;
+            }
+            GeofenceResult? geofenceResult = null;
+
+            if (request.Latitude.HasValue && request.Longitude.HasValue)
+            {
+                geofenceResult = await _geofenceService.ValidateLocationAsync(campusId, request.Latitude.Value, request.Longitude.Value);
+            }
+
+            var punchType = await DeterminePunchTypeAsync(employee.EmployeeId, campusId);
+            var now = DateTime.UtcNow;
+            var roundedTime = RoundTime(now, 15);
+
+            var punch = new TcTimePunch
+            {
+                EmployeeId = employee.EmployeeId,
+                CampusId = campusId,
+                PunchType = punchType,
+                PunchDateTime = now,
+                RoundedDateTime = roundedTime,
+                Latitude = request.Latitude.HasValue ? (decimal)request.Latitude.Value : null,
+                Longitude = request.Longitude.HasValue ? (decimal)request.Longitude.Value : null,
+                GeofenceStatus = geofenceResult?.Status ?? GeofenceStatus.Manual,
+                VerificationMethod = request.Latitude.HasValue ? "GPS" : "MANUAL",
+                ScanMethod = request.ScanMethod ?? "QR",
+                QRCodeScanned = request.IdNumber,
+                PunchStatus = PunchStatus.Active,
+                IsManualEntry = false,
+                CreatedDate = DateTime.UtcNow
+            };
+
+            _context.TcTimePunches.Add(punch);
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("Punch recorded: Employee={Id}, Type={Type}, Time={Time}", employee.EmployeeId, punchType, now);
+
+            await UpdateDailyTimecardAsync(employee.EmployeeId, campusId, now.Date);
+            var totalHours = await GetTodayHoursAsync(employee.EmployeeId);
+            var photoBase64 = await GetEmployeePhotoBase64Async(employee.StaffDcid ?? 0);
+
+            var greeting = punchType switch
+            {
+                PunchType.In => $"Good {GetTimeOfDayGreeting()}, {employee.Staff?.FirstName}!",
+                PunchType.Out => $"Goodbye, {employee.Staff?.FirstName}! Total: {totalHours:F2} hours",
+                PunchType.LunchOut => $"Enjoy your lunch, {employee.Staff?.FirstName}!",
+                PunchType.LunchIn => $"Welcome back, {employee.Staff?.FirstName}!",
+                _ => $"Punch recorded, {employee.Staff?.FirstName}!"
+            };
+
+            return new PunchResult
+            {
+                Success = true,
+                Message = greeting,
+                PunchType = punchType.ToString(),
+                PunchTime = now,
+                RoundedTime = roundedTime,
+                EmployeeName = employee.Staff?.FullName ?? "Unknown",
+                EmployeePhotoBase64 = photoBase64,
+                NoPhotoOnFile = string.IsNullOrEmpty(photoBase64),
+                TotalHoursToday = totalHours,
+                GeofenceStatus = geofenceResult?.Status.ToString()
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing punch for: {IdNumber} - {Error}", request.IdNumber, ex.Message);
+            return new PunchResult { Success = false, Message = "Error: " + ex.Message, ErrorCode = "SYSTEM_ERROR" };
+        }
+    }
+
+    private async Task UpdateDailyTimecardAsync(int employeeId, int campusId, DateTime workDate)
+    {
+        var workDateOnly = DateOnly.FromDateTime(workDate);
+        var timecard = await _context.TcDailyTimecards.FirstOrDefaultAsync(t => t.EmployeeId == employeeId && t.WorkDate == workDateOnly);
+        var punches = await GetTodayPunchesAsync(employeeId);
+        var totalHours = await GetTodayHoursAsync(employeeId);
+
+        if (timecard == null)
+        {
+            timecard = new TcDailyTimecard
+            {
+                EmployeeId = employeeId,
+                CampusId = campusId,
+                WorkDate = workDateOnly,
+                ApprovalStatus = ApprovalStatus.Pending,
+                CreatedDate = DateTime.UtcNow
+            };
+            _context.TcDailyTimecards.Add(timecard);
+        }
+
+        timecard.FirstPunchIn = punches.FirstOrDefault(p => p.PunchType == PunchType.In)?.PunchDateTime;
+        timecard.LastPunchOut = punches.LastOrDefault(p => p.PunchType == PunchType.Out)?.PunchDateTime;
+        timecard.TotalHours = totalHours;
+        timecard.RegularHours = Math.Min(totalHours, 8);
+        timecard.OvertimeHours = Math.Max(0, totalHours - 8);
+        timecard.ModifiedDate = DateTime.UtcNow;
+
+        await _context.SaveChangesAsync();
+    }
+
+    private async Task<string?> GetEmployeePhotoBase64Async(int staffDcid)
+    {
+        var photo = await _context.Photos.FirstOrDefaultAsync(p => p.SubjectDcid == staffDcid && p.SubjectType == 1);
+        return photo?.PhotoData == null ? null : Convert.ToBase64String(photo.PhotoData);
+    }
+
+    private static DateTime RoundTime(DateTime time, int intervalMinutes)
+    {
+        var totalMinutes = (int)time.TimeOfDay.TotalMinutes;
+        var rounded = (int)(Math.Round((double)totalMinutes / intervalMinutes) * intervalMinutes);
+        return time.Date.AddMinutes(rounded);
+    }
+
+    private static string GetTimeOfDayGreeting()
+    {
+        var hour = DateTime.Now.Hour;
+        return hour switch { < 12 => "morning", < 17 => "afternoon", _ => "evening" };
+    }
+}

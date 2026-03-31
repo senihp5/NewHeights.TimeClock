@@ -55,6 +55,8 @@ public class UserContext
     public bool IsSubstitute { get; set; }
     public bool IsCampusAdmin { get; set; }
     public bool IsAllStaff { get; set; }
+    public bool IsReception { get; set; }
+    public bool IsDistrict { get; set; }
 
     public bool IsAuthenticated { get; set; }
 
@@ -130,6 +132,8 @@ public class UserContextService : IUserContextService
         ctx.IsSubstitute  = user.IsInRole(AppConstants.Roles.Substitute);
         ctx.IsCampusAdmin = user.IsInRole(AppConstants.Roles.CampusAdmin) || ctx.IsSupervisor;
         ctx.IsAllStaff    = user.IsInRole(AppConstants.Roles.AllStaff)    || ctx.IsSupervisor || ctx.IsAdmin;
+        ctx.IsReception = user.IsInRole(AppConstants.Roles.Reception) || ctx.IsCampusAdmin || ctx.IsAdmin;
+        ctx.IsDistrict  = user.IsInRole(AppConstants.Roles.District) || ctx.IsHR || ctx.IsAdmin;
 
         return ctx;
     }

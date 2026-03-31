@@ -105,11 +105,19 @@ else
                             @foreach (var person in filteredOnSiteList)
                             {
                                 <tr>
-                                    <td class="name-cell">@person.LastName, @person.FirstName</td>
+                                    <td class="name-cell">
+                                        @if (person.AllPunches.Count > 1)
+                                        {
+                                            <button class="expand-btn" @onclick="() => ToggleExpand(person)" @onclick:stopPropagation>
+                                                <span class="expand-icon @(person.IsExpanded ? "expanded" : "")">▶</span>
+                                            </button>
+                                        }
+                                        <span>@person.LastName, @person.FirstName</span>
+                                    </td>
                                     <td><span class="type-badge @person.TransactionType.ToLower()">@person.TransactionType</span></td>
                                     <td>@person.IdNumber</td>
                                     <td><span class="status-badge @person.LastScanType.ToLower().Replace("_","-")">@FormatScanType(person.LastScanType)</span></td>
-                                    <td>@person.LastScanTime.ToString("h:mm tt")</td>
+                                    <td>@TimeZoneInfo.ConvertTimeFromUtc(person.LastScanTime, CentralTimeZone).ToString("h:mm tt")</td>
                                     <td>@FormatDuration(person.CheckInTime)</td>
                                     <td>
                                         <button class="btn-action" @onclick="() => OpenCorrection(person)" title="Correct">
@@ -120,6 +128,29 @@ else
                                         </button>
                                     </td>
                                 </tr>
+                                @if (person.IsExpanded && person.AllPunches.Count > 1)
+                                {
+                                    <tr class="punch-history-row">
+                                        <td colspan="7">
+                                            <div class="punch-history">
+                                                <h4>All Punches Today</h4>
+                                                <div class="punch-timeline">
+                                                    @foreach (var punch in person.AllPunches.OrderBy(p => p.ScanDateTime))
+                                                    {
+                                                        <div class="punch-item">
+                                                            <span class="punch-badge @punch.ScanType.ToLower().Replace("_","-")">
+                                                                @FormatScanType(punch.ScanType)
+                                                            </span>
+                                                            <span class="punch-time">
+                                                                @TimeZoneInfo.ConvertTimeFromUtc(punch.ScanDateTime, CentralTimeZone).ToString("h:mm:ss tt")
+                                                            </span>
+                                                        </div>
+                                                    }
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
                             }
                             @if (!filteredOnSiteList.Any())
                             {
@@ -135,7 +166,40 @@ else
                 </div>
             </div>
 
-            <div class="activity-section">
+            
+                        <div class="right-sidebar">
+                <div class="last-scan-section">
+                <div class="section-header">
+                    <h2>📸 Last Scan</h2>
+                </div>
+                @if (lastScannedPerson != null)
+                {
+                    <div class="last-scan-card">
+                        @if (!string.IsNullOrEmpty(lastScannedPhoto))
+                        {
+                            <img src="data:image/jpeg;base64,@lastScannedPhoto" alt="Photo" class="last-scan-photo" />
+                        }
+                        else
+                        {
+                            <div class="last-scan-photo-placeholder">
+                                @GetInitial(lastScannedPerson.FirstName)
+                            </div>
+                        }
+                        <div class="last-scan-info">
+                            <h3>@lastScannedPerson.FirstName @lastScannedPerson.LastName</h3>
+                            <span class="last-scan-type @lastScannedPerson.ScanType.ToLower().Replace("_","-")">
+                                @FormatScanType(lastScannedPerson.ScanType)
+                            </span>
+                            <span class="last-scan-time">@TimeZoneInfo.ConvertTimeFromUtc(lastScannedPerson.ScanDateTime, CentralTimeZone).ToString("h:mm:ss tt")</span>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="empty-scan">No scans yet today</div>
+                }
+            </div>
+<div class="activity-section">
                 <div class="section-header">
                     <h2>📋 Activity</h2>
                     <label class="auto-refresh">
@@ -152,7 +216,7 @@ else
                                 <span class="activity-detail">@activity.TransactionType</span>
                             </div>
                             <div class="activity-time">
-                                <span>@activity.ScanDateTime.ToString("h:mm:ss tt")</span>
+                                <span>@TimeZoneInfo.ConvertTimeFromUtc(activity.ScanDateTime, CentralTimeZone).ToString("h:mm:ss tt")</span>
                             </div>
                         </div>
                     }
@@ -161,6 +225,7 @@ else
                         <div class="empty-activity">No activity today</div>
                     }
                 </div>
+            </div>
             </div>
         </div>
     </div>
@@ -241,7 +306,7 @@ else
                     <span>@correctionPerson.TransactionType - ID: @correctionPerson.IdNumber</span>
                 </div>
                 <div class="correction-current">
-                    <p><strong>Current Status:</strong> @FormatScanType(correctionPerson.LastScanType) at @correctionPerson.LastScanTime.ToString("h:mm tt")</p>
+                    <p><strong>Current Status:</strong> @FormatScanType(correctionPerson.LastScanType) at @TimeZoneInfo.ConvertTimeFromUtc(correctionPerson.LastScanTime, CentralTimeZone).ToString("h:mm tt")</p>
                 </div>
                 <hr />
                 <h4>New Entry</h4>
@@ -274,6 +339,8 @@ else
 }
 
 @code {
+
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
     [Parameter] public string? CampusCode { get; set; }
 
     private bool hasCampusSelected = false;
@@ -283,7 +350,7 @@ else
     private int staffCount = 0;
     private int studentCount = 0;
     
-    private DateTime lastRefresh = DateTime.Now;
+    private DateTime lastRefresh = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
     private bool isLoading = false;
     private bool autoRefresh = true;
     private string searchTerm = "";
@@ -294,6 +361,8 @@ else
     private List<Campus> availableCampuses = new();
     private List<OnSitePerson> onSiteList = new();
     private List<ActivityItem> recentActivity = new();
+    private AttendanceTransaction? lastScannedPerson = null;
+    private string lastScannedPhoto = "";
     private System.Timers.Timer? refreshTimer;
 
     // Manual Entry
@@ -302,14 +371,14 @@ else
     private List<PersonSearchResult> searchResults = new();
     private PersonSearchResult? selectedPerson = null;
     private string manualScanType = "CAMPUS_IN";
-    private TimeOnly manualTime = TimeOnly.FromDateTime(DateTime.Now);
+    private TimeOnly manualTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
     private string manualNotes = "";
 
     // Correction
     private bool showCorrectionModal = false;
     private OnSitePerson? correctionPerson = null;
     private string correctionScanType = "CAMPUS_OUT";
-    private TimeOnly correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+    private TimeOnly correctionTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
     private string correctionNotes = "";
 
     private List<OnSitePerson> filteredOnSiteList => onSiteList
@@ -436,7 +505,8 @@ else
                         TransactionType = lastScan.TransactionType,
                         LastScanType = lastScan.ScanType,
                         LastScanTime = lastScan.ScanDateTime,
-                        CheckInTime = firstIn?.ScanDateTime ?? lastScan.ScanDateTime
+                        CheckInTime = firstIn?.ScanDateTime ?? lastScan.ScanDateTime,
+                        AllPunches = scans.Select(s => new PunchHistory { ScanType = s.ScanType, ScanDateTime = s.ScanDateTime }).ToList()
                     });
                 }
             }
@@ -455,7 +525,39 @@ else
                 ScanDateTime = t.ScanDateTime
             }).ToList();
 
-            lastRefresh = DateTime.Now;
+            // Get last scanned person and photo
+            lastScannedPerson = todayTransactions.FirstOrDefault();
+            if (lastScannedPerson != null)
+            {
+                int? dcid = null;
+                int subjectType = lastScannedPerson.TransactionType == "STAFF" ? 1 : 0;
+                
+                if (lastScannedPerson.TransactionType == "STAFF")
+                {
+                    var staff = await context.Staff.AsNoTracking()
+                        .FirstOrDefaultAsync(s => s.IdNumber == lastScannedPerson.IdNumber);
+                    dcid = staff?.Dcid;
+                }
+                else
+                {
+                    var student = await context.Students.AsNoTracking()
+                        .FirstOrDefaultAsync(s => s.StudentNumber == lastScannedPerson.IdNumber);
+                    dcid = student?.Dcid;
+                }
+                
+                if (dcid.HasValue)
+                {
+                    var photo = await context.Photos.AsNoTracking()
+                        .FirstOrDefaultAsync(p => p.SubjectDcid == dcid.Value && p.SubjectType == subjectType);
+                    lastScannedPhoto = photo?.PhotoData != null ? Convert.ToBase64String(photo.PhotoData) : "";
+                }
+                else
+                {
+                    lastScannedPhoto = "";
+                }
+            }
+
+            lastRefresh = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
         }
         catch (Exception ex)
         {
@@ -473,7 +575,7 @@ else
         searchResults.Clear();
         selectedPerson = null;
         manualScanType = "CAMPUS_IN";
-        manualTime = TimeOnly.FromDateTime(DateTime.Now);
+        manualTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
         manualNotes = "";
         showManualEntryModal = true;
     }
@@ -580,7 +682,7 @@ else
     {
         correctionPerson = person;
         correctionScanType = person.LastScanType == "CAMPUS_IN" ? "CAMPUS_OUT" : "CAMPUS_IN";
-        correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+        correctionTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
         correctionNotes = "";
         showCorrectionModal = true;
     }
@@ -639,14 +741,14 @@ else
     {
         correctionPerson = person;
         correctionScanType = "CAMPUS_OUT";
-        correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+        correctionTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
         correctionNotes = "Check-out from reception";
         showCorrectionModal = true;
     }
 
     private static string FormatDuration(DateTime checkInTime)
     {
-        var duration = DateTime.Now - checkInTime;
+        var duration = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone) - TimeZoneInfo.ConvertTimeFromUtc(checkInTime, CentralTimeZone);
         if (duration.TotalHours >= 1)
             return $"{(int)duration.TotalHours}h {duration.Minutes}m";
         return $"{duration.Minutes}m";
@@ -660,6 +762,18 @@ else
         "LUNCH_IN" => "🔙",
         _ => "📍"
     };
+
+    private void ToggleExpand(OnSitePerson person)
+    {
+        person.IsExpanded = !person.IsExpanded;
+        StateHasChanged();
+    }
+
+    private static string GetInitial(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return "?";
+        return name[0].ToString().ToUpper();
+    }
 
     private static string FormatScanType(string scanType) => scanType switch
     {
@@ -686,8 +800,16 @@ else
         public string LastScanType { get; set; } = "";
         public DateTime LastScanTime { get; set; }
         public DateTime CheckInTime { get; set; }
+        public List<PunchHistory> AllPunches { get; set; } = new();
+        public bool IsExpanded { get; set; } = false;
     }
 
+
+    private class PunchHistory
+    {
+        public string ScanType { get; set; } = "";
+        public DateTime ScanDateTime { get; set; }
+    }
     private class ActivityItem
     {
         public long TransactionId { get; set; }

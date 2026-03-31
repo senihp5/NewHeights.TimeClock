@@ -48,17 +48,20 @@ builder.Services.AddAuthorization(options =>
             "TimeClock.Supervisor.McCart",
             "TimeClock.HR",
             "TimeClock.CampusAdmin",
+            "TimeClock.Reception",
+            "TimeClock.District",
             "TimeClock.Admin"));
 
-    // Hourly employees and substitutes — can clock in for payroll
+    // Hourly employees and substitutes â€" can clock in for payroll
     options.AddPolicy("RequireHourly", policy =>
         policy.RequireRole(
             "TimeClock.Employee",
             "TimeClock.Employee.StopSix",
             "TimeClock.Employee.McCart",
-            "TimeClock.Substitute"));
+            "TimeClock.Substitute",
+            "TimeClock.Admin"));
 
-    // Campus-scoped supervisors + admin — team timesheets, HR
+    // Campus-scoped supervisors + admin â€" team timesheets, HR
     options.AddPolicy("RequireSupervisor", policy =>
         policy.RequireRole(
             "TimeClock.Supervisor",
@@ -66,15 +69,33 @@ builder.Services.AddAuthorization(options =>
             "TimeClock.Supervisor.McCart",
             "TimeClock.Admin"));
 
-    // HR staff — approved timesheets only
+    // HR staff â€" approved timesheets only
     options.AddPolicy("RequireHR", policy =>
         policy.RequireRole(
             "TimeClock.HR",
             "TimeClock.Admin"));
 
-    // Campus admins — attendance dashboards + reports
+    // Campus admins â€" attendance dashboards + reports
     options.AddPolicy("RequireCampusAdmin", policy =>
         policy.RequireRole(
+            "TimeClock.CampusAdmin",
+            "TimeClock.Supervisor",
+            "TimeClock.Supervisor.StopSix",
+            "TimeClock.Supervisor.McCart",
+            "TimeClock.Reception",
+            "TimeClock.Admin"));
+
+    // District staff - all-campus read-only access
+    options.AddPolicy("RequireDistrict", policy =>
+        policy.RequireRole(
+            "TimeClock.District",
+            "TimeClock.HR",
+            "TimeClock.Admin"));
+
+    // Reception staff - dashboard view only
+    options.AddPolicy("RequireReception", policy =>
+        policy.RequireRole(
+            "TimeClock.Reception",
             "TimeClock.CampusAdmin",
             "TimeClock.Supervisor",
             "TimeClock.Supervisor.StopSix",
@@ -86,9 +107,23 @@ builder.Services.AddAuthorization(options =>
         policy.RequireRole("TimeClock.Admin"));
 });
 
-// Add Blazor services
+// Add Blazor services - circuit retention and hub timeouts for Azure App Service
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    .AddHubOptions(options =>
+    {
+        options.ClientTimeoutInterval = TimeSpan.FromSeconds(60);
+        options.HandshakeTimeout = TimeSpan.FromSeconds(30);
+        options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+    });
+builder.Services.AddServerSideBlazor(options =>
+{
+    options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(30);
+    options.DisconnectedCircuitMaxRetained = 100;
+    options.JSInteropDefaultCallTimeout = TimeSpan.FromSeconds(30);
+    options.DetailedErrors = builder.Environment.IsDevelopment();
+});
+builder.Services.AddSignalR();
 
 // Add Entity Framework
 builder.Services.AddDbContext<TimeClockDbContext>(options =>
@@ -107,10 +142,16 @@ builder.Services.AddScoped<IPayPeriodService, PayPeriodService>();
 
 // User context (campus + role resolution from token claims)
 builder.Services.AddScoped<IUserContextService, UserContextService>();
+builder.Services.AddSingleton<IGraphService, GraphService>();
+builder.Services.AddScoped<IEmployeeSyncService, EmployeeSyncService>();
 
 // Email Service
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailService, EmailService>();
+
+// Auto-Checkout Background Service (runs daily at 9:30 PM CST)
+builder.Services.AddHostedService<AutoCheckoutService>();
+builder.Services.AddScoped<IAutoCheckoutService, AutoCheckoutService>();
 
 var app = builder.Build();
 
@@ -151,7 +192,41 @@ app.MapRazorComponents<NewHeights.TimeClock.Web.Components.App>()
 
 app.MapControllers();
 
+// Temporary diagnostic endpoint - REMOVE after testing
+app.MapGet("/api/test-graph", async (IGraphService graph, IConfiguration config) =>
+{
+    try
+    {
+        var tenantId = config["AzureAd:TenantId"];
+        var clientId = config["AzureAd:ClientId"];
+        var hasSecret = !string.IsNullOrEmpty(config["AzureAd:ClientSecret"]);
+        
+        var testGroupId = config["GraphSync:EmployeeGroupIds:StopSix"];
+        
+        var members = await graph.GetGroupMembersAsync(testGroupId ?? "");
+        
+        return Results.Ok(new
+        {
+            ConfigCheck = new
+            {
+                TenantId = tenantId,
+                ClientId = clientId,
+                HasClientSecret = hasSecret,
+                TestGroupId = testGroupId
+            },
+            MembersFound = members.Count,
+            Members = members.Take(3).Select(m => new { m.DisplayName, m.Email })
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Ok(new
+        {
+            Error = ex.Message,
+            Type = ex.GetType().Name,
+            InnerError = ex.InnerException?.Message
+        });
+    }
+}).RequireAuthorization();
+
 app.Run();
-
-
-

@@ -31,6 +31,13 @@ public class TimeClockDbContext : DbContext
     public DbSet<TcSystemConfig> TcSystemConfigs { get; set; } = null!;
     public DbSet<AttendanceTransaction> AttendanceTransactions { get; set; } = null!;
 
+    // Added in migration 002
+    public DbSet<TcPunchCorrection> TcPunchCorrections { get; set; } = null!;
+    public DbSet<TcBellSchedule> TcBellSchedules { get; set; } = null!;
+    public DbSet<TcBellPeriod> TcBellPeriods { get; set; } = null!;
+    public DbSet<TcStaffHoursWindow> TcStaffHoursWindows { get; set; } = null!;
+    public DbSet<TcMasterSchedule> TcMasterSchedules { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -108,19 +115,20 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.IdNumber).HasMaxLength(50).IsRequired();
             entity.Property(e => e.AscenderEmployeeId).HasMaxLength(50);
             entity.Property(e => e.EmployeeType).HasConversion<string>().HasMaxLength(20);
+            entity.Property(e => e.Shift).HasConversion<string>().HasMaxLength(10);
             entity.Property(e => e.DepartmentCode).HasMaxLength(20);
             entity.Property(e => e.DepartmentName).HasMaxLength(100);
             entity.Property(e => e.Email).HasMaxLength(200);
             entity.Property(e => e.Phone).HasMaxLength(20);
             entity.Property(e => e.EntraObjectId).HasMaxLength(100);
 
-            entity.HasOne(e => e.Staff).WithMany().HasForeignKey(e => e.StaffDcid).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Staff).WithMany().HasForeignKey(e => e.StaffDcid).OnDelete(DeleteBehavior.Restrict).IsRequired(false);
             entity.HasOne(e => e.HomeCampus).WithMany(c => c.Employees).HasForeignKey(e => e.HomeCampusId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Supervisor).WithMany(s => s.DirectReports).HasForeignKey(e => e.SupervisorEmployeeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.PayRule).WithMany(p => p.Employees).HasForeignKey(e => e.PayRuleId).OnDelete(DeleteBehavior.SetNull);
 
-            entity.HasIndex(e => e.StaffDcid).IsUnique();
-            entity.HasIndex(e => e.IdNumber).IsUnique();
+            entity.HasIndex(e => e.StaffDcid);
+            entity.HasIndex(e => e.IdNumber);
             entity.HasIndex(e => e.EntraObjectId);
         });
 
@@ -157,7 +165,7 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.OvertimeHours).HasColumnType("decimal(5,2)");
             entity.Property(e => e.TotalHours).HasColumnType("decimal(5,2)");
             entity.Property(e => e.ScheduledHours).HasColumnType("decimal(5,2)");
-            entity.Property(e => e.ApprovedBy).HasMaxLength(100);
+            
             entity.Property(e => e.ExceptionNotes).HasMaxLength(500);
 
             entity.HasOne(e => e.Employee).WithMany(emp => emp.DailyTimecards).HasForeignKey(e => e.EmployeeId).OnDelete(DeleteBehavior.Restrict);
@@ -310,21 +318,26 @@ public class TimeClockDbContext : DbContext
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.NotificationType);
         });
-
         modelBuilder.Entity<TcAuditLog>(entity =>
         {
             entity.ToTable("TC_AuditLog");
             entity.HasKey(e => e.AuditId);
-            entity.Property(e => e.TableName).HasMaxLength(50).IsRequired();
-            entity.Property(e => e.RecordId).HasMaxLength(50).IsRequired();
-            entity.Property(e => e.Action).HasConversion<string>().HasMaxLength(10);
-            entity.Property(e => e.ChangedBy).HasMaxLength(100).IsRequired();
-            entity.Property(e => e.ChangedByRole).HasMaxLength(20);
+            entity.Property(e => e.ActionCode).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.UserId).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.UserName).HasMaxLength(150).IsRequired();
+            entity.Property(e => e.UserEmail).HasMaxLength(200);
+            entity.Property(e => e.UserRole).HasMaxLength(30);
+            entity.Property(e => e.EntityType).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.EntityId).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.DeltaSummary).HasMaxLength(500);
+            entity.Property(e => e.Reason).HasMaxLength(500);
+            entity.Property(e => e.Source).HasMaxLength(15);
             entity.Property(e => e.IPAddress).HasMaxLength(50);
-            entity.Property(e => e.Reason).HasMaxLength(200);
+            entity.Property(e => e.SessionId).HasMaxLength(100);
 
-            entity.HasIndex(e => new { e.TableName, e.RecordId });
-            entity.HasIndex(e => e.ChangedBy);
+            entity.HasIndex(e => e.ActionCode);
+            entity.HasIndex(e => e.UserId);
+            entity.HasIndex(e => new { e.EntityType, e.EntityId });
             entity.HasIndex(e => e.CreatedDate);
         });
 
@@ -355,6 +368,79 @@ public class TimeClockDbContext : DbContext
             entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId);
             entity.HasIndex(e => new { e.IdNumber, e.ScanDateTime });
             entity.HasIndex(e => new { e.CampusId, e.ScanDateTime });
+        });
+
+
+        modelBuilder.Entity<TcPunchCorrection>(entity =>
+        {
+            entity.ToTable("TC_PunchCorrections");
+            entity.HasKey(e => e.CorrectionId);
+            entity.Property(e => e.CorrectionType).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.Reason).HasMaxLength(500);
+            
+            entity.HasOne(e => e.OriginalPunch).WithMany().HasForeignKey(e => e.OriginalPunchId).OnDelete(DeleteBehavior.Restrict);
+            
+        });
+
+        modelBuilder.Entity<TcBellSchedule>(entity =>
+        {
+            entity.ToTable("TC_BellSchedule");
+            entity.HasKey(e => e.BellScheduleId);
+            entity.Property(e => e.ScheduleName).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.SessionType).HasMaxLength(10).IsRequired();
+            entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<TcBellPeriod>(entity =>
+        {
+            entity.ToTable("TC_BellPeriod");
+            entity.HasKey(e => e.PeriodId);
+            entity.Property(e => e.PeriodName).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.PeriodType).HasMaxLength(20).IsRequired();
+            entity.HasOne(e => e.Schedule).WithMany(s => s.Periods).HasForeignKey(e => e.BellScheduleId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TcStaffHoursWindow>(entity =>
+        {
+            entity.ToTable("TC_StaffHoursWindows");
+            entity.HasKey(e => e.WindowId);
+            entity.Property(e => e.SessionType).HasMaxLength(10).IsRequired();
+            entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<TcMasterSchedule>(entity =>
+        {
+            entity.ToTable("TC_MasterSchedule");
+            entity.HasKey(e => e.ScheduleId);
+            entity.Property(e => e.RawPartnerNames).HasMaxLength(200);
+            entity.Property(e => e.Room).HasMaxLength(10);
+            entity.Property(e => e.DayPattern).HasMaxLength(10).IsRequired();
+            entity.Property(e => e.Shift).HasMaxLength(10).IsRequired();
+            entity.Property(e => e.ContentArea).HasMaxLength(20);
+            entity.Property(e => e.MW_P1).HasMaxLength(100);
+            entity.Property(e => e.MW_P2).HasMaxLength(100);
+            entity.Property(e => e.MW_P3).HasMaxLength(100);
+            entity.Property(e => e.MW_P4).HasMaxLength(100);
+            entity.Property(e => e.MW_P5).HasMaxLength(100);
+            entity.Property(e => e.MW_P6).HasMaxLength(100);
+            entity.Property(e => e.TTh_P1).HasMaxLength(100);
+            entity.Property(e => e.TTh_P2).HasMaxLength(100);
+            entity.Property(e => e.TTh_P3).HasMaxLength(100);
+            entity.Property(e => e.TTh_P4).HasMaxLength(100);
+            entity.Property(e => e.TTh_P5).HasMaxLength(100);
+            entity.Property(e => e.TTh_P6).HasMaxLength(100);
+            entity.Property(e => e.TeacherMatchMethod).HasMaxLength(20);
+            entity.Property(e => e.Partner1MatchMethod).HasMaxLength(20);
+            entity.Property(e => e.Partner2MatchMethod).HasMaxLength(20);
+            entity.Property(e => e.ImportedBy).HasMaxLength(150);
+            entity.Property(e => e.Notes).HasMaxLength(500);
+
+            entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Teacher).WithMany().HasForeignKey(e => e.TeacherStaffDcid).OnDelete(DeleteBehavior.Restrict).IsRequired(false);
+            entity.HasOne(e => e.Partner1).WithMany().HasForeignKey(e => e.Partner1StaffDcid).OnDelete(DeleteBehavior.Restrict).IsRequired(false);
+            entity.HasOne(e => e.Partner2).WithMany().HasForeignKey(e => e.Partner2StaffDcid).OnDelete(DeleteBehavior.Restrict).IsRequired(false);
+
+            entity.HasIndex(e => new { e.CampusId, e.TermName, e.SchoolYear });
+            entity.HasIndex(e => e.TeacherStaffDcid);
         });
     }
 }
