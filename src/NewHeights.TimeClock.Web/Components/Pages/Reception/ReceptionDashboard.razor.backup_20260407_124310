@@ -9,12 +9,10 @@
 @using NewHeights.TimeClock.Data.Entities
 @using Microsoft.EntityFrameworkCore
 @using System.Security.Claims
-@using Microsoft.AspNetCore.SignalR.Client
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IJSRuntime JS
 @inject ILogger<ReceptionDashboard> Logger
 @inject AuthenticationStateProvider AuthStateProvider
-@inject NavigationManager Navigation
 @implements IAsyncDisposable
 
 <PageTitle>Reception - @selectedCampusName</PageTitle>
@@ -360,8 +358,6 @@ else
     private string currentUserName = "";
     private string currentUserEmail = "";
 
-    private HubConnection? hubConnection;
-
     private List<Campus> availableCampuses = new();
     private List<OnSitePerson> onSiteList = new();
     private HashSet<string> expandedPersonIds = new(); // Track expanded state across refreshes
@@ -425,38 +421,6 @@ else
             }
         };
         refreshTimer.Start();
-
-        // Initialize SignalR connection for real-time updates
-        try
-        {
-            hubConnection = new HubConnectionBuilder()
-                .WithUrl(Navigation.ToAbsoluteUri("/dashboardhub"))
-                .WithAutomaticReconnect()
-                .Build();
-
-            hubConnection.On("ScanCompleted", async () =>
-            {
-                Logger.LogInformation("SignalR: Scan completed event received");
-                await InvokeAsync(async () =>
-                {
-                    await RefreshData();
-                    StateHasChanged();
-                });
-            });
-
-            await hubConnection.StartAsync();
-            
-            // Join the campus-specific group
-            if (!string.IsNullOrEmpty(selectedCampusCode))
-            {
-                await hubConnection.InvokeAsync("JoinDashboard", selectedCampusCode);
-                Logger.LogInformation("SignalR: Joined dashboard group for {Campus}", selectedCampusCode);
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to initialize SignalR connection");
-        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -498,20 +462,6 @@ else
             
             await JS.InvokeVoidAsync("localStorage.setItem", "reception_campus", campus.CampusCode);
             await RefreshData();
-
-            // Join SignalR dashboard group for this campus
-            if (hubConnection?.State == HubConnectionState.Connected)
-            {
-                try
-                {
-                    await hubConnection.InvokeAsync("JoinDashboard", selectedCampusCode);
-                    Logger.LogInformation("SignalR: Joined dashboard group for {Campus}", selectedCampusCode);
-                }
-                catch (Exception ex)
-                {
-                    Logger.LogWarning(ex, "Failed to join SignalR dashboard group");
-                }
-            }
         }
     }
 
@@ -846,23 +796,11 @@ else
         _ => scanType
     };
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         refreshTimer?.Stop();
         refreshTimer?.Dispose();
-        
-        // Dispose SignalR connection
-        if (hubConnection != null)
-        {
-            try
-            {
-                await hubConnection.DisposeAsync();
-            }
-            catch (Exception ex)
-            {
-                Logger.LogWarning(ex, "Error disposing SignalR connection");
-            }
-        }
+        return ValueTask.CompletedTask;
     }
 
     private class OnSitePerson

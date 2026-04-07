@@ -1,6 +1,5 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Hosting;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
 using NewHeights.TimeClock.Shared.Enums;
@@ -16,6 +15,7 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AutoCheckoutService> _logger;
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
     private const int AutoCheckoutHour = 21; // 9 PM
     private const int AutoCheckoutMinute = 30; // 30 minutes
 
@@ -35,17 +35,17 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
         {
             try
             {
-                var now = DateTime.Now;
-                var targetTime = new DateTime(now.Year, now.Month, now.Day, AutoCheckoutHour, AutoCheckoutMinute, 0);
+                var nowCst = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+                var targetTime = new DateTime(nowCst.Year, nowCst.Month, nowCst.Day, AutoCheckoutHour, AutoCheckoutMinute, 0);
 
                 // If we've passed today's checkout time, target tomorrow
-                if (now > targetTime)
+                if (nowCst > targetTime)
                 {
                     targetTime = targetTime.AddDays(1);
                 }
 
-                var delay = targetTime - now;
-                _logger.LogInformation("Next auto-checkout scheduled for {TargetTime} ({Delay} from now)",
+                var delay = targetTime - nowCst;
+                _logger.LogInformation("Next auto-checkout scheduled for {TargetTime} CST ({Delay} from now)", 
                     targetTime, delay);
 
                 await Task.Delay(delay, stoppingToken);
@@ -74,17 +74,19 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
         var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<TimeClockDbContext>>();
         using var context = await dbFactory.CreateDbContextAsync();
 
-        var now = DateTime.Now;
-        var todayStart = now.Date;
+        var nowUtc = DateTime.UtcNow;
+        var nowCst = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, CentralTimeZone);
+        var todayStart = new DateTime(nowCst.Year, nowCst.Month, nowCst.Day, 0, 0, 0);
+        var todayStartUtc = TimeZoneInfo.ConvertTimeToUtc(todayStart, CentralTimeZone);
 
-        _logger.LogInformation("Processing auto-checkouts for {Date}", now.Date);
+        _logger.LogInformation("Processing auto-checkouts for {Date}", nowCst.Date);
 
         // Find all employees with IN punch today but no OUT punch
         var openPunches = await context.TcTimePunches
-                    .Include(p => p.Employee)
-                    .ThenInclude(e => e!.Staff)
-                    .Where(p => p.PunchDateTime >= todayStart &&
-                                p.PunchType == PunchType.In &&
+            .Include(p => p.Employee)
+            .ThenInclude(e => e!.Staff)
+            .Where(p => p.PunchDateTime >= todayStartUtc &&
+                        p.PunchType == PunchType.In &&
                         p.PunchStatus == PunchStatus.Active &&
                         p.PairedPunchId == null)
             .ToListAsync();
@@ -95,7 +97,8 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
         {
             try
             {
-                var autoCheckoutTime = new DateTime(now.Year, now.Month, now.Day, AutoCheckoutHour, AutoCheckoutMinute, 0);
+                var autoCheckoutTimeCst = new DateTime(nowCst.Year, nowCst.Month, nowCst.Day, AutoCheckoutHour, AutoCheckoutMinute, 0);
+                var autoCheckoutTimeUtc = TimeZoneInfo.ConvertTimeToUtc(autoCheckoutTimeCst, CentralTimeZone);
 
                 var outPunch = new TcTimePunch
                 {
@@ -103,8 +106,8 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
                     CampusId = inPunch.CampusId,
                     TerminalId = null,
                     PunchType = PunchType.Out,
-                    PunchDateTime = autoCheckoutTime,
-                    RoundedDateTime = autoCheckoutTime,
+                    PunchDateTime = autoCheckoutTimeUtc,
+                    RoundedDateTime = autoCheckoutTimeUtc,
                     GeofenceStatus = GeofenceStatus.Manual,
                     VerificationMethod = "SYSTEM",
                     ScanMethod = "AUTO",
@@ -115,7 +118,7 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
                     Notes = $"Auto-checkout at {AutoCheckoutHour}:{AutoCheckoutMinute:D2} PM - Please verify with supervisor",
                     PunchSource = "SYSTEM",
                     SessionType = inPunch.SessionType,
-                    CreatedDate = now
+                    CreatedDate = nowUtc
                 };
 
                 context.TcTimePunches.Add(outPunch);

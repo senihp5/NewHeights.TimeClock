@@ -229,7 +229,4 @@ app.MapGet("/api/test-graph", async (IGraphService graph, IConfiguration config)
     }
 }).RequireAuthorization();
 
-// Map SignalR hub for real-time dashboard updates
-app.MapHub<NewHeights.TimeClock.Web.Hubs.DashboardHub>("/dashboardhub");
-
 app.Run();

@@ -402,7 +402,7 @@ public class TimeClockDbContext : DbContext
 
         modelBuilder.Entity<TcStaffHoursWindow>(entity =>
         {
-            entity.ToTable("TC_StaffHoursWindows");
+            entity.ToTable("TC_StaffHoursWindow");
             entity.HasKey(e => e.WindowId);
             entity.Property(e => e.SessionType).HasMaxLength(10).IsRequired();
             entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);

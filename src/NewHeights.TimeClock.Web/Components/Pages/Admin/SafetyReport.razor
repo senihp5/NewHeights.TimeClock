@@ -254,8 +254,6 @@
 </style>
 
 @code {
-    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
-
     private DateTime selectedDate = DateTime.Today;
     private int selectedCampusId = 0;
     private string personTypeFilter = "";
@@ -300,12 +298,11 @@
             using var ctx = await DbFactory.CreateDbContextAsync();
             var campuses = await ctx.Campuses.AsNoTracking().ToListAsync();
 
-            // Convert selected date to UTC for database query
-            var startUtc = TimeZoneInfo.ConvertTimeToUtc(selectedDate.Date, CentralTimeZone);
-            var endUtc = TimeZoneInfo.ConvertTimeToUtc(selectedDate.Date.AddDays(1), CentralTimeZone);
+            var startDate = selectedDate.Date;
+            var endDate = selectedDate.Date.AddDays(1);
 
             var query = ctx.AttendanceTransactions.AsNoTracking()
-                .Where(t => t.ScanDateTime >= startUtc && t.ScanDateTime < endUtc);
+                .Where(t => t.ScanDateTime >= startDate && t.ScanDateTime < endDate);
 
             if (selectedCampusId > 0)
                 query = query.Where(t => t.CampusId == selectedCampusId);
@@ -324,10 +321,9 @@
                 var scans = group.OrderBy(t => t.ScanDateTime).ToList();
                 var campus = campuses.FirstOrDefault(c => c.CampusId == group.Key.CampusId);
 
-                // Convert all scan times to CST
                 var allPunches = scans.Select(s => new PunchHistory
                 {
-                    ScanTimeCst = TimeZoneInfo.ConvertTimeFromUtc(s.ScanDateTime, CentralTimeZone),
+                    ScanTimeCst = s.ScanDateTime,
                     ScanType = s.ScanType
                 }).ToList();
 
@@ -337,29 +333,24 @@
 
                 bool isOnSite = lastScan.ScanType == "CAMPUS_IN" || lastScan.ScanType == "LUNCH_IN";
 
-                DateTime? arrivalCst = firstIn != null
-                    ? TimeZoneInfo.ConvertTimeFromUtc(firstIn.ScanDateTime, CentralTimeZone)
-                    : null;
+                DateTime? arrival = firstIn?.ScanDateTime;
 
-                DateTime? departureCst = null;
+                DateTime? departure = null;
                 if (!isOnSite && lastOut != null)
                 {
-                    departureCst = TimeZoneInfo.ConvertTimeFromUtc(lastOut.ScanDateTime, CentralTimeZone);
+                    departure = lastOut.ScanDateTime;
                 }
                 else if (!isOnSite && lastOut == null)
                 {
-                    departureCst = TimeZoneInfo.ConvertTimeFromUtc(lastScan.ScanDateTime, CentralTimeZone);
+                    departure = lastScan.ScanDateTime;
                 }
 
-                // Calculate duration in CST
                 string durationDisplay = "";
-                if (arrivalCst.HasValue)
+                if (arrival.HasValue)
                 {
-                    var endCst = departureCst ?? (isOnSite
-                        ? TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone)
-                        : TimeZoneInfo.ConvertTimeFromUtc(lastScan.ScanDateTime, CentralTimeZone));
+                    var end = departure ?? (isOnSite ? DateTime.Now : lastScan.ScanDateTime);
 
-                    var dur = endCst - arrivalCst.Value;
+                    var dur = end - arrival.Value;
                     durationDisplay = dur.TotalHours >= 1
                         ? $"{(int)dur.TotalHours}h {dur.Minutes:D2}m"
                         : $"{dur.Minutes}m";
@@ -374,8 +365,8 @@
                     PersonType = sample.TransactionType,
                     CampusId = group.Key.CampusId,
                     CampusName = campus?.CampusName ?? "Unknown",
-                    ArrivalTime = arrivalCst,
-                    DepartureTime = departureCst,
+                    ArrivalTime = arrival,
+                    DepartureTime = departure,
                     IsOnSite = isOnSite,
                     DurationDisplay = durationDisplay,
                     ScanCount = scans.Count,

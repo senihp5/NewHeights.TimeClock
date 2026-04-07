@@ -122,14 +122,8 @@
                             <tbody>
                                 @foreach (var day in emp.DailyRows.OrderBy(d => d.WorkDate))
                                 {
-                                    <tr class="@(day.HasException ? "row-exception" : "")" style="cursor: @(day.AllPunches.Count > 1 ? "pointer" : "default")">
-                                        <td @onclick="() => ToggleDay(day)" style="user-select: none;">
-                                            @if (day.AllPunches.Count > 1)
-                                            {
-                                                <span class="expand-arrow">@(day.IsExpanded ? "▼" : "▶")</span>
-                                            }
-                                            @day.WorkDate.ToString("ddd M/d")
-                                        </td>
+                                    <tr class="@(day.HasException ? "row-exception" : "")">
+                                        <td>@day.WorkDate.ToString("ddd M/d")</td>
                                         <td>@(day.ClockIn.HasValue ? day.ClockIn.Value.ToString("h:mm tt") : "—")</td>
                                         <td>@(day.ClockOut.HasValue ? day.ClockOut.Value.ToString("h:mm tt") : "—")</td>
                                         <td>@day.RegularHours.ToString("F1")</td>
@@ -138,22 +132,6 @@
                                         <td>@day.CampusName</td>
                                         <td>@day.ExceptionNotes</td>
                                     </tr>
-                                    @if (day.IsExpanded && day.AllPunches.Count > 1)
-                                    {
-                                        <tr class="punch-history-row">
-                                            <td colspan="8">
-                                                <div class="punch-timeline">
-                                                    @foreach (var punch in day.AllPunches.OrderBy(p => p.PunchTime))
-                                                    {
-                                                        <div class="punch-timeline-item">
-                                                            <span class="punch-badge @GetPunchTypeClass(punch.PunchType)">@GetPunchTypeLabel(punch.PunchType)</span>
-                                                            <span class="punch-time">@punch.PunchTime.ToString("h:mm tt")</span>
-                                                        </div>
-                                                    }
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    }
                                 }
                             </tbody>
                         </table>
@@ -163,73 +141,6 @@
         }
     }
 </div>
-
-<style>
-    .expand-arrow {
-        display: inline-block;
-        width: 1em;
-        text-align: center;
-        margin-right: 0.25rem;
-        color: #666;
-        font-size: 0.85em;
-    }
-    
-    .punch-history-row {
-        background-color: #f8f9fa !important;
-    }
-    
-    .punch-timeline {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 1rem;
-        padding: 1rem 1.5rem;
-        background: white;
-        border-radius: 4px;
-        margin: 0.5rem;
-    }
-    
-    .punch-timeline-item {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    
-    .punch-badge {
-        padding: 0.25rem 0.5rem;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    
-    .punch-badge.in {
-        background-color: #d1f4e0;
-        color: #0d7a3f;
-    }
-    
-    .punch-badge.out {
-        background-color: #ffe8e8;
-        color: #c41e3a;
-    }
-    
-    .punch-badge.lunch-out {
-        background-color: #fff3cd;
-        color: #856404;
-    }
-    
-    .punch-badge.lunch-in {
-        background-color: #d1ecf1;
-        color: #0c5460;
-    }
-    
-    .punch-time {
-        font-family: 'Consolas', 'Monaco', monospace;
-        font-size: 0.9rem;
-        color: #495057;
-    }
-</style>
-
 @code {
     private string dateMode = "payperiod";
     private int periodOffset = 0;
@@ -243,19 +154,16 @@
     private PayPeriodInfo? currentPayPeriod;
     private List<EmployeeReportSummary> employeeSummaries = new();
     private HashSet<int> expandedEmployees = new();
-    
     protected override void OnInitialized()
     {
         currentPayPeriod = PayPeriodService.GetPayPeriodForDate(DateTime.Today);
     }
-    
     private void PrevPeriod()
     {
         periodOffset--;
         var anchor = DateTime.Today.AddDays(periodOffset * 15);
         currentPayPeriod = PayPeriodService.GetPayPeriodForDate(anchor);
     }
-    
     private void NextPeriod()
     {
         if (periodOffset < 0)
@@ -265,41 +173,12 @@
             currentPayPeriod = PayPeriodService.GetPayPeriodForDate(anchor);
         }
     }
-    
     private void ToggleEmployee(int empId)
     {
         if (expandedEmployees.Contains(empId)) expandedEmployees.Remove(empId);
         else expandedEmployees.Add(empId);
         StateHasChanged();
     }
-    
-    private void ToggleDay(DailyRow day)
-    {
-        if (day.AllPunches.Count > 1)
-        {
-            day.IsExpanded = !day.IsExpanded;
-            StateHasChanged();
-        }
-    }
-    
-    private string GetPunchTypeClass(string punchType) => punchType.ToLower() switch
-    {
-        "in" => "in",
-        "out" => "out",
-        "lunchout" => "lunch-out",
-        "lunchin" => "lunch-in",
-        _ => ""
-    };
-    
-    private string GetPunchTypeLabel(string punchType) => punchType.ToUpper() switch
-    {
-        "IN" => "In",
-        "OUT" => "Out",
-        "LUNCHOUT" => "Lunch Out",
-        "LUNCHIN" => "Lunch In",
-        _ => punchType
-    };
-    
     private async Task RunReport()
     {
         isLoading = true;
@@ -308,7 +187,6 @@
         employeeSummaries.Clear();
         expandedEmployees.Clear();
         StateHasChanged();
-        
         DateTime startDate, endDate;
         if (dateMode == "payperiod" && currentPayPeriod != null)
         {
@@ -326,18 +204,15 @@
             }
             startDate = customStart;
             endDate = customEnd;
-            reportDateLabel = $"{customStart:MMM d} — {customEnd:MMM d, yyyy}";
+            reportDateLabel = $"{customStart:MMM d} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ {customEnd:MMM d, yyyy}";
         }
-        
         try
         {
             using var ctx = await DbFactory.CreateDbContextAsync();
             var campuses = await ctx.Campuses.AsNoTracking().ToListAsync();
-            
             var empQuery = ctx.TcEmployees.AsNoTracking()
                 .Include(e => e.Staff)
                 .Where(e => e.IsActive);
-            
             if (!string.IsNullOrWhiteSpace(employeeSearch))
             {
                 var search = employeeSearch.ToLower();
@@ -346,25 +221,19 @@
                     (e.Staff != null && e.Staff.LastName != null && e.Staff.LastName.ToLower().Contains(search)) ||
                     e.IdNumber.ToLower().Contains(search));
             }
-            
             var employees = await empQuery.ToListAsync();
-            
             var timecards = await ctx.TcDailyTimecards.AsNoTracking()
                 .Where(tc => tc.WorkDate >= DateOnly.FromDateTime(startDate) && tc.WorkDate <= DateOnly.FromDateTime(endDate))
                 .ToListAsync();
-            
             var punches = await ctx.TcTimePunches.AsNoTracking()
                 .Where(p => p.PunchDateTime.Date >= startDate && p.PunchDateTime.Date <= endDate)
                 .OrderBy(p => p.PunchDateTime)
                 .ToListAsync();
-            
             foreach (var emp in employees)
             {
                 var empTimecards = timecards.Where(tc => tc.EmployeeId == emp.EmployeeId).ToList();
                 var empPunches = punches.Where(p => p.EmployeeId == emp.EmployeeId).ToList();
-                
                 if (!empTimecards.Any() && !empPunches.Any()) continue;
-                
                 var summary = new EmployeeReportSummary
                 {
                     EmployeeId = emp.EmployeeId,
@@ -376,19 +245,13 @@
                     OvertimeHours = empTimecards.Sum(tc => (double)tc.OvertimeHours),
                     TotalHours = empTimecards.Sum(tc => (double)tc.TotalHours)
                 };
-                
                 foreach (var tc in empTimecards)
                 {
-                    var dayPunches = empPunches
-                        .Where(p => DateOnly.FromDateTime(p.PunchDateTime) == tc.WorkDate)
-                        .OrderBy(p => p.PunchDateTime)
-                        .ToList();
-                    
+                    var dayPunches = empPunches.Where(p => DateOnly.FromDateTime(p.PunchDateTime) == tc.WorkDate).OrderBy(p => p.PunchDateTime).ToList();
                     var clockIn = dayPunches.FirstOrDefault(p => p.PunchType == PunchType.In);
                     var clockOut = dayPunches.LastOrDefault(p => p.PunchType == PunchType.Out);
                     var campus = campuses.FirstOrDefault(c => c.CampusId == tc.CampusId);
-                    
-                    var dailyRow = new DailyRow
+                    summary.DailyRows.Add(new DailyRow
                     {
                         WorkDate = tc.WorkDate,
                         ClockIn = clockIn?.PunchDateTime,
@@ -399,21 +262,8 @@
                         CampusName = campus?.CampusName ?? "",
                         HasException = tc.HasException,
                         ExceptionNotes = tc.ExceptionNotes ?? ""
-                    };
-                    
-                    // Populate all punches for twirl-down
-                    foreach (var p in dayPunches)
-                    {
-                        dailyRow.AllPunches.Add(new PunchHistory
-                        {
-                            PunchTime = p.PunchDateTime,
-                            PunchType = p.PunchType.ToString()
-                        });
-                    }
-                    
-                    summary.DailyRows.Add(dailyRow);
+                    });
                 }
-                
                 employeeSummaries.Add(summary);
             }
         }
@@ -428,12 +278,10 @@
             StateHasChanged();
         }
     }
-    
     private async Task ExportCsv()
     {
         var sb = new StringBuilder();
         sb.AppendLine("Employee,ID,Department,Date,Clock In,Clock Out,Regular,OT,Total,Campus,Exception");
-        
         foreach (var emp in employeeSummaries.OrderBy(e => e.LastName).ThenBy(e => e.FirstName))
         {
             if (!emp.DailyRows.Any())
@@ -441,7 +289,6 @@
                 sb.AppendLine($"{Csv(emp.LastName + ", " + emp.FirstName)},{emp.IdNumber},{Csv(emp.DepartmentName)},,,,{emp.RegularHours:F1},{emp.OvertimeHours:F1},{emp.TotalHours:F1},,");
                 continue;
             }
-            
             foreach (var d in emp.DailyRows.OrderBy(r => r.WorkDate))
             {
                 var ci = d.ClockIn.HasValue ? d.ClockIn.Value.ToString("h:mm tt") : "";
@@ -450,15 +297,12 @@
                 sb.AppendLine($"{Csv(emp.LastName + ", " + emp.FirstName)},{emp.IdNumber},{Csv(emp.DepartmentName)},{d.WorkDate:yyyy-MM-dd},{ci},{co},{d.RegularHours:F1},{d.OvertimeHours:F1},{d.TotalHours:F1},{Csv(d.CampusName)},{exc}");
             }
         }
-        
         var label = reportDateLabel.Replace(" ", "_").Replace(",", "");
         var fileName = $"TimeClock_{label}.csv";
         var bytes = Encoding.UTF8.GetBytes(sb.ToString());
         await JS.InvokeVoidAsync("downloadFile", fileName, "text/csv", Convert.ToBase64String(bytes));
     }
-    
     private static string Csv(string s) { return "\"" + s.Replace("\"", "'") + "\""; }
-    
     private class EmployeeReportSummary
     {
         public int EmployeeId { get; set; }
@@ -471,7 +315,6 @@
         public double TotalHours { get; set; }
         public List<DailyRow> DailyRows { get; set; } = new();
     }
-    
     private class DailyRow
     {
         public DateOnly WorkDate { get; set; }
@@ -483,13 +326,5 @@
         public string CampusName { get; set; } = "";
         public bool HasException { get; set; }
         public string ExceptionNotes { get; set; } = "";
-        public List<PunchHistory> AllPunches { get; set; } = new();
-        public bool IsExpanded { get; set; } = false;
-    }
-    
-    private class PunchHistory
-    {
-        public DateTime PunchTime { get; set; }
-        public string PunchType { get; set; } = "";
     }
 }

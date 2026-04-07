@@ -68,7 +68,7 @@ public class TimePunchService : ITimePunchService
 
     public async Task<List<TcTimePunch>> GetTodayPunchesAsync(int employeeId)
     {
-        var today = DateTime.Now.Date;
+        var today = DateTime.UtcNow.Date;
         return await _context.TcTimePunches
             .Where(p => p.EmployeeId == employeeId && p.PunchDateTime.Date == today && p.PunchStatus == PunchStatus.Active)
             .OrderBy(p => p.PunchDateTime)
@@ -81,7 +81,7 @@ public class TimePunchService : ITimePunchService
         if (!todayPunches.Any()) return PunchType.In;
 
         var lastPunch = todayPunches.Last();
-        var now = DateTime.Now;
+        var now = DateTime.UtcNow;
         var campus = await _context.Campuses.FindAsync(campusId);
         var lunchStart = campus?.LunchStartTime?.ToTimeSpan() ?? new TimeSpan(11, 0, 0);
         var lunchEnd = campus?.LunchEndTime?.ToTimeSpan() ?? new TimeSpan(13, 0, 0);
@@ -119,7 +119,7 @@ public class TimePunchService : ITimePunchService
         }
 
         if (lastIn != null)
-            totalMinutes += (decimal)(DateTime.Now - lastIn.PunchDateTime).TotalMinutes;
+            totalMinutes += (decimal)(DateTime.UtcNow - lastIn.PunchDateTime).TotalMinutes;
 
         return Math.Round(totalMinutes / 60, 2);
     }
@@ -159,7 +159,7 @@ public class TimePunchService : ITimePunchService
             }
 
             var punchType = await DeterminePunchTypeAsync(employee.EmployeeId, campusId);
-            var now = DateTime.Now;
+            var now = DateTime.UtcNow;
             var roundedTime = RoundTime(now, 15);
 
             var punch = new TcTimePunch
@@ -177,7 +177,7 @@ public class TimePunchService : ITimePunchService
                 QRCodeScanned = request.IdNumber,
                 PunchStatus = PunchStatus.Active,
                 IsManualEntry = false,
-                CreatedDate = DateTime.Now
+                CreatedDate = DateTime.UtcNow
             };
 
             _context.TcTimePunches.Add(punch);
@@ -239,7 +239,7 @@ public class TimePunchService : ITimePunchService
                 CampusId = campusId,
                 WorkDate = workDateOnly,
                 ApprovalStatus = ApprovalStatus.Pending,
-                CreatedDate = DateTime.Now
+                CreatedDate = DateTime.UtcNow
             };
             _context.TcDailyTimecards.Add(timecard);
         }
@@ -249,7 +249,7 @@ public class TimePunchService : ITimePunchService
         timecard.TotalHours = totalHours;
         timecard.RegularHours = Math.Min(totalHours, 8);
         timecard.OvertimeHours = Math.Max(0, totalHours - 8);
-        timecard.ModifiedDate = DateTime.Now;
+        timecard.ModifiedDate = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();
     }
@@ -281,8 +281,10 @@ public class TimePunchService : ITimePunchService
         if (punch.PunchType != PunchType.Out && punch.PunchType != PunchType.LunchOut)
             return false;
 
-        var punchTime = TimeOnly.FromDateTime(punch.PunchDateTime);
-        var dayOfWeek = punch.PunchDateTime.DayOfWeek;
+        var punchTimeCst = TimeZoneInfo.ConvertTimeFromUtc(punch.PunchDateTime, 
+            TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time"));
+        var punchTime = TimeOnly.FromDateTime(punchTimeCst);
+        var dayOfWeek = punchTimeCst.DayOfWeek;
 
         // Skip weekends
         if (dayOfWeek == DayOfWeek.Saturday || dayOfWeek == DayOfWeek.Sunday)
@@ -305,9 +307,9 @@ public class TimePunchService : ITimePunchService
                 punch.PunchSubType = "EARLY_OUT";
                 _context.TcTimePunches.Update(punch);
                 await _context.SaveChangesAsync();
-
-                _logger.LogInformation("Early checkout flagged for supervisor review: Employee={Id}, Time={Time}",
-                                    punch.EmployeeId, punch.PunchDateTime);
+                
+                _logger.LogInformation("Early checkout flagged for supervisor review: Employee={Id}, Time={Time}", 
+                    punch.EmployeeId, punchTimeCst);
                 return true;
             }
         }

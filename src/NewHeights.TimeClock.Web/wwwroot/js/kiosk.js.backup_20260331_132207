@@ -170,32 +170,3 @@ window.blazorReconnection = {
         console.log('[Kiosk] Reconnection handlers configured');
     }
 };
-
-
-// Page Visibility API - Restart scanner when page regains focus
-window.kioskPageVisibility = {
-    dotNetHelper: null,
-    
-    init: function(dotNetRef) {
-        this.dotNetHelper = dotNetRef;
-        
-        document.addEventListener('visibilitychange', () => {
-            console.log('[Kiosk] Visibility changed:', document.hidden ? 'hidden' : 'visible');
-            
-            if (!document.hidden && this.dotNetHelper) {
-                console.log('[Kiosk] Page visible - requesting scanner restart');
-                this.dotNetHelper.invokeMethodAsync('OnPageVisible');
-            }
-        });
-        
-        // Also handle window focus events
-        window.addEventListener('focus', () => {
-            console.log('[Kiosk] Window focused');
-            if (this.dotNetHelper) {
-                this.dotNetHelper.invokeMethodAsync('OnPageVisible');
-            }
-        });
-        
-        console.log('[Kiosk] Page visibility handlers configured');
-    }
-};

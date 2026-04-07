@@ -10,12 +10,10 @@
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
 @using Microsoft.EntityFrameworkCore
-@using Microsoft.AspNetCore.SignalR
 @inject ITimePunchService TimePunchService
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IJSRuntime JS
 @inject ILogger<ClockInOut> Logger
-@inject Microsoft.AspNetCore.SignalR.IHubContext<NewHeights.TimeClock.Web.Hubs.DashboardHub> HubContext
 @implements IAsyncDisposable
 
 <div class="kiosk-container" @onclick="RequestFullscreen">
@@ -688,9 +686,6 @@
             isSuccess = true;
             showResult = true;
             StateHasChanged();
-            
-            // Notify dashboard of the update
-            await NotifyDashboardUpdate();
         }
         catch (Exception ex)
         {
@@ -741,9 +736,6 @@
             isSuccess = true;
             showResult = true;
             StateHasChanged();
-            
-            // Notify dashboard of the update
-            await NotifyDashboardUpdate();
         }
         catch (Exception ex)
         {
@@ -848,9 +840,6 @@
             isSuccess = true;
             showResult = true;
             StateHasChanged();
-            
-            // Notify dashboard of the update
-            await NotifyDashboardUpdate();
         }
         catch (Exception ex)
         {
@@ -975,25 +964,6 @@
             }
         }
         catch (TaskCanceledException) { }
-    }
-
-    // ── SignalR Dashboard Notification ───────────────────────────────────
-    
-    private async Task NotifyDashboardUpdate()
-    {
-        try
-        {
-            var campusCode = selectedCampusName.Contains("Stop Six", StringComparison.OrdinalIgnoreCase) ? "STOP6"
-                           : selectedCampusName.Contains("McCart", StringComparison.OrdinalIgnoreCase) ? "MCCART"
-                           : "DISTRICT";
-            
-            await HubContext.Clients.Group($"Dashboard_{campusCode}").SendAsync("ScanCompleted");
-            Logger.LogInformation("Dashboard notified for campus: {Campus}", campusCode);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to notify dashboard");
-        }
     }
 
     public async ValueTask DisposeAsync()

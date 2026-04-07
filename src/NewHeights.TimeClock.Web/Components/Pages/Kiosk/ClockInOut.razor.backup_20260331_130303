@@ -10,12 +10,10 @@
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
 @using Microsoft.EntityFrameworkCore
-@using Microsoft.AspNetCore.SignalR
 @inject ITimePunchService TimePunchService
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IJSRuntime JS
 @inject ILogger<ClockInOut> Logger
-@inject Microsoft.AspNetCore.SignalR.IHubContext<NewHeights.TimeClock.Web.Hubs.DashboardHub> HubContext
 @implements IAsyncDisposable
 
 <div class="kiosk-container" @onclick="RequestFullscreen">
@@ -210,11 +208,11 @@
     private ElementReference scanInputRef;
     private string scannedValue = "";
 
-    private DateTime currentTime = DateTime.Now;
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+    private DateTime currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
 
     private System.Timers.Timer? clockTimer;
     private DotNetObjectReference<ClockInOut>? _dotNetRef;
-    private System.Timers.Timer? keepAliveTimer;
     private bool _isFullscreen = false;
 
     private bool showResult = false;
@@ -238,7 +236,6 @@
     }
 
     private CancellationTokenSource? autoResetCts;
-    private DateTime lastScanTime = DateTime.MinValue;
 
     // ── Early-out modal state ──────────────────────────────────────────────
     private bool showEarlyOutModal = false;
@@ -262,14 +259,10 @@
         clockTimer = new System.Timers.Timer(1000);
         clockTimer.Elapsed += (s, e) =>
         {
-            currentTime = DateTime.Now;
+            currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
             try { InvokeAsync(StateHasChanged); } catch { }
         };
         clockTimer.Start();
-
-        keepAliveTimer = new System.Timers.Timer(30000);
-        keepAliveTimer.Elapsed += KeepAliveCallback;
-        keepAliveTimer.Start();
 
         await ResolveCampus();
     }
@@ -322,74 +315,6 @@
         }
     }
 
-    private void KeepAliveCallback(object? sender, System.Timers.ElapsedEventArgs e)
-    {
-        InvokeAsync(async () =>
-        {
-            try
-            {
-                await JS.InvokeVoidAsync("console.log", "[Kiosk] Keep-alive ping");
-                StateHasChanged();
-            }
-            catch { /* Circuit may be disconnected */ }
-        });
-    }
-
-    private async Task RestartQrScanner()
-    {
-        try
-        {
-            Console.WriteLine("[Kiosk] Stopping scanner...");
-            try { await JS.InvokeVoidAsync("qrScanner.stop"); } catch { }
-            
-            await Task.Delay(1000);
-            
-            // Dispose old reference and create fresh one
-            _dotNetRef?.Dispose();
-            _dotNetRef = DotNetObjectReference.Create(this);
-            
-            Console.WriteLine("[Kiosk] Initializing scanner with fresh reference...");
-            bool initOk = await JS.InvokeAsync<bool>("qrScanner.init", "qr-reader", _dotNetRef);
-            
-            if (initOk)
-            {
-                Console.WriteLine("[Kiosk] Starting scanner...");
-                bool startOk = await JS.InvokeAsync<bool>("qrScanner.start");
-                if (startOk)
-                {
-                    Console.WriteLine("[Kiosk] ✓ Scanner restarted successfully");
-                }
-                else
-                {
-                    Console.WriteLine("[Kiosk] ✗ Scanner failed to start");
-                }
-            }
-            else
-            {
-                Console.WriteLine("[Kiosk] ✗ Scanner failed to initialize");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Kiosk] ✗ Scanner restart failed: {ex.Message}");
-            Console.WriteLine($"[Kiosk] Stack trace: {ex.StackTrace}");
-        }
-    }
-
-    [JSInvokable]
-    public async Task OnPageVisible()
-    {
-        Console.WriteLine("[Kiosk] Page became visible - restarting scanner");
-        await RestartQrScanner();
-    }
-
-    [JSInvokable]
-    public async Task OnReconnected()
-    {
-        Console.WriteLine("[Kiosk] Blazor circuit reconnected - restarting scanner");
-        await RestartQrScanner();
-    }
-
     private async Task FocusScanInput()
     {
         try
@@ -436,16 +361,6 @@
     private async Task HandleScan()
     {
         if (string.IsNullOrWhiteSpace(scannedValue)) return;
-
-        // Debounce: Ignore scans within 3 seconds of last scan
-        var now = DateTime.UtcNow;
-        if ((now - lastScanTime).TotalSeconds < 3)
-        {
-            Logger.LogInformation("Scan ignored - debounce active (last scan {Seconds:F1}s ago)", (now - lastScanTime).TotalSeconds);
-            scannedValue = "";
-            return;
-        }
-        lastScanTime = now;
 
         var rawScan = scannedValue.Trim();
         scannedValue = "";
@@ -688,9 +603,6 @@
             isSuccess = true;
             showResult = true;
             StateHasChanged();
-            
-            // Notify dashboard of the update
-            await NotifyDashboardUpdate();
         }
         catch (Exception ex)
         {
@@ -741,9 +653,6 @@
             isSuccess = true;
             showResult = true;
             StateHasChanged();
-            
-            // Notify dashboard of the update
-            await NotifyDashboardUpdate();
         }
         catch (Exception ex)
         {
@@ -848,9 +757,6 @@
             isSuccess = true;
             showResult = true;
             StateHasChanged();
-            
-            // Notify dashboard of the update
-            await NotifyDashboardUpdate();
         }
         catch (Exception ex)
         {
@@ -890,14 +796,14 @@
             LastName = lastName,
             CampusId = campusId,
             LocationId = 1,
-            ScanDateTime = DateTime.Now,
+            ScanDateTime = DateTime.UtcNow,
             ScanType = scanType,
             ScanMethod = scanMethod,
             TerminalId = 0,
             DataSource = "LOCAL",
             ValidationStatus = "VALID",
             PunchSubType = punchSubType,
-            CreatedDate = DateTime.Now
+            CreatedDate = DateTime.UtcNow
         };
         context.AttendanceTransactions.Add(transaction);
         await context.SaveChangesAsync();
@@ -952,8 +858,8 @@
 
     private static string GetGreeting(string firstName, bool isCheckIn)
     {
-        var now = DateTime.Now;
-        var greeting = now.Hour < 12 ? "morning" : now.Hour < 17 ? "afternoon" : "evening";
+        var cstNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+        var greeting = cstNow.Hour < 12 ? "morning" : cstNow.Hour < 17 ? "afternoon" : "evening";
         return isCheckIn ? "Good " + greeting + ", " + firstName + "!" : "Goodbye, " + firstName + "!";
     }
 
@@ -977,31 +883,10 @@
         catch (TaskCanceledException) { }
     }
 
-    // ── SignalR Dashboard Notification ───────────────────────────────────
-    
-    private async Task NotifyDashboardUpdate()
-    {
-        try
-        {
-            var campusCode = selectedCampusName.Contains("Stop Six", StringComparison.OrdinalIgnoreCase) ? "STOP6"
-                           : selectedCampusName.Contains("McCart", StringComparison.OrdinalIgnoreCase) ? "MCCART"
-                           : "DISTRICT";
-            
-            await HubContext.Clients.Group($"Dashboard_{campusCode}").SendAsync("ScanCompleted");
-            Logger.LogInformation("Dashboard notified for campus: {Campus}", campusCode);
-        }
-        catch (Exception ex)
-        {
-            Logger.LogWarning(ex, "Failed to notify dashboard");
-        }
-    }
-
     public async ValueTask DisposeAsync()
     {
         clockTimer?.Stop();
         clockTimer?.Dispose();
-        keepAliveTimer?.Stop();
-        keepAliveTimer?.Dispose();
         autoResetCts?.Cancel();
         autoResetCts?.Dispose();
         earlyOutTimer?.Stop();

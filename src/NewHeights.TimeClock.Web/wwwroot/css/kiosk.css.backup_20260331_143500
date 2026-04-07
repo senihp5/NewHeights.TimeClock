@@ -114,12 +114,12 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 50px;
+    padding: 40px;
     background: var(--white);
     border-radius: 20px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     animation: slideUp 0.3s ease-out;
-    min-width: 437px;
+    min-width: 350px;
 }
 
 @keyframes slideUp {
@@ -136,8 +136,8 @@
 }
 
 .employee-photo {
-    width: 225px;
-    height: 225px;
+    width: 150px;
+    height: 150px;
     border-radius: 50%;
     object-fit: cover;
     border: 4px solid var(--navy);
@@ -323,8 +323,8 @@
 @media (max-width: 600px) {
     .kiosk-header h1 { font-size: 1.4rem; }
     .current-time { font-size: 2.5rem; }
-    .employee-photo { width: 180px; height: 180px; }
-    .result-display { padding: 31px; min-width: 350px; }
+    .employee-photo { width: 120px; height: 120px; }
+    .result-display { padding: 25px; min-width: 280px; }
 }
 /* Logo and Branding */
 .logo-link {
