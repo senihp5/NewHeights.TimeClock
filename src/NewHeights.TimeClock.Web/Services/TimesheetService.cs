@@ -296,8 +296,9 @@ public class TimesheetService : ITimesheetService
         }
 
         // Now filter to hourly staff
-        var teamMembers = allEmployees.Where(e => e.EmployeeType == EmployeeType.HourlyStaff).ToList();
-        _logger.LogInformation("After HourlyStaff filter: {Count} employees", teamMembers.Count);
+        var teamMembers = allEmployees.Where(e => e.EmployeeType == EmployeeType.HourlyStaff
+                                                 || e.EmployeeType == EmployeeType.HourlyPartTime).ToList();
+        _logger.LogInformation("After Hourly filter: {Count} employees", teamMembers.Count);
 
         var summaries = new List<TeamTimesheetSummary>();
 
@@ -333,7 +334,8 @@ public class TimesheetService : ITimesheetService
         var allHourlyEmployees = await context.TcEmployees
             .Include(e => e.Staff)
             .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
-            .Where(e => e.IsActive && e.EmployeeType == EmployeeType.HourlyStaff)
+            .Where(e => e.IsActive && (e.EmployeeType == EmployeeType.HourlyStaff
+                                       || e.EmployeeType == EmployeeType.HourlyPartTime))
             .ToListAsync();
 
         var summaries = new List<PayrollSummary>();

@@ -128,7 +128,9 @@ public class UserContextService : IUserContextService
                         || ctx.IsAdmin;
         ctx.IsHourly     = user.IsInRole(AppConstants.Roles.Employee)
                         || user.IsInRole(AppConstants.Roles.EmployeeStopSix)
-                        || user.IsInRole(AppConstants.Roles.EmployeeMcCart);
+                        || user.IsInRole(AppConstants.Roles.EmployeeMcCart)
+                        || user.IsInRole(AppConstants.Roles.EmployeeStopSixPT)
+                        || user.IsInRole(AppConstants.Roles.EmployeeMcCartPT);
         ctx.IsSubstitute  = user.IsInRole(AppConstants.Roles.Substitute);
         ctx.IsCampusAdmin = user.IsInRole(AppConstants.Roles.CampusAdmin) || ctx.IsSupervisor;
         ctx.IsAllStaff    = user.IsInRole(AppConstants.Roles.AllStaff)    || ctx.IsSupervisor || ctx.IsAdmin;
