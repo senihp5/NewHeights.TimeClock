@@ -64,7 +64,7 @@ public class TimesheetService : ITimesheetService
         var timesheet = new WeeklyTimesheet
         {
             EmployeeId = employeeId,
-            EmployeeName = employee.Staff?.FullName ?? "Unknown",
+            EmployeeName = employee.Staff?.FullName ?? employee.DisplayName ?? "Unknown",
             WeekStartDate = weekStartDate,
             WeekEndDate = weekEndDate,
             Days = new List<DailyTimesheetEntry>()
@@ -164,7 +164,7 @@ public class TimesheetService : ITimesheetService
         return new PayPeriodTimesheet
         {
             EmployeeId = employeeId,
-            EmployeeName = employee.Staff?.FullName ?? "Unknown",
+            EmployeeName = employee.Staff?.FullName ?? employee.DisplayName ?? "Unknown",
             SupervisorName = employee.Supervisor?.Staff?.FullName,
             PeriodStart = periodStart,
             PeriodEnd = periodEnd,
@@ -297,8 +297,9 @@ public class TimesheetService : ITimesheetService
 
         // Now filter to hourly staff
         var teamMembers = allEmployees.Where(e => e.EmployeeType == EmployeeType.HourlyStaff
-                                                 || e.EmployeeType == EmployeeType.HourlyPartTime).ToList();
-        _logger.LogInformation("After Hourly filter: {Count} employees", teamMembers.Count);
+                                                 || e.EmployeeType == EmployeeType.HourlyPartTime
+                                                 || e.EmployeeType == EmployeeType.Substitute).ToList();
+        _logger.LogInformation("After Hourly/PT/Sub filter: {Count} employees", teamMembers.Count);
 
         var summaries = new List<TeamTimesheetSummary>();
 
@@ -309,7 +310,7 @@ public class TimesheetService : ITimesheetService
             summaries.Add(new TeamTimesheetSummary
             {
                 EmployeeId = member.EmployeeId,
-                EmployeeName = member.Staff?.FullName ?? "Unknown",
+                EmployeeName = member.Staff?.FullName ?? member.DisplayName ?? "Unknown",
                 IdNumber = member.IdNumber,
                 TotalHours = timesheet.TotalHours,
                 RegularHours = timesheet.TotalRegularHours,
@@ -335,7 +336,8 @@ public class TimesheetService : ITimesheetService
             .Include(e => e.Staff)
             .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
             .Where(e => e.IsActive && (e.EmployeeType == EmployeeType.HourlyStaff
-                                       || e.EmployeeType == EmployeeType.HourlyPartTime))
+                                       || e.EmployeeType == EmployeeType.HourlyPartTime
+                                       || e.EmployeeType == EmployeeType.Substitute))
             .ToListAsync();
 
         var summaries = new List<PayrollSummary>();
@@ -347,7 +349,7 @@ public class TimesheetService : ITimesheetService
             summaries.Add(new PayrollSummary
             {
                 EmployeeId = employee.EmployeeId,
-                EmployeeName = employee.Staff?.FullName ?? "Unknown",
+                EmployeeName = employee.Staff?.FullName ?? employee.DisplayName ?? "Unknown",
                 IdNumber = employee.IdNumber,
                 AscenderEmployeeId = employee.AscenderEmployeeId,
                 SupervisorName = employee.Supervisor?.Staff?.FullName ?? "Unassigned",

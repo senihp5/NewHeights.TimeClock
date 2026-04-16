@@ -7,6 +7,7 @@ public class TcEmployee
     public int EmployeeId { get; set; }
     public int? StaffDcid { get; set; }
     public required string IdNumber { get; set; }
+    public string? DisplayName { get; set; }
     public string? AscenderEmployeeId { get; set; }
     public EmployeeType EmployeeType { get; set; } = EmployeeType.HourlyStaff;
 

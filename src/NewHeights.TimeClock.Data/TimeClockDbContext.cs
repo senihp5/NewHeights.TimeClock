@@ -114,6 +114,7 @@ public class TimeClockDbContext : DbContext
             entity.ToTable("TC_Employees");
             entity.HasKey(e => e.EmployeeId);
             entity.Property(e => e.IdNumber).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.DisplayName).HasMaxLength(200);
             entity.Property(e => e.AscenderEmployeeId).HasMaxLength(50);
             entity.Property(e => e.EmployeeType).HasConversion<string>().HasMaxLength(20);
             entity.Property(e => e.Shift).HasConversion<string>().HasMaxLength(10);

@@ -185,17 +185,20 @@ public class EmployeeSyncService : IEmployeeSyncService
         CancellationToken ct)
     {
         Staff? staff = null;
-        var empIdKey = (user.EmployeeId ?? "").TrimStart('0').ToLower();
-        if (!string.IsNullOrEmpty(empIdKey) && staffByIdNumber.TryGetValue(empIdKey, out var byId))
-            staff = byId;
 
+        // Match by UPN prefix (firstname.lastname) first — unique per person
+        var upn = (user.Email ?? "").ToLower();
+        var atIdx = upn.IndexOf('@');
+        var upnPrefix = atIdx > 0 ? upn[..atIdx] : upn;
+        if (!string.IsNullOrEmpty(upnPrefix) && staffByUpnPrefix.TryGetValue(upnPrefix, out var byUpn))
+            staff = byUpn;
+
+        // Fall back to EmployeeId -> IdNumber match (can collide across roles)
         if (staff == null)
         {
-            var upn = (user.Email ?? "").ToLower();
-            var atIdx = upn.IndexOf('@');
-            var upnPrefix = atIdx > 0 ? upn[..atIdx] : upn;
-            if (!string.IsNullOrEmpty(upnPrefix) && staffByUpnPrefix.TryGetValue(upnPrefix, out var byUpn))
-                staff = byUpn;
+            var empIdKey = (user.EmployeeId ?? "").TrimStart('0').ToLower();
+            if (!string.IsNullOrEmpty(empIdKey) && staffByIdNumber.TryGetValue(empIdKey, out var byId))
+                staff = byId;
         }
 
         if (staff == null && empType != EmployeeType.Substitute)
@@ -235,6 +238,7 @@ public class EmployeeSyncService : IEmployeeSyncService
             emp = new TcEmployee
             {
                 StaffDcid      = staff?.Dcid,
+                DisplayName    = user.DisplayName,
                 IdNumber       = staff?.IdNumber ?? await GetNextSubIdAsync(db, ct),
                 Email          = user.Email,
                 EmployeeType   = empType,
@@ -256,6 +260,7 @@ public class EmployeeSyncService : IEmployeeSyncService
         {
             bool changed = false;
             if (emp.EntraObjectId != user.ObjectId)    { emp.EntraObjectId  = user.ObjectId;  changed = true; }
+            if (emp.DisplayName != user.DisplayName)   { emp.DisplayName    = user.DisplayName; changed = true; }
             if (emp.Email != user.Email)               { emp.Email          = user.Email;      changed = true; }
             if (emp.EmployeeType != empType)           { emp.EmployeeType   = empType;         changed = true; }
             if (emp.Shift != mappedShift)              { emp.Shift          = mappedShift;     changed = true; }
