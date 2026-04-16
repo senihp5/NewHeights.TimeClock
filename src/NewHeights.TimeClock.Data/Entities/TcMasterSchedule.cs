@@ -65,7 +65,7 @@ public class TcMasterSchedule
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
     public bool IsActive { get; set; } = true;
-    public DateTime ImportedDate { get; set; } = DateTime.UtcNow;
+    public DateTime ImportedDate { get; set; } = DateTime.Now;
     public string? ImportedBy { get; set; }
     public string? Notes { get; set; }
 

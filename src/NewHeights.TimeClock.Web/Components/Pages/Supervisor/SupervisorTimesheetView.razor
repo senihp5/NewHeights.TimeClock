@@ -102,8 +102,8 @@
                             <th class="col-status">AM</th>
                             <th class="col-status">PM</th>
                             <th class="col-status">Evening</th>
-                            <th class="col-punches">Punches</th>
                             <th class="col-hours">Hours</th>
+                            <th class="col-hours">Holiday</th>
                             <th class="col-actions">Actions</th>
                         </tr>
                     </thead>
@@ -113,40 +113,51 @@
                             var amStatus = GetShiftStatus(day, "AM");
                             var pmStatus = GetShiftStatus(day, "PM");
                             var eveningStatus = GetShiftStatus(day, "Evening");
-                            
-                            <tr class="@(day.HasException ? "has-exception" : "")">
+                            var holidayHours = GetHolidayHours(day);
+                            var isHoliday = holidayHours > 0;
+                            var holidayName = GetHolidayName(day);
+                            var isExpanded = expandedDays.Contains(day.Date);
+
+                            <tr class="day-row @(day.HasException ? "has-exception" : "") @(isHoliday ? "holiday-row" : "") @(isExpanded ? "expanded" : "")"
+                                @onclick="() => ToggleDayExpand(day.Date)"
+                                style="cursor: pointer;">
                                 <td class="col-date">
+                                    <span class="expand-icon">@(isExpanded ? "▼" : "▶")</span>
                                     <span class="day-name">@day.DayOfWeek.Substring(0, 3)</span>
                                     <span class="day-date">@day.Date.ToString("M/d")</span>
-                                </td>
-                                <td class="col-status">
-                                    <span class="status-pill @amStatus.ToLower().Replace(" ", "-")">@amStatus</span>
-                                </td>
-                                <td class="col-status">
-                                    <span class="status-pill @pmStatus.ToLower().Replace(" ", "-")">@pmStatus</span>
-                                </td>
-                                <td class="col-status">
-                                    <span class="status-pill @eveningStatus.ToLower().Replace(" ", "-")">@eveningStatus</span>
-                                </td>
-                                <td class="col-punches">
-                                    @if (day.Punches.Any())
+                                    @if (isHoliday)
                                     {
-                                        <div class="punch-list">
-                                            @foreach (var punch in day.Punches)
-                                            {
-                                                <span class="punch-tag @punch.PunchType.ToLower()">
-                                                    @FormatPunchType(punch.PunchType) @punch.PunchTime.ToString("h:mm tt")
-                                                    @if (punch.IsManual)
-                                                    {
-                                                        <span class="manual-indicator" title="Manual entry">✎</span>
-                                                    }
-                                                </span>
-                                            }
-                                        </div>
+                                        <span class="holiday-badge" title="@holidayName">@holidayName</span>
+                                    }
+                                </td>
+                                <td class="col-status">
+                                    @if (isHoliday)
+                                    {
+                                        <span class="status-pill holiday">Holiday</span>
                                     }
                                     else
                                     {
-                                        <span class="no-punches">No punches</span>
+                                        <span class="status-pill @amStatus.ToLower().Replace(" ", "-")">@amStatus</span>
+                                    }
+                                </td>
+                                <td class="col-status">
+                                    @if (isHoliday)
+                                    {
+                                        <span class="status-pill holiday">Holiday</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="status-pill @pmStatus.ToLower().Replace(" ", "-")">@pmStatus</span>
+                                    }
+                                </td>
+                                <td class="col-status">
+                                    @if (isHoliday)
+                                    {
+                                        <span class="status-pill holiday">Holiday</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="status-pill @eveningStatus.ToLower().Replace(" ", "-")">@eveningStatus</span>
                                     }
                                 </td>
                                 <td class="col-hours">
@@ -156,12 +167,181 @@
                                         <span class="ot-badge">+@day.OvertimeHours.ToString("F1") OT</span>
                                     }
                                 </td>
+                                <td class="col-hours @(isHoliday ? "holiday-hours" : "")">
+                                    @holidayHours.ToString("F1")
+                                </td>
                                 <td class="col-actions">
                                     @if (day.HasException)
                                     {
                                         <span class="exception-flag" title="@day.ExceptionNotes">⚠️</span>
                                     }
-                                    <button class="btn-edit" @onclick="() => OpenEditDay(day)" title="Edit">✏️</button>
+                                    @if (HasPendingCorrectionForDay(day.Date))
+                                    {
+                                        <span class="correction-flag" title="Employee correction request pending">📝</span>
+                                    }
+                                    <button class="btn-edit" @onclick="() => OpenEditDay(day)" @onclick:stopPropagation="true" title="Edit">✏️</button>
+                                </td>
+                            </tr>
+
+                            @* ── Drill-down: Punch detail row ────────────────────────── *@
+                            @if (isExpanded)
+                            {
+                                <tr class="punch-detail-row">
+                                    <td colspan="7">
+                                        <div class="punch-detail-panel">
+                                            @if (day.Punches.Any())
+                                            {
+                                                <table class="punch-pairs-table">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Type</th>
+                                                            <th>Actual Time</th>
+                                                            <th>Rounded Time</th>
+                                                            <th>Hours</th>
+                                                            <th>Source</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        @foreach (var pair in GetPunchPairs(day))
+                                                        {
+                                                            <tr>
+                                                                <td>
+                                                                    <span class="punch-badge @pair.BadgeClass">@pair.Label</span>
+                                                                </td>
+                                                                <td>
+                                                                    <span class="punch-time-in">@pair.InTime</span>
+                                                                    <span class="punch-arrow">→</span>
+                                                                    <span class="punch-time-out">@pair.OutTime</span>
+                                                                </td>
+                                                                <td>
+                                                                    <span class="punch-time-rounded">@pair.RoundedIn</span>
+                                                                    <span class="punch-arrow">→</span>
+                                                                    <span class="punch-time-rounded">@pair.RoundedOut</span>
+                                                                </td>
+                                                                <td class="pair-hours">@pair.Hours</td>
+                                                                <td>
+                                                                    @if (pair.IsManual)
+                                                                    {
+                                                                        <span class="source-badge manual" title="Manual Entry">✎ Manual</span>
+                                                                    }
+                                                                    else if (pair.IsModified)
+                                                                    {
+                                                                        <span class="source-badge modified" title="Modified">✏️ Modified</span>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <span class="source-badge auto">Badge</span>
+                                                                    }
+                                                                </td>
+                                                            </tr>
+                                                        }
+                                                    </tbody>
+                                                </table>
+                                            }
+                                            else if (!isHoliday)
+                                            {
+                                                <p class="no-punches-detail">No punches recorded for this day.</p>
+                                            }
+
+                                            @if (isHoliday)
+                                            {
+                                                <div class="holiday-notice">
+                                                    🎉 <strong>@holidayName</strong> — @holidayHours.ToString("F1") holiday hours credited
+                                                </div>
+                                            }
+
+                                            @if (day.HasException)
+                                            {
+                                                <div class="exception-notice">
+                                                    ⚠️ <strong>Exception:</strong> @day.ExceptionNotes
+                                                </div>
+                                            }
+
+                                            @{
+                                                var dayCorrectionRequests = employeeCorrectionRequests
+                                                    .Where(cr => cr.WorkDate == day.Date).ToList();
+                                            }
+                                            @if (dayCorrectionRequests.Any())
+                                            {
+                                                <div class="day-correction-requests">
+                                                    <h5>📝 Employee Correction Requests</h5>
+                                                    @foreach (var cr in dayCorrectionRequests)
+                                                    {
+                                                        <div class="correction-request-card @cr.Status.ToString().ToLower()">
+                                                            <div class="cr-header">
+                                                                <span class="cr-type">@FormatRequestType(cr.RequestType)</span>
+                                                                <span class="cr-status-badge @cr.Status.ToString().ToLower()">@cr.Status</span>
+                                                            </div>
+                                                            <div class="cr-details">
+                                                                @if (cr.RequestedDateTime.HasValue)
+                                                                {
+                                                                    <span>Requested time: <strong>@cr.RequestedDateTime.Value.ToString("h:mm tt")</strong></span>
+                                                                }
+                                                                <p class="cr-reason">@cr.Reason</p>
+                                                            </div>
+                                                            @if (cr.Status == CorrectionRequestStatus.Submitted)
+                                                            {
+                                                                <div class="cr-actions">
+                                                                    <button class="btn-approve-cr"
+                                                                            @onclick="() => ApproveCorrectionRequest(cr)"
+                                                                            @onclick:stopPropagation="true">✓ Approve</button>
+                                                                    <button class="btn-deny-cr"
+                                                                            @onclick="() => DenyCorrectionRequest(cr)"
+                                                                            @onclick:stopPropagation="true">✗ Deny</button>
+                                                                </div>
+                                                            }
+                                                        </div>
+                                                    }
+                                                </div>
+                                            }
+
+                                            <div class="drill-down-actions">
+                                                <button class="btn-edit-drill"
+                                                        @onclick="() => OpenEditDay(day)"
+                                                        @onclick:stopPropagation="true">
+                                                    ✏️ Add Correction
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @if (PendingCorrectionRequests.Any())
+        {
+            <div class="corrections-queue-section">
+                <h3>📝 Pending Correction Requests (@PendingCorrectionRequests.Count)</h3>
+                <p class="section-subtitle">Employee-submitted requests awaiting your review</p>
+                <table class="corrections-queue-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Requested</th>
+                            <th>Reason</th>
+                            <th>Submitted</th>
+                            <th style="width:140px">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var cr in PendingCorrectionRequests)
+                        {
+                            <tr>
+                                <td><strong>@cr.WorkDate.ToString("ddd M/d")</strong></td>
+                                <td>@FormatRequestType(cr.RequestType)</td>
+                                <td>@(cr.RequestedDateTime?.ToString("h:mm tt") ?? "—")</td>
+                                <td>@cr.Reason</td>
+                                <td>@cr.CreatedDate.ToString("M/d h:mm tt")</td>
+                                <td>
+                                    <div style="display:flex; gap:0.25rem;">
+                                        <button class="btn-approve-cr" @onclick="() => ApproveCorrectionRequest(cr)">✓ Approve</button>
+                                        <button class="btn-deny-cr" @onclick="() => DenyCorrectionRequest(cr)">✗ Deny</button>
+                                    </div>
                                 </td>
                             </tr>
                         }
@@ -339,6 +519,7 @@
     private string employeeInitials = "";
     private string employeeEmail = "";
     private string? employeePhotoBase64;
+    private bool isHolidayEligible = true;
 
     // Approval status
     private bool employeeApproved = false;
@@ -347,6 +528,17 @@
     // Data
     private PayPeriodInfo? currentPayPeriod;
     private PayPeriodTimesheet? payPeriodTimesheet;
+
+    // Drill-down state
+    private HashSet<DateOnly> expandedDays = new();
+
+    // Holiday data
+    private List<TcHolidaySchedule> weekHolidays = new();
+
+    // Pending employee correction requests
+    private List<TcCorrectionRequest> employeeCorrectionRequests = new();
+    private List<TcCorrectionRequest> PendingCorrectionRequests =>
+        employeeCorrectionRequests.Where(cr => cr.Status == CorrectionRequestStatus.Submitted).ToList();
 
     // Edit modal
     private bool showEditModal = false;
@@ -393,6 +585,8 @@
                 supervisorName = employee.Supervisor?.Staff?.FullName ?? "Unassigned";
                 employeeInitials = GetInitials(employeeName);
                 employeeEmail = employee.Email ?? "";
+                isHolidayEligible = employee.EmployeeType != EmployeeType.HourlyPartTime
+                                 && employee.EmployeeType != EmployeeType.Substitute;
 
                 // Load photo
                 if (employee.StaffDcid > 0)
@@ -431,6 +625,22 @@
         supervisorApproved = payPeriodTimesheet.SupervisorApprovalStatus == ApprovalStatus.Approved ||
                              payPeriodTimesheet.SupervisorApprovalStatus == ApprovalStatus.Locked;
 
+        // Load holidays for the pay period
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        weekHolidays = await ctx.TcHolidaySchedules
+            .AsNoTracking()
+            .Where(h => h.IsActive && h.HolidayDate >= currentPayPeriod.StartDate && h.HolidayDate <= currentPayPeriod.EndDate)
+            .ToListAsync();
+
+        // Load pending correction requests from this employee
+        employeeCorrectionRequests = await ctx.TcCorrectionRequests
+            .AsNoTracking()
+            .Where(cr => cr.EmployeeId == EmployeeId &&
+                         cr.WorkDate >= currentPayPeriod.StartDate && cr.WorkDate <= currentPayPeriod.EndDate)
+            .OrderByDescending(cr => cr.CreatedDate)
+            .ToListAsync();
+
+        expandedDays.Clear();
         approvalChecked = false;
         supervisorNotes = "";
         StateHasChanged();
@@ -561,7 +771,7 @@
                 ModifiedReason = $"[Supervisor Correction] {correctionReason}",
                 Notes = correctionReason,
                 PunchStatus = PunchStatus.Active,
-                CreatedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now
             };
 
             context.TcTimePunches.Add(newPunch);
@@ -594,6 +804,180 @@
             Logger.LogError(ex, "Error saving correction");
         }
     }
+
+    private void ToggleDayExpand(DateOnly date)
+    {
+        if (!expandedDays.Remove(date))
+            expandedDays.Add(date);
+    }
+
+    private decimal GetHolidayHours(DailyTimesheetEntry day)
+    {
+        if (!isHolidayEligible) return 0;
+        var holiday = weekHolidays.FirstOrDefault(h => h.HolidayDate == day.Date);
+        return holiday?.HoursCredited ?? 0;
+    }
+
+    private string GetHolidayName(DailyTimesheetEntry day)
+    {
+        return weekHolidays.FirstOrDefault(h => h.HolidayDate == day.Date)?.HolidayName ?? "";
+    }
+
+    private bool HasPendingCorrectionForDay(DateOnly date)
+    {
+        return employeeCorrectionRequests.Any(cr => cr.WorkDate == date && cr.Status == CorrectionRequestStatus.Submitted);
+    }
+
+    private List<PunchPairDisplay> GetPunchPairs(DailyTimesheetEntry day)
+    {
+        var pairs = new List<PunchPairDisplay>();
+        var punches = day.Punches.OrderBy(p => p.PunchTime).ToList();
+        var unmatched = new List<PunchEntry>(punches);
+
+        var pairMappings = new[] { ("In", "Out", "Work", "work"), ("LunchOut", "LunchIn", "Lunch", "lunch"), ("BreakOut", "BreakIn", "Break", "break") };
+
+        foreach (var (inType, outType, label, css) in pairMappings)
+        {
+            var ins = unmatched.Where(p => p.PunchType == inType).OrderBy(p => p.PunchTime).ToList();
+            var outs = unmatched.Where(p => p.PunchType == outType).OrderBy(p => p.PunchTime).ToList();
+
+            for (int i = 0; i < ins.Count; i++)
+            {
+                var inP = ins[i];
+                var outP = i < outs.Count ? outs[i] : null;
+                var hours = outP != null ? (decimal)(outP.PunchTime - inP.PunchTime).TotalHours : 0;
+
+                pairs.Add(new PunchPairDisplay
+                {
+                    Label = label,
+                    BadgeClass = css,
+                    InTime = inP.PunchTime.ToString("h:mm tt"),
+                    OutTime = outP?.PunchTime.ToString("h:mm tt") ?? "(open)",
+                    RoundedIn = inP.RoundedTime?.ToString("h:mm tt") ?? inP.PunchTime.ToString("h:mm tt"),
+                    RoundedOut = outP?.RoundedTime?.ToString("h:mm tt") ?? outP?.PunchTime.ToString("h:mm tt") ?? "—",
+                    Hours = outP != null ? hours.ToString("F2") : "—",
+                    IsManual = inP.IsManual || (outP?.IsManual ?? false),
+                    IsModified = inP.IsModified || (outP?.IsModified ?? false)
+                });
+
+                unmatched.Remove(inP);
+                if (outP != null) unmatched.Remove(outP);
+            }
+
+            var remainingOuts = unmatched.Where(p => p.PunchType == outType).ToList();
+            foreach (var outP in remainingOuts)
+            {
+                pairs.Add(new PunchPairDisplay
+                {
+                    Label = label,
+                    BadgeClass = "unpaired",
+                    InTime = "(missing)",
+                    OutTime = outP.PunchTime.ToString("h:mm tt"),
+                    RoundedIn = "—",
+                    RoundedOut = outP.RoundedTime?.ToString("h:mm tt") ?? outP.PunchTime.ToString("h:mm tt"),
+                    Hours = "—",
+                    IsManual = outP.IsManual,
+                    IsModified = outP.IsModified
+                });
+                unmatched.Remove(outP);
+            }
+        }
+
+        return pairs.OrderBy(p => p.InTime).ToList();
+    }
+
+    private async Task ApproveCorrectionRequest(TcCorrectionRequest request)
+    {
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var entity = await context.TcCorrectionRequests.FindAsync(request.RequestId);
+            if (entity == null) return;
+
+            entity.Status = CorrectionRequestStatus.Approved;
+            entity.ReviewedBy = currentUserEmail;
+            entity.ReviewedDate = DateTime.Now;
+
+            // If the request includes a punch to add, create the TcTimePunch
+            if (request.RequestType == CorrectionRequestType.MissedPunch ||
+                request.RequestType == CorrectionRequestType.AddPunch)
+            {
+                if (request.RequestedDateTime.HasValue && request.RequestedPunchType.HasValue)
+                {
+                    var employee = await context.TcEmployees.FindAsync(EmployeeId);
+                    var punchDt = request.RequestedDateTime.Value;
+
+                    var newPunch = new TcTimePunch
+                    {
+                        EmployeeId = EmployeeId,
+                        CampusId = employee?.HomeCampusId ?? 0,
+                        PunchType = request.RequestedPunchType.Value,
+                        PunchDateTime = punchDt,
+                        RoundedDateTime = RoundToQuarterHour(punchDt),
+                        VerificationMethod = "MANUAL",
+                        ScanMethod = "CORRECTION",
+                        IsManualEntry = true,
+                        IsModified = true,
+                        ModifiedBy = currentUserEmail,
+                        ModifiedReason = $"[Approved Correction] {request.Reason}",
+                        Notes = request.Reason,
+                        PunchStatus = PunchStatus.Active,
+                        CreatedDate = DateTime.Now
+                    };
+                    context.TcTimePunches.Add(newPunch);
+                }
+            }
+
+            await context.SaveChangesAsync();
+
+            // Recalculate daily timecard
+            await TimesheetService.RecalculateDailyTimecardAsync(EmployeeId, request.WorkDate);
+
+            Logger.LogInformation("Supervisor {Sup} approved correction {Id} for employee {Emp}",
+                currentUserEmail, request.RequestId, EmployeeId);
+
+            await LoadTimesheet();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error approving correction request {Id}", request.RequestId);
+        }
+    }
+
+    private async Task DenyCorrectionRequest(TcCorrectionRequest request)
+    {
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var entity = await context.TcCorrectionRequests.FindAsync(request.RequestId);
+            if (entity == null) return;
+
+            entity.Status = CorrectionRequestStatus.Denied;
+            entity.ReviewedBy = currentUserEmail;
+            entity.ReviewedDate = DateTime.Now;
+
+            await context.SaveChangesAsync();
+
+            Logger.LogInformation("Supervisor {Sup} denied correction {Id} for employee {Emp}",
+                currentUserEmail, request.RequestId, EmployeeId);
+
+            await LoadTimesheet();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error denying correction request {Id}", request.RequestId);
+        }
+    }
+
+    private static string FormatRequestType(CorrectionRequestType type) => type switch
+    {
+        CorrectionRequestType.MissedPunch => "Missed Punch",
+        CorrectionRequestType.WrongTime => "Wrong Time",
+        CorrectionRequestType.WrongType => "Wrong Type",
+        CorrectionRequestType.AddPunch => "Add Punch",
+        CorrectionRequestType.DeletePunch => "Delete Punch",
+        _ => type.ToString()
+    };
 
     private string GetShiftStatus(DailyTimesheetEntry day, string shift)
     {
@@ -662,9 +1046,101 @@
             return new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, 0, 0).AddHours(1);
         return new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, minutes, 0);
     }
+
+    private class PunchPairDisplay
+    {
+        public string Label { get; set; } = "";
+        public string BadgeClass { get; set; } = "";
+        public string InTime { get; set; } = "";
+        public string OutTime { get; set; } = "";
+        public string RoundedIn { get; set; } = "";
+        public string RoundedOut { get; set; } = "";
+        public string Hours { get; set; } = "";
+        public bool IsManual { get; set; }
+        public bool IsModified { get; set; }
+    }
 }
 
+<style>
+    /* ── Drill-down styles ───────────────────────────────────────── */
+    .day-row { transition: background-color 0.15s; }
+    .day-row:hover { background-color: rgba(30, 58, 95, 0.04); }
+    .day-row.expanded { background-color: rgba(30, 58, 95, 0.06); font-weight: 600; }
+    .expand-icon { display: inline-block; width: 1rem; font-size: 0.7rem; color: #888; margin-right: 0.25rem; }
 
+    .holiday-row { background-color: rgba(245, 184, 28, 0.08) !important; }
+    .holiday-badge { display: inline-block; background: #f5b81c; color: #1e3a5f; font-size: 0.65rem; font-weight: 700;
+        padding: 1px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle; }
+    .status-pill.holiday { background: #f5b81c; color: #1e3a5f; }
+    .holiday-hours { color: #b8860b; font-weight: 600; }
 
+    .punch-detail-row td { padding: 0 !important; border-top: none !important; }
+    .punch-detail-panel { background: #f8f9fb; border: 1px solid #e2e8f0; border-top: none;
+        margin: 0 0.5rem 0.5rem; padding: 0.75rem; border-radius: 0 0 6px 6px; }
 
+    .punch-pairs-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .punch-pairs-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ddd;
+        color: #666; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+    .punch-pairs-table td { padding: 5px 8px; border-bottom: 1px solid #eee; }
+    .punch-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }
+    .punch-badge.work { background: #dcfce7; color: #166534; }
+    .punch-badge.lunch { background: #fef9c3; color: #854d0e; }
+    .punch-badge.break { background: #dbeafe; color: #1e40af; }
+    .punch-badge.unpaired { background: #fee2e2; color: #991b1b; }
+    .punch-time-in, .punch-time-out { font-family: 'Segoe UI', monospace; }
+    .punch-time-rounded { font-family: 'Segoe UI', monospace; color: #666; }
+    .punch-arrow { color: #999; margin: 0 4px; }
+    .pair-hours { font-weight: 600; }
+    .source-badge { font-size: 0.7rem; padding: 1px 5px; border-radius: 3px; }
+    .source-badge.manual { background: #fef3c7; color: #92400e; }
+    .source-badge.modified { background: #e0e7ff; color: #3730a3; }
+    .source-badge.auto { background: #e5e7eb; color: #374151; }
+
+    .holiday-notice { background: #fefce8; border: 1px solid #f5b81c; border-radius: 4px;
+        padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
+    .exception-notice { background: #fef2f2; border: 1px solid #fca5a5; border-radius: 4px;
+        padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
+    .no-punches-detail { color: #999; font-style: italic; font-size: 0.85rem; margin: 4px 0; }
+
+    .drill-down-actions { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+    .btn-edit-drill { background: #1e3a5f; color: white; border: none; padding: 5px 14px;
+        border-radius: 4px; font-size: 0.8rem; cursor: pointer; }
+    .btn-edit-drill:hover { background: #2a4f7f; }
+
+    .correction-flag { margin-right: 2px; cursor: help; }
+
+    /* ── Correction request cards in drill-down ──────────────────── */
+    .day-correction-requests { margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+    .day-correction-requests h5 { margin: 0 0 6px; color: #1e3a5f; font-size: 0.85rem; }
+    .correction-request-card { background: white; border: 1px solid #d1d5db; border-radius: 6px;
+        padding: 8px 12px; margin-bottom: 6px; }
+    .correction-request-card.submitted { border-left: 3px solid #f59e0b; }
+    .correction-request-card.approved { border-left: 3px solid #10b981; opacity: 0.7; }
+    .correction-request-card.denied { border-left: 3px solid #ef4444; opacity: 0.7; }
+    .cr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .cr-type { font-weight: 600; font-size: 0.85rem; }
+    .cr-status-badge { padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; }
+    .cr-status-badge.submitted { background: #fef3c7; color: #92400e; }
+    .cr-status-badge.approved { background: #dcfce7; color: #166534; }
+    .cr-status-badge.denied { background: #fee2e2; color: #991b1b; }
+    .cr-details { font-size: 0.8rem; color: #555; }
+    .cr-reason { margin: 4px 0 0; font-style: italic; }
+    .cr-actions { display: flex; gap: 0.5rem; margin-top: 6px; }
+    .btn-approve-cr { background: #10b981; color: white; border: none; padding: 4px 12px;
+        border-radius: 4px; font-size: 0.8rem; cursor: pointer; font-weight: 600; }
+    .btn-approve-cr:hover { background: #059669; }
+    .btn-deny-cr { background: #ef4444; color: white; border: none; padding: 4px 12px;
+        border-radius: 4px; font-size: 0.8rem; cursor: pointer; font-weight: 600; }
+    .btn-deny-cr:hover { background: #dc2626; }
+
+    /* ── Corrections queue section ───────────────────────────────── */
+    .corrections-queue-section { background: #fffbeb; border: 1px solid #fbbf24; border-radius: 8px;
+        padding: 1rem; margin: 1rem 0; }
+    .corrections-queue-section h3 { margin: 0 0 0.25rem; color: #92400e; }
+    .section-subtitle { font-size: 0.85rem; color: #a16207; margin: 0 0 0.75rem; }
+    .corrections-queue-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; background: white; border-radius: 6px; overflow: hidden; }
+    .corrections-queue-table th { text-align: left; padding: 6px 10px; border-bottom: 2px solid #fbbf24;
+        color: #92400e; font-size: 0.75rem; text-transform: uppercase; }
+    .corrections-queue-table td { padding: 6px 10px; border-bottom: 1px solid #fef3c7; }
+</style>
 

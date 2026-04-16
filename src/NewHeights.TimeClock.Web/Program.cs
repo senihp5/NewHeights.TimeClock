@@ -42,6 +42,8 @@ builder.Services.AddAuthorization(options =>
             "TimeClock.Employee",
             "TimeClock.Employee.StopSix",
             "TimeClock.Employee.McCart",
+            "TimeClock.Employee.StopSix.PT",
+            "TimeClock.Employee.McCart.PT",
             "TimeClock.Substitute",
             "TimeClock.Supervisor",
             "TimeClock.Supervisor.StopSix",
@@ -52,12 +54,14 @@ builder.Services.AddAuthorization(options =>
             "TimeClock.District",
             "TimeClock.Admin"));
 
-    // Hourly employees and substitutes â€" can clock in for payroll
+    // Hourly employees and substitutes — can clock in for payroll
     options.AddPolicy("RequireHourly", policy =>
         policy.RequireRole(
             "TimeClock.Employee",
             "TimeClock.Employee.StopSix",
             "TimeClock.Employee.McCart",
+            "TimeClock.Employee.StopSix.PT",
+            "TimeClock.Employee.McCart.PT",
             "TimeClock.Substitute",
             "TimeClock.Admin"));
 

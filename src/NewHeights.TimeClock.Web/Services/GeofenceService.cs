@@ -42,7 +42,7 @@ public class GeofenceService : IGeofenceService
 
     private async Task<List<Campus>> GetCampusesCachedAsync()
     {
-        if (_campusCache != null && DateTime.UtcNow < _cacheExpiry)
+        if (_campusCache != null && DateTime.Now < _cacheExpiry)
         {
             return _campusCache;
         }
@@ -50,7 +50,7 @@ public class GeofenceService : IGeofenceService
         await _cacheLock.WaitAsync();
         try
         {
-            if (_campusCache != null && DateTime.UtcNow < _cacheExpiry)
+            if (_campusCache != null && DateTime.Now < _cacheExpiry)
             {
                 return _campusCache;
             }
@@ -74,7 +74,7 @@ public class GeofenceService : IGeofenceService
                 .ToListAsync();
 
             _campusCache = campuses;
-            _cacheExpiry = DateTime.UtcNow.AddMinutes(30);
+            _cacheExpiry = DateTime.Now.AddMinutes(30);
             _logger.LogInformation("Campus cache loaded: {Count} campuses", campuses.Count);
             return campuses;
         }

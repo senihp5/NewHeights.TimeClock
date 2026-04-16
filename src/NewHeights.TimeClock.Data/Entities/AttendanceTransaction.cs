@@ -25,7 +25,7 @@ public class AttendanceTransaction
     // RETURN_LUNCH, RETURN_MEDICAL, etc. (same-day return punch)
     public string? PunchSubType { get; set; }
 
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 
     // Navigation
     public Campus? Campus { get; set; }

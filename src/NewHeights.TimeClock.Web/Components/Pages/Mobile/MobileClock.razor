@@ -249,7 +249,7 @@
         }
     }
 
-    private async Task ResetForNextScan()
+    private void ResetForNextScan()
     {
         showResult = false; employeePhotoBase64 = ""; totalHoursToday = null; lastPunchType = null; noPhotoOnFile = false; scannerInitialized = false;
         StateHasChanged();

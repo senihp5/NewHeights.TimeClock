@@ -15,7 +15,7 @@ public class TcPayrollExport
     public ExportStatus Status { get; set; } = ExportStatus.Generated;
     public string? ErrorLog { get; set; }
     public string ExportedBy { get; set; } = string.Empty;
-    public DateTime ExportDate { get; set; } = DateTime.UtcNow;
+    public DateTime ExportDate { get; set; } = DateTime.Now;
 
     // Alias for compatibility
     public DateTime ExportedDate 

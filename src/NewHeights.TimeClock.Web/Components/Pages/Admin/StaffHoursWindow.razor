@@ -332,7 +332,7 @@
             entity.ExpectedDepartureTime = row.ExpectedDepartureTime;
             entity.IsActive = row.IsActive;
             entity.Notes = row.Notes;
-            entity.ModifiedDate = DateTime.UtcNow;
+            entity.ModifiedDate = DateTime.Now;
             await context.SaveChangesAsync();
 
             dirtyRowIds.Remove(row.WindowId);
@@ -400,8 +400,8 @@
                 IsActive = true,
                 Notes = string.IsNullOrWhiteSpace(addNotes) ? null : addNotes.Trim(),
                 CreatedBy = currentUserEmail,
-                CreatedDate = DateTime.UtcNow,
-                ModifiedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now,
+                ModifiedDate = DateTime.Now
             };
 
             context.TcStaffHoursWindows.Add(newWindow);

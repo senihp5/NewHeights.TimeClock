@@ -66,9 +66,6 @@ else
                 <button class="btn-icon" @onclick="RefreshData" disabled="@isLoading" title="Refresh">
                     🔄
                 </button>
-                <button class="btn-manual-entry" @onclick="OpenManualEntry" title="Manual Check-In">
-                    ➕ Manual Entry
-                </button>
 
                 <button class="btn-change-campus" @onclick="ChangeCampus" title="Change Campus">
                     📍
@@ -97,11 +94,11 @@ else
                     <table class="onsite-table">
                         <thead>
                             <tr>
-                                <th class="sortable" @onclick='() => SortBy("name")'>Name @SortIndicator("name")</th>
-                                <th class="sortable" @onclick='() => SortBy("type")'>Type @SortIndicator("type")</th>
+                                <th>Name</th>
+                                <th>Type</th>
                                 <th>ID</th>
-                                <th class="sortable" @onclick='() => SortBy("status")'>Status @SortIndicator("status")</th>
-                                <th class="sortable" @onclick='() => SortBy("time")'>Time @SortIndicator("time")</th>
+                                <th>Status</th>
+                                <th>Time</th>
                                 <th>Duration</th>
                                 <th>Actions</th>
                             </tr>
@@ -122,7 +119,7 @@ else
                                     <td><span class="type-badge @person.TransactionType.ToLower()">@person.TransactionType</span></td>
                                     <td>@person.IdNumber</td>
                                     <td><span class="status-badge @person.LastScanType.ToLower().Replace("_","-")">@FormatScanType(person.LastScanType)</span></td>
-                                    <td>@person.LastScanTime.ToString("h:mm tt")</td>
+                                    <td>@TimeZoneInfo.ConvertTimeFromUtc(person.LastScanTime, CentralTimeZone).ToString("h:mm tt")</td>
                                     <td>@FormatDuration(person.CheckInTime)</td>
                                     <td>
                                         <button class="btn-action" @onclick="() => OpenCorrection(person)" title="Correct">
@@ -147,7 +144,7 @@ else
                                                                 @FormatScanType(punch.ScanType)
                                                             </span>
                                                             <span class="punch-time">
-                                                                @punch.ScanDateTime.ToString("h:mm:ss tt")
+                                                                @TimeZoneInfo.ConvertTimeFromUtc(punch.ScanDateTime, CentralTimeZone).ToString("h:mm:ss tt")
                                                             </span>
                                                         </div>
                                                     }
@@ -195,7 +192,7 @@ else
                             <span class="last-scan-type @lastScannedPerson.ScanType.ToLower().Replace("_","-")">
                                 @FormatScanType(lastScannedPerson.ScanType)
                             </span>
-                            <span class="last-scan-time">@lastScannedPerson.ScanDateTime.ToString("h:mm:ss tt")</span>
+                            <span class="last-scan-time">@TimeZoneInfo.ConvertTimeFromUtc(lastScannedPerson.ScanDateTime, CentralTimeZone).ToString("h:mm:ss tt")</span>
                         </div>
                     </div>
                 }
@@ -221,7 +218,7 @@ else
                                 <span class="activity-detail">@activity.TransactionType</span>
                             </div>
                             <div class="activity-time">
-                                <span>@activity.ScanDateTime.ToString("h:mm:ss tt")</span>
+                                <span>@TimeZoneInfo.ConvertTimeFromUtc(activity.ScanDateTime, CentralTimeZone).ToString("h:mm:ss tt")</span>
                             </div>
                         </div>
                     }
@@ -285,12 +282,6 @@ else
                         <label>Notes</label>
                         <textarea @bind="manualNotes" placeholder="Reason for manual entry..."></textarea>
                     </div>
-                    @if (!string.IsNullOrEmpty(manualEntryError))
-                    {
-                        <div class="form-error" style="color: #dc3545; padding: 8px; margin-top: 8px; background: #f8d7da; border-radius: 4px;">
-                            @manualEntryError
-                        </div>
-                    }
                 }
             </div>
             <div class="modal-footer">
@@ -317,7 +308,7 @@ else
                     <span>@correctionPerson.TransactionType - ID: @correctionPerson.IdNumber</span>
                 </div>
                 <div class="correction-current">
-                    <p><strong>Current Status:</strong> @FormatScanType(correctionPerson.LastScanType) at @correctionPerson.LastScanTime.ToString("h:mm tt")</p>
+                    <p><strong>Current Status:</strong> @FormatScanType(correctionPerson.LastScanType) at @TimeZoneInfo.ConvertTimeFromUtc(correctionPerson.LastScanTime, CentralTimeZone).ToString("h:mm tt")</p>
                 </div>
                 <hr />
                 <h4>New Entry</h4>
@@ -338,12 +329,6 @@ else
                     <label>Reason for Correction *</label>
                     <textarea @bind="correctionNotes" placeholder="Required: Explain why this correction is needed..."></textarea>
                 </div>
-                @if (!string.IsNullOrEmpty(correctionError))
-                {
-                    <div class="form-error" style="color: #dc3545; padding: 8px; margin-top: 8px; background: #f8d7da; border-radius: 4px;">
-                        @correctionError
-                    </div>
-                }
             </div>
             <div class="modal-footer">
                 <button class="btn-cancel" @onclick="CloseCorrection">Cancel</button>
@@ -357,6 +342,7 @@ else
 
 @code {
 
+    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
     [Parameter] public string? CampusCode { get; set; }
 
     private bool hasCampusSelected = false;
@@ -366,7 +352,7 @@ else
     private int staffCount = 0;
     private int studentCount = 0;
     
-    private DateTime lastRefresh = DateTime.Now;
+    private DateTime lastRefresh = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
     private bool isLoading = false;
     private bool autoRefresh = true;
     private string searchTerm = "";
@@ -378,7 +364,7 @@ else
 
     private List<Campus> availableCampuses = new();
     private List<OnSitePerson> onSiteList = new();
-    private HashSet<string> expandedPersonIds = new();
+    private HashSet<string> expandedPersonIds = new(); // Track expanded state across refreshes
     private List<ActivityItem> recentActivity = new();
     private AttendanceTransaction? lastScannedPerson = null;
     private string lastScannedPhoto = "";
@@ -390,53 +376,24 @@ else
     private List<PersonSearchResult> searchResults = new();
     private PersonSearchResult? selectedPerson = null;
     private string manualScanType = "CAMPUS_IN";
-    private TimeOnly manualTime = TimeOnly.FromDateTime(DateTime.Now);
+    private TimeOnly manualTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
     private string manualNotes = "";
-    private string? manualEntryError = null;
 
     // Correction
     private bool showCorrectionModal = false;
     private OnSitePerson? correctionPerson = null;
     private string correctionScanType = "CAMPUS_OUT";
-    private TimeOnly correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+    private TimeOnly correctionTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
     private string correctionNotes = "";
-    private string? correctionError = null;
 
-    // Sorting
-    private string sortColumn = "name";
-    private bool sortAscending = true;
-
-    private List<OnSitePerson> filteredOnSiteList
-    {
-        get
-        {
-            var filtered = onSiteList
-                .Where(p => string.IsNullOrEmpty(searchTerm) ||
-                            p.FirstName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
-                            p.LastName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
-                            p.IdNumber.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
-                .Where(p => string.IsNullOrEmpty(personTypeFilter) || p.TransactionType == personTypeFilter);
-
-            filtered = sortColumn switch
-            {
-                "name" => sortAscending
-                    ? filtered.OrderBy(p => p.LastName).ThenBy(p => p.FirstName)
-                    : filtered.OrderByDescending(p => p.LastName).ThenByDescending(p => p.FirstName),
-                "type" => sortAscending
-                    ? filtered.OrderBy(p => p.TransactionType)
-                    : filtered.OrderByDescending(p => p.TransactionType),
-                "status" => sortAscending
-                    ? filtered.OrderBy(p => p.LastScanType)
-                    : filtered.OrderByDescending(p => p.LastScanType),
-                "time" => sortAscending
-                    ? filtered.OrderBy(p => p.LastScanTime)
-                    : filtered.OrderByDescending(p => p.LastScanTime),
-                _ => filtered.OrderBy(p => p.LastName).ThenBy(p => p.FirstName)
-            };
-
-            return filtered.ToList();
-        }
-    }
+    private List<OnSitePerson> filteredOnSiteList => onSiteList
+        .Where(p => string.IsNullOrEmpty(searchTerm) ||
+                    p.FirstName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+                    p.LastName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
+                    p.IdNumber.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
+        .Where(p => string.IsNullOrEmpty(personTypeFilter) || p.TransactionType == personTypeFilter)
+        .OrderBy(p => p.LastName).ThenBy(p => p.FirstName)
+        .ToList();
 
     private bool firstRenderComplete = false;
 
@@ -660,7 +617,7 @@ else
                 }
             }
 
-            lastRefresh = DateTime.Now;
+            lastRefresh = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
         }
         catch (Exception ex)
         {
@@ -678,9 +635,8 @@ else
         searchResults.Clear();
         selectedPerson = null;
         manualScanType = "CAMPUS_IN";
-        manualTime = TimeOnly.FromDateTime(DateTime.Now);
+        manualTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
         manualNotes = "";
-        manualEntryError = null;
         showManualEntryModal = true;
     }
 
@@ -742,13 +698,12 @@ else
     {
         if (selectedPerson == null) return;
 
-        manualEntryError = null;
-
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
             
-            var scanDateTime = DateTime.Today.Add(manualTime.ToTimeSpan());
+            var scanDateTimeCst = DateTime.Today.Add(manualTime.ToTimeSpan());
+            var scanDateTime = TimeZoneInfo.ConvertTimeToUtc(scanDateTimeCst, CentralTimeZone);
             
             var transaction = new AttendanceTransaction
             {
@@ -765,7 +720,7 @@ else
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
                 Notes = $"[Manual Entry by {currentUserName}] {manualNotes}",
-                CreatedDate = DateTime.Now
+                CreatedDate = DateTime.UtcNow
             };
 
             context.AttendanceTransactions.Add(transaction);
@@ -781,8 +736,6 @@ else
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error saving manual entry");
-            manualEntryError = "Failed to save entry. Please try again.";
-            StateHasChanged();
         }
     }
 
@@ -790,9 +743,8 @@ else
     {
         correctionPerson = person;
         correctionScanType = person.LastScanType == "CAMPUS_IN" ? "CAMPUS_OUT" : "CAMPUS_IN";
-        correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+        correctionTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
         correctionNotes = "";
-        correctionError = null;
         showCorrectionModal = true;
     }
 
@@ -806,13 +758,12 @@ else
     {
         if (correctionPerson == null || string.IsNullOrWhiteSpace(correctionNotes)) return;
 
-        correctionError = null;
-
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
             
-            var scanDateTime = DateTime.Today.Add(correctionTime.ToTimeSpan());
+            var scanDateTimeCst = DateTime.Today.Add(correctionTime.ToTimeSpan());
+            var scanDateTime = TimeZoneInfo.ConvertTimeToUtc(scanDateTimeCst, CentralTimeZone);
             
             var transaction = new AttendanceTransaction
             {
@@ -829,7 +780,7 @@ else
                 DataSource = "LOCAL",
                 ValidationStatus = "CORRECTED",
                 Notes = $"[Correction by {currentUserName}] {correctionNotes}",
-                CreatedDate = DateTime.Now
+                CreatedDate = DateTime.UtcNow
             };
 
             context.AttendanceTransactions.Add(transaction);
@@ -845,23 +796,21 @@ else
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error saving correction");
-            correctionError = "Failed to save correction. Please try again.";
-            StateHasChanged();
         }
     }
 
-    private void QuickCheckOut(OnSitePerson person)
+    private async Task QuickCheckOut(OnSitePerson person)
     {
         correctionPerson = person;
         correctionScanType = "CAMPUS_OUT";
-        correctionTime = TimeOnly.FromDateTime(DateTime.Now);
+        correctionTime = TimeOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone));
         correctionNotes = "Check-out from reception";
         showCorrectionModal = true;
     }
 
     private static string FormatDuration(DateTime checkInTime)
     {
-        var duration = DateTime.Now - checkInTime;
+        var duration = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone) - TimeZoneInfo.ConvertTimeFromUtc(checkInTime, CentralTimeZone);
         if (duration.TotalHours >= 1)
             return $"{(int)duration.TotalHours}h {duration.Minutes}m";
         return $"{duration.Minutes}m";
@@ -875,25 +824,6 @@ else
         "LUNCH_IN" => "🔙",
         _ => "📍"
     };
-
-    private void SortBy(string column)
-    {
-        if (sortColumn == column)
-        {
-            sortAscending = !sortAscending;
-        }
-        else
-        {
-            sortColumn = column;
-            sortAscending = true;
-        }
-    }
-
-    private string SortIndicator(string column)
-    {
-        if (sortColumn != column) return "";
-        return sortAscending ? " ▲" : " ▼";
-    }
 
     private void ToggleExpand(OnSitePerson person)
     {
@@ -973,3 +903,8 @@ else
         public string Type { get; set; } = "";
     }
 }
+
+
+
+
+

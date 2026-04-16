@@ -477,7 +477,7 @@
                 Notes = string.IsNullOrWhiteSpace(checkOutNotes)
                     ? $"[Safety Dashboard checkout by {_currentUserName}]"
                     : $"[Safety Dashboard by {_currentUserName}] {checkOutNotes}",
-                CreatedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now
             };
             context.AttendanceTransactions.Add(t);
             await context.SaveChangesAsync();

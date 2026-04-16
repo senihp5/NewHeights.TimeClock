@@ -86,28 +86,149 @@
                         var amStatus = GetShiftStatus(day, "AM");
                         var pmStatus = GetShiftStatus(day, "PM");
                         var eveningStatus = GetShiftStatus(day, "Evening");
-                        
-                        <tr class="@(day.Date == DateOnly.FromDateTime(DateTime.Today) ? "today" : "") @(day.HasException ? "has-exception" : "")">
+                        var holidayHours = GetHolidayHours(day);
+                        var isHoliday = holidayHours > 0;
+                        var holidayName = GetHolidayName(day);
+                        var isExpanded = expandedDays.Contains(day.Date);
+
+                        <tr class="day-row @(day.Date == DateOnly.FromDateTime(DateTime.Today) ? "today" : "") @(day.HasException ? "has-exception" : "") @(isHoliday ? "holiday-row" : "") @(isExpanded ? "expanded" : "")"
+                            @onclick="() => ToggleDayExpand(day.Date)"
+                            style="cursor: pointer;">
                             <td class="col-date">
+                                <span class="expand-icon">@(isExpanded ? "▼" : "▶")</span>
                                 <span class="day-name">@day.DayOfWeek.Substring(0, 3)</span>
                                 <span class="day-date">@day.Date.ToString("M/d")</span>
+                                @if (isHoliday)
+                                {
+                                    <span class="holiday-badge" title="@holidayName">@holidayName</span>
+                                }
                             </td>
                             <td class="col-status">
-                                <span class="status-pill @amStatus.ToLower().Replace(" ", "-")">@amStatus</span>
+                                @if (isHoliday)
+                                {
+                                    <span class="status-pill holiday">Holiday</span>
+                                }
+                                else
+                                {
+                                    <span class="status-pill @amStatus.ToLower().Replace(" ", "-")">@amStatus</span>
+                                }
                             </td>
                             <td class="col-status">
-                                <span class="status-pill @pmStatus.ToLower().Replace(" ", "-")">@pmStatus</span>
+                                @if (isHoliday)
+                                {
+                                    <span class="status-pill holiday">Holiday</span>
+                                }
+                                else
+                                {
+                                    <span class="status-pill @pmStatus.ToLower().Replace(" ", "-")">@pmStatus</span>
+                                }
                             </td>
                             <td class="col-status">
-                                <span class="status-pill @eveningStatus.ToLower().Replace(" ", "-")">@eveningStatus</span>
+                                @if (isHoliday)
+                                {
+                                    <span class="status-pill holiday">Holiday</span>
+                                }
+                                else
+                                {
+                                    <span class="status-pill @eveningStatus.ToLower().Replace(" ", "-")">@eveningStatus</span>
+                                }
                             </td>
                             <td class="col-hours">@day.TotalHours.ToString("F1")</td>
                             <td class="col-hours">@GetLeaveHours(day).ToString("F1")</td>
-                            <td class="col-hours">@GetHolidayHours(day).ToString("F1")</td>
-                            <td class="col-total @(day.TotalHours == 8 ? "valid" : day.TotalHours > 0 ? "warning" : "")">
-                                @day.TotalHours.ToString("F1")
+                            <td class="col-hours @(isHoliday ? "holiday-hours" : "")">@holidayHours.ToString("F1")</td>
+                            <td class="col-total @(GetDayTotal(day) == 8 ? "valid" : GetDayTotal(day) > 0 ? "warning" : "")">
+                                @GetDayTotal(day).ToString("F1")
                             </td>
                         </tr>
+
+                        @* ── Drill-down: Punch detail row ────────────────────────── *@
+                        @if (isExpanded)
+                        {
+                            <tr class="punch-detail-row">
+                                <td colspan="8">
+                                    <div class="punch-detail-panel">
+                                        @if (day.Punches.Any())
+                                        {
+                                            <table class="punch-pairs-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Type</th>
+                                                        <th>Actual Time</th>
+                                                        <th>Rounded Time</th>
+                                                        <th>Hours</th>
+                                                        <th>Source</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var pair in GetPunchPairs(day))
+                                                    {
+                                                        <tr>
+                                                            <td>
+                                                                <span class="punch-badge @pair.BadgeClass">@pair.Label</span>
+                                                            </td>
+                                                            <td>
+                                                                <span class="punch-time-in">@pair.InTime</span>
+                                                                <span class="punch-arrow">→</span>
+                                                                <span class="punch-time-out">@pair.OutTime</span>
+                                                            </td>
+                                                            <td>
+                                                                <span class="punch-time-rounded">@pair.RoundedIn</span>
+                                                                <span class="punch-arrow">→</span>
+                                                                <span class="punch-time-rounded">@pair.RoundedOut</span>
+                                                            </td>
+                                                            <td class="pair-hours">@pair.Hours</td>
+                                                            <td>
+                                                                @if (pair.IsManual)
+                                                                {
+                                                                    <span class="source-badge manual" title="Manual Entry">✎ Manual</span>
+                                                                }
+                                                                else if (pair.IsModified)
+                                                                {
+                                                                    <span class="source-badge modified" title="Modified">✏️ Modified</span>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span class="source-badge auto">Badge</span>
+                                                                }
+                                                            </td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                        }
+                                        else if (!isHoliday)
+                                        {
+                                            <p class="no-punches">No punches recorded for this day.</p>
+                                        }
+
+                                        @if (isHoliday)
+                                        {
+                                            <div class="holiday-notice">
+                                                🎉 <strong>@holidayName</strong> — @holidayHours.ToString("F1") holiday hours credited
+                                            </div>
+                                        }
+
+                                        @if (day.HasException)
+                                        {
+                                            <div class="exception-notice">
+                                                ⚠️ <strong>Exception:</strong> @day.ExceptionNotes
+                                            </div>
+                                        }
+
+                                        @* ── Correction Request Button ────────────────────── *@
+                                        @if (!weeklyTimesheet.IsSubmitted)
+                                        {
+                                            <div class="punch-actions">
+                                                <button class="btn-correction" @onclick:stopPropagation="true"
+                                                        @onclick="() => OpenCorrectionRequest(day)">
+                                                    📝 Request Correction
+                                                </button>
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
                     }
                 </tbody>
                 <tfoot>
@@ -128,6 +249,37 @@
             </table>
         </div>
 
+        @* ── Pending Correction Requests ─────────────────────────────────── *@
+        @if (pendingCorrections.Any())
+        {
+            <div class="corrections-box">
+                <h4>📝 Pending Correction Requests</h4>
+                <table class="corrections-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Requested</th>
+                            <th>Reason</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var cr in pendingCorrections)
+                        {
+                            <tr>
+                                <td>@cr.WorkDate.ToString("M/d")</td>
+                                <td>@FormatRequestType(cr.RequestType)</td>
+                                <td>@(cr.RequestedDateTime?.ToString("h:mm tt") ?? "—")</td>
+                                <td>@cr.Reason</td>
+                                <td><span class="status-badge @cr.Status.ToString().ToLower()">@cr.Status</span></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
         @if (weeklyTimesheet.HasExceptions)
         {
             <div class="exceptions-box">
@@ -145,7 +297,7 @@
             <h3>Assurance Statement</h3>
             <div class="assurance-box">
                 <p>I hereby certify that the above time reported is accurate and reflects the time I worked during the week. I understand that falsifying time records may result in disciplinary action.</p>
-                
+
                 @if (!weeklyTimesheet.IsSubmitted)
                 {
                     <div class="certification-controls">
@@ -153,7 +305,7 @@
                             <input type="checkbox" @bind="certificationChecked" />
                             <span>I certify this time sheet is accurate and complete</span>
                         </label>
-                        
+
                         <div class="signature-line">
                             <div class="sig-field">
                                 <span class="sig-label">Name:</span>
@@ -189,6 +341,189 @@
     }
 </div>
 
+@* ── Correction Request Modal ─────────────────────────────────────────── *@
+@if (showCorrectionModal)
+{
+    <div class="modal-overlay" @onclick="CloseCorrectionModal">
+        <div class="modal-panel" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>Request Correction — @correctionDate.ToString("dddd, M/d")</h3>
+                <button class="modal-close" @onclick="CloseCorrectionModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Correction Type</label>
+                    <select @bind="correctionType">
+                        <option value="">— Select —</option>
+                        <option value="MissedPunch">Missed Punch</option>
+                        <option value="WrongTime">Wrong Time</option>
+                        <option value="WrongType">Wrong Punch Type</option>
+                        <option value="AddPunch">Add Punch</option>
+                        <option value="DeletePunch">Delete Punch</option>
+                    </select>
+                </div>
+
+                @if (correctionType == "MissedPunch" || correctionType == "AddPunch")
+                {
+                    <div class="form-group">
+                        <label>Punch Type</label>
+                        <select @bind="correctionPunchType">
+                            <option value="In">Clock In</option>
+                            <option value="Out">Clock Out</option>
+                            <option value="LunchOut">Lunch Out</option>
+                            <option value="LunchIn">Lunch In</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Time</label>
+                        <input type="time" @bind="correctionTime" />
+                    </div>
+                }
+
+                @if (correctionType == "WrongTime")
+                {
+                    <div class="form-group">
+                        <label>Original Punch</label>
+                        <select @bind="correctionOriginalPunchId">
+                            <option value="0">— Select Punch —</option>
+                            @if (correctionDayEntry != null)
+                            {
+                                @foreach (var p in correctionDayEntry.Punches)
+                                {
+                                    <option value="@p.PunchId">@p.PunchType @p.PunchTime.ToString("h:mm tt")</option>
+                                }
+                            }
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Correct Time</label>
+                        <input type="time" @bind="correctionTime" />
+                    </div>
+                }
+
+                @if (correctionType == "DeletePunch")
+                {
+                    <div class="form-group">
+                        <label>Punch to Remove</label>
+                        <select @bind="correctionOriginalPunchId">
+                            <option value="0">— Select Punch —</option>
+                            @if (correctionDayEntry != null)
+                            {
+                                @foreach (var p in correctionDayEntry.Punches)
+                                {
+                                    <option value="@p.PunchId">@p.PunchType @p.PunchTime.ToString("h:mm tt")</option>
+                                }
+                            }
+                        </select>
+                    </div>
+                }
+
+                <div class="form-group">
+                    <label>Reason (required)</label>
+                    <textarea @bind="correctionReason" rows="3" placeholder="Explain why this correction is needed..."></textarea>
+                </div>
+
+                @if (!string.IsNullOrEmpty(correctionError))
+                {
+                    <div class="form-error">@correctionError</div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseCorrectionModal">Cancel</button>
+                <button class="btn-submit-correction" @onclick="SubmitCorrectionRequest" disabled="@isSubmittingCorrection">
+                    @(isSubmittingCorrection ? "Submitting..." : "Submit Request")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    /* ── Drill-down styles ───────────────────────────────────────── */
+    .day-row { transition: background-color 0.15s; }
+    .day-row:hover { background-color: rgba(30, 58, 95, 0.04); }
+    .day-row.expanded { background-color: rgba(30, 58, 95, 0.06); font-weight: 600; }
+    .expand-icon { display: inline-block; width: 1rem; font-size: 0.7rem; color: #888; margin-right: 0.25rem; }
+
+    .holiday-row { background-color: rgba(245, 184, 28, 0.08) !important; }
+    .holiday-badge { display: inline-block; background: #f5b81c; color: #1e3a5f; font-size: 0.65rem; font-weight: 700;
+        padding: 1px 6px; border-radius: 3px; margin-left: 6px; vertical-align: middle; }
+    .status-pill.holiday { background: #f5b81c; color: #1e3a5f; }
+    .holiday-hours { color: #b8860b; font-weight: 600; }
+
+    .punch-detail-row td { padding: 0 !important; border-top: none !important; }
+    .punch-detail-panel { background: #f8f9fb; border: 1px solid #e2e8f0; border-top: none;
+        margin: 0 0.5rem 0.5rem; padding: 0.75rem; border-radius: 0 0 6px 6px; }
+
+    .punch-pairs-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .punch-pairs-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ddd;
+        color: #666; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+    .punch-pairs-table td { padding: 5px 8px; border-bottom: 1px solid #eee; }
+    .punch-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }
+    .punch-badge.work { background: #dcfce7; color: #166534; }
+    .punch-badge.lunch { background: #fef9c3; color: #854d0e; }
+    .punch-badge.break { background: #dbeafe; color: #1e40af; }
+    .punch-badge.unpaired { background: #fee2e2; color: #991b1b; }
+    .punch-time-in, .punch-time-out { font-family: 'Segoe UI', monospace; }
+    .punch-time-rounded { font-family: 'Segoe UI', monospace; color: #666; }
+    .punch-arrow { color: #999; margin: 0 4px; }
+    .pair-hours { font-weight: 600; }
+    .source-badge { font-size: 0.7rem; padding: 1px 5px; border-radius: 3px; }
+    .source-badge.manual { background: #fef3c7; color: #92400e; }
+    .source-badge.modified { background: #e0e7ff; color: #3730a3; }
+    .source-badge.auto { background: #e5e7eb; color: #374151; }
+
+    .holiday-notice { background: #fefce8; border: 1px solid #f5b81c; border-radius: 4px;
+        padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
+    .exception-notice { background: #fef2f2; border: 1px solid #fca5a5; border-radius: 4px;
+        padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
+    .no-punches { color: #999; font-style: italic; font-size: 0.85rem; margin: 4px 0; }
+
+    .punch-actions { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+    .btn-correction { background: #1e3a5f; color: white; border: none; padding: 5px 14px;
+        border-radius: 4px; font-size: 0.8rem; cursor: pointer; }
+    .btn-correction:hover { background: #2a4f7f; }
+
+    /* ── Correction requests table ───────────────────────────────── */
+    .corrections-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+        padding: 1rem; margin: 1rem 0; }
+    .corrections-box h4 { margin: 0 0 0.5rem; color: #1e3a5f; }
+    .corrections-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .corrections-table th { text-align: left; padding: 4px 8px; border-bottom: 2px solid #93c5fd;
+        color: #1e3a5f; font-size: 0.75rem; text-transform: uppercase; }
+    .corrections-table td { padding: 5px 8px; border-bottom: 1px solid #dbeafe; }
+    .status-badge { padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; }
+    .status-badge.submitted { background: #fef3c7; color: #92400e; }
+    .status-badge.approved { background: #dcfce7; color: #166534; }
+    .status-badge.denied { background: #fee2e2; color: #991b1b; }
+
+    /* ── Modal ───────────────────────────────────────────────────── */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex;
+        align-items: center; justify-content: center; z-index: 1000; }
+    .modal-panel { background: white; border-radius: 10px; width: 480px; max-width: 95vw;
+        max-height: 90vh; overflow-y: auto; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
+    .modal-header { display: flex; justify-content: space-between; align-items: center;
+        padding: 1rem 1.25rem; border-bottom: 1px solid #e5e7eb; }
+    .modal-header h3 { margin: 0; font-size: 1rem; color: #1e3a5f; }
+    .modal-close { background: none; border: none; font-size: 1.2rem; cursor: pointer; color: #666; }
+    .modal-body { padding: 1.25rem; }
+    .modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem;
+        padding: 1rem 1.25rem; border-top: 1px solid #e5e7eb; }
+
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; font-weight: 600; font-size: 0.85rem; margin-bottom: 4px; color: #374151; }
+    .form-group select, .form-group input, .form-group textarea {
+        width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; }
+    .form-group textarea { resize: vertical; }
+    .form-error { background: #fee2e2; color: #991b1b; padding: 8px 12px; border-radius: 4px; font-size: 0.85rem; margin-top: 0.5rem; }
+
+    .btn-cancel { background: #e5e7eb; color: #374151; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
+    .btn-submit-correction { background: #1e3a5f; color: white; border: none; padding: 8px 16px;
+        border-radius: 6px; cursor: pointer; font-weight: 600; }
+    .btn-submit-correction:hover { background: #2a4f7f; }
+    .btn-submit-correction:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+
 @code {
     [Parameter] public int WeekOffset { get; set; } = 0;
 
@@ -196,27 +531,47 @@
     private bool isLoading = true;
     private bool isSubmitting = false;
     private bool certificationChecked = false;
-    
+
     private string employeeName = "";
     private int employeeId = 0;
     private string currentUserEmail = "";
-    
+    private bool isHolidayEligible = true;
+
     private PayPeriodInfo? currentPayPeriod;
     private WeeklyTimesheet? weeklyTimesheet;
     private DateOnly selectedWeekStart;
     private DateOnly selectedWeekEnd;
-    
+
     private decimal totalLeaveHours = 0;
     private decimal totalHolidayHours = 0;
     private decimal grandTotal => (weeklyTimesheet?.TotalHours ?? 0) + totalLeaveHours + totalHolidayHours;
 
+    // Drill-down state
+    private HashSet<DateOnly> expandedDays = new();
+
+    // Holiday data
+    private List<TcHolidaySchedule> weekHolidays = new();
+
+    // Correction request state
+    private List<TcCorrectionRequest> pendingCorrections = new();
+    private bool showCorrectionModal = false;
+    private DateOnly correctionDate;
+    private DailyTimesheetEntry? correctionDayEntry;
+    private string correctionType = "";
+    private string correctionPunchType = "In";
+    private TimeOnly correctionTime = new(8, 0);
+    private long correctionOriginalPunchId = 0;
+    private string correctionReason = "";
+    private string correctionError = "";
+    private bool isSubmittingCorrection = false;
+
     protected override async Task OnInitializedAsync()
     {
         weekOffset = WeekOffset;
-        
+
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         var user = authState.User;
-        currentUserEmail = user.FindFirst("preferred_username")?.Value ?? 
+        currentUserEmail = user.FindFirst("preferred_username")?.Value ??
                            user.FindFirst(ClaimTypes.Email)?.Value ?? "";
 
         currentPayPeriod = PayPeriodService.GetCurrentPayPeriod();
@@ -226,11 +581,11 @@
     private async Task LoadEmployeeAndTimesheet()
     {
         isLoading = true;
-        
+
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
-            
+
             var employee = await context.TcEmployees
                 .Include(e => e.Staff)
                 .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
@@ -239,6 +594,8 @@
             {
                 employeeId = employee.EmployeeId;
                 employeeName = employee.Staff?.FullName ?? "Unknown";
+                isHolidayEligible = employee.EmployeeType != EmployeeType.HourlyPartTime
+                                 && employee.EmployeeType != EmployeeType.Substitute;
                 await LoadTimesheet();
             }
         }
@@ -255,9 +612,10 @@
     private async Task LoadTimesheet()
     {
         if (employeeId == 0) return;
-        
+
         isLoading = true;
         certificationChecked = false;
+        expandedDays.Clear();
 
         try
         {
@@ -268,10 +626,31 @@
             selectedWeekEnd = selectedWeekStart.AddDays(6);
 
             weeklyTimesheet = await TimesheetService.GetWeeklyTimesheetAsync(employeeId, selectedWeekStart);
-            
-            // TODO: Load leave/holiday hours from separate tracking
+
+            // Load holidays for this week (only for benefits-eligible employees)
+            using var context = await DbFactory.CreateDbContextAsync();
+            if (isHolidayEligible)
+            {
+                weekHolidays = await context.TcHolidaySchedules
+                    .AsNoTracking()
+                    .Where(h => h.IsActive && h.HolidayDate >= selectedWeekStart && h.HolidayDate <= selectedWeekEnd)
+                    .ToListAsync();
+                totalHolidayHours = weekHolidays.Sum(h => h.HoursCredited);
+            }
+            else
+            {
+                weekHolidays.Clear();
+                totalHolidayHours = 0;
+            }
             totalLeaveHours = 0;
-            totalHolidayHours = 0;
+
+            // Load pending correction requests
+            pendingCorrections = await context.TcCorrectionRequests
+                .AsNoTracking()
+                .Where(cr => cr.EmployeeId == employeeId &&
+                             cr.WorkDate >= selectedWeekStart && cr.WorkDate <= selectedWeekEnd)
+                .OrderByDescending(cr => cr.CreatedDate)
+                .ToListAsync();
         }
         catch (Exception ex)
         {
@@ -282,6 +661,12 @@
             isLoading = false;
             StateHasChanged();
         }
+    }
+
+    private void ToggleDayExpand(DateOnly date)
+    {
+        if (!expandedDays.Remove(date))
+            expandedDays.Add(date);
     }
 
     private async Task PreviousWeek()
@@ -302,7 +687,7 @@
     private async Task SubmitTimesheet()
     {
         if (!certificationChecked || isSubmitting) return;
-        
+
         isSubmitting = true;
         try
         {
@@ -319,6 +704,90 @@
         }
     }
 
+    // ── Punch pair builder ─────────────────────────────────────────────────
+    private List<PunchPairDisplay> GetPunchPairs(DailyTimesheetEntry day)
+    {
+        var pairs = new List<PunchPairDisplay>();
+        var punches = day.Punches.OrderBy(p => p.PunchTime).ToList();
+
+        var inTypes = new HashSet<string> { "In", "LunchIn", "BreakIn" };
+        var outTypes = new HashSet<string> { "Out", "LunchOut", "BreakOut" };
+
+        var unmatched = new List<PunchEntry>(punches);
+
+        // Match In→Out, LunchOut→LunchIn, BreakOut→BreakIn pairs
+        var pairMappings = new[] { ("In", "Out", "Work", "work"), ("LunchOut", "LunchIn", "Lunch", "lunch"), ("BreakOut", "BreakIn", "Break", "break") };
+
+        foreach (var (inType, outType, label, css) in pairMappings)
+        {
+            var ins = unmatched.Where(p => p.PunchType == inType).OrderBy(p => p.PunchTime).ToList();
+            var outs = unmatched.Where(p => p.PunchType == outType).OrderBy(p => p.PunchTime).ToList();
+
+            for (int i = 0; i < ins.Count; i++)
+            {
+                var inP = ins[i];
+                var outP = i < outs.Count ? outs[i] : null;
+                var hours = outP != null ? (decimal)(outP.PunchTime - inP.PunchTime).TotalHours : 0;
+
+                pairs.Add(new PunchPairDisplay
+                {
+                    Label = label,
+                    BadgeClass = css,
+                    InTime = inP.PunchTime.ToString("h:mm tt"),
+                    OutTime = outP?.PunchTime.ToString("h:mm tt") ?? "(open)",
+                    RoundedIn = inP.RoundedTime?.ToString("h:mm tt") ?? inP.PunchTime.ToString("h:mm tt"),
+                    RoundedOut = outP?.RoundedTime?.ToString("h:mm tt") ?? outP?.PunchTime.ToString("h:mm tt") ?? "—",
+                    Hours = outP != null ? hours.ToString("F2") : "—",
+                    IsManual = inP.IsManual || (outP?.IsManual ?? false),
+                    IsModified = inP.IsModified || (outP?.IsModified ?? false)
+                });
+
+                unmatched.Remove(inP);
+                if (outP != null) unmatched.Remove(outP);
+            }
+
+            // Leftover outs without matching ins
+            var remainingOuts = unmatched.Where(p => p.PunchType == outType).ToList();
+            foreach (var outP in remainingOuts)
+            {
+                pairs.Add(new PunchPairDisplay
+                {
+                    Label = label,
+                    BadgeClass = "unpaired",
+                    InTime = "(missing)",
+                    OutTime = outP.PunchTime.ToString("h:mm tt"),
+                    RoundedIn = "—",
+                    RoundedOut = outP.RoundedTime?.ToString("h:mm tt") ?? outP.PunchTime.ToString("h:mm tt"),
+                    Hours = "—",
+                    IsManual = outP.IsManual,
+                    IsModified = outP.IsModified
+                });
+                unmatched.Remove(outP);
+            }
+        }
+
+        return pairs.OrderBy(p => p.InTime).ToList();
+    }
+
+    // ── Holiday helpers ────────────────────────────────────────────────────
+    private decimal GetHolidayHours(DailyTimesheetEntry day)
+    {
+        if (!isHolidayEligible) return 0;
+        var holiday = weekHolidays.FirstOrDefault(h => h.HolidayDate == day.Date);
+        return holiday?.HoursCredited ?? 0;
+    }
+
+    private string GetHolidayName(DailyTimesheetEntry day)
+    {
+        return weekHolidays.FirstOrDefault(h => h.HolidayDate == day.Date)?.HolidayName ?? "";
+    }
+
+    private decimal GetDayTotal(DailyTimesheetEntry day)
+    {
+        return day.TotalHours + GetLeaveHours(day) + GetHolidayHours(day);
+    }
+
+    // ── Shift status ───────────────────────────────────────────────────────
     private string GetShiftStatus(DailyTimesheetEntry day, string shift)
     {
         if (day.TotalHours == 0 && !day.Punches.Any())
@@ -356,5 +825,125 @@
     }
 
     private decimal GetLeaveHours(DailyTimesheetEntry day) => 0; // TODO: integrate leave tracking
-    private decimal GetHolidayHours(DailyTimesheetEntry day) => 0; // TODO: integrate holiday calendar
+
+    // ── Correction request methods ─────────────────────────────────────────
+    private void OpenCorrectionRequest(DailyTimesheetEntry day)
+    {
+        correctionDate = day.Date;
+        correctionDayEntry = day;
+        correctionType = "";
+        correctionPunchType = "In";
+        correctionTime = new TimeOnly(8, 0);
+        correctionOriginalPunchId = 0;
+        correctionReason = "";
+        correctionError = "";
+        showCorrectionModal = true;
+    }
+
+    private void CloseCorrectionModal()
+    {
+        showCorrectionModal = false;
+    }
+
+    private async Task SubmitCorrectionRequest()
+    {
+        correctionError = "";
+
+        if (string.IsNullOrEmpty(correctionType))
+        {
+            correctionError = "Please select a correction type.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(correctionReason))
+        {
+            correctionError = "Please provide a reason for the correction.";
+            return;
+        }
+
+        isSubmittingCorrection = true;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var requestType = correctionType switch
+            {
+                "MissedPunch" => CorrectionRequestType.MissedPunch,
+                "WrongTime" => CorrectionRequestType.WrongTime,
+                "WrongType" => CorrectionRequestType.WrongType,
+                "AddPunch" => CorrectionRequestType.AddPunch,
+                "DeletePunch" => CorrectionRequestType.DeletePunch,
+                _ => CorrectionRequestType.MissedPunch
+            };
+
+            PunchType? punchType = correctionPunchType switch
+            {
+                "In" => PunchType.In,
+                "Out" => PunchType.Out,
+                "LunchOut" => PunchType.LunchOut,
+                "LunchIn" => PunchType.LunchIn,
+                _ => null
+            };
+
+            DateTime? requestedDateTime = null;
+            if (correctionType == "MissedPunch" || correctionType == "AddPunch" || correctionType == "WrongTime")
+            {
+                requestedDateTime = correctionDate.ToDateTime(correctionTime);
+            }
+
+            var request = new TcCorrectionRequest
+            {
+                EmployeeId = employeeId,
+                RequestType = requestType,
+                WorkDate = correctionDate,
+                RequestedPunchType = (correctionType == "MissedPunch" || correctionType == "AddPunch") ? punchType : null,
+                RequestedDateTime = requestedDateTime,
+                OriginalPunchId = correctionOriginalPunchId > 0 ? correctionOriginalPunchId : null,
+                Reason = correctionReason,
+                Status = CorrectionRequestStatus.Submitted,
+                CreatedDate = DateTime.Now
+            };
+
+            context.TcCorrectionRequests.Add(request);
+            await context.SaveChangesAsync();
+
+            Logger.LogInformation("Correction request submitted: Employee={EmployeeId}, Date={Date}, Type={Type}",
+                employeeId, correctionDate, correctionType);
+
+            showCorrectionModal = false;
+            await LoadTimesheet();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error submitting correction request");
+            correctionError = "An error occurred. Please try again.";
+        }
+        finally
+        {
+            isSubmittingCorrection = false;
+        }
+    }
+
+    private static string FormatRequestType(CorrectionRequestType type) => type switch
+    {
+        CorrectionRequestType.MissedPunch => "Missed Punch",
+        CorrectionRequestType.WrongTime => "Wrong Time",
+        CorrectionRequestType.WrongType => "Wrong Type",
+        CorrectionRequestType.AddPunch => "Add Punch",
+        CorrectionRequestType.DeletePunch => "Delete Punch",
+        _ => type.ToString()
+    };
+
+    // ── Display DTOs ───────────────────────────────────────────────────────
+    private class PunchPairDisplay
+    {
+        public string Label { get; set; } = "";
+        public string BadgeClass { get; set; } = "";
+        public string InTime { get; set; } = "";
+        public string OutTime { get; set; } = "";
+        public string RoundedIn { get; set; } = "";
+        public string RoundedOut { get; set; } = "";
+        public string Hours { get; set; } = "";
+        public bool IsManual { get; set; }
+        public bool IsModified { get; set; }
+    }
 }

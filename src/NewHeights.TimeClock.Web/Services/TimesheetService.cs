@@ -201,8 +201,8 @@ public class TimesheetService : ITimesheetService
         {
             card.ApprovalStatus = ApprovalStatus.Approved; // Employee submitted
             card.ApprovedBy = submittedBy;
-            card.ApprovedDate = DateTime.UtcNow;
-            card.ModifiedDate = DateTime.UtcNow;
+            card.ApprovedDate = DateTime.Now;
+            card.ModifiedDate = DateTime.Now;
         }
 
         await context.SaveChangesAsync();
@@ -228,7 +228,7 @@ public class TimesheetService : ITimesheetService
                 EndDate = periodEnd,
                 PayDate = periodEnd.Day == 15 ? periodEnd : periodEnd.AddDays(1),
                 Status = PayPeriodStatus.Open,
-                CreatedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now
             };
             context.TcPayPeriods.Add(payPeriod);
             await context.SaveChangesAsync();
@@ -249,7 +249,7 @@ public class TimesheetService : ITimesheetService
                 TotalHours = timesheet.TotalHours,
                 DaysWorked = timesheet.DaysWorked,
                 ExceptionCount = timesheet.ExceptionCount,
-                CreatedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now
             };
             context.TcPayPeriodSummaries.Add(summary);
         }
@@ -257,17 +257,17 @@ public class TimesheetService : ITimesheetService
         if (approverRole == "Supervisor")
         {
             summary.SupervisorApprovedBy = approvedBy;
-            summary.SupervisorApprovedDate = DateTime.UtcNow;
+            summary.SupervisorApprovedDate = DateTime.Now;
             summary.ApprovalStatus = ApprovalStatus.Approved;
         }
         else if (approverRole == "HR")
         {
             summary.HRApprovedBy = approvedBy;
-            summary.HRApprovedDate = DateTime.UtcNow;
+            summary.HRApprovedDate = DateTime.Now;
             summary.ApprovalStatus = ApprovalStatus.Locked;
         }
 
-        summary.ModifiedDate = DateTime.UtcNow;
+        summary.ModifiedDate = DateTime.Now;
         await context.SaveChangesAsync();
 
         _logger.LogInformation("Timesheet approved: Employee={EmployeeId}, Period={Start}-{End}, By={ApprovedBy}, Role={Role}",
@@ -391,7 +391,7 @@ public class TimesheetService : ITimesheetService
                 EmployeeId = employeeId,
                 CampusId = employee?.HomeCampusId ?? 1,
                 WorkDate = workDate,
-                CreatedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now
             };
             context.TcDailyTimecards.Add(timecard);
         }
@@ -414,7 +414,7 @@ public class TimesheetService : ITimesheetService
             timecard.ExceptionNotes = string.Join("; ", exceptions);
         }
 
-        timecard.ModifiedDate = DateTime.UtcNow;
+        timecard.ModifiedDate = DateTime.Now;
         await context.SaveChangesAsync();
     }
 

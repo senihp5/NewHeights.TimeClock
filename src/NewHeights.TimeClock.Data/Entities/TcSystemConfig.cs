@@ -7,5 +7,5 @@ public class TcSystemConfig
     public string ConfigType { get; set; } = "STRING";
     public string? Description { get; set; }
     public string? ModifiedBy { get; set; }
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 }

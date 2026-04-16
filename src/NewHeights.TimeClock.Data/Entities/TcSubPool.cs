@@ -13,7 +13,7 @@ public class TcSubPool
     public string? AvailableCampuses { get; set; }
     public bool IsActive { get; set; } = true;
     public string? Notes { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 
     public TcEmployee? Employee { get; set; }
     public ICollection<TcSubRequest> Assignments { get; set; } = new List<TcSubRequest>();

@@ -1,0 +1,853 @@
+@page "/admin/holidays"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@using NewHeights.TimeClock.Web.Services
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ILogger<HolidaySchedule> Logger
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>Holiday Schedule</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <div>
+            <h1>Holiday Schedule</h1>
+            <p class="admin-subtitle">
+                Define school holidays for the year. Holidays automatically credit hours on employee timesheets
+                and display with a special indicator on the timesheet view.
+            </p>
+        </div>
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <label class="btn-import" for="pdfUpload">Import PDF</label>
+            <InputFile id="pdfUpload" OnChange="OnPdfSelected" accept=".pdf" style="display:none" />
+            <button class="btn-primary" @onclick="OpenAddModal">+ Add Holiday</button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-error">@errorMessage</div>
+    }
+
+    <div class="admin-card wide" style="margin-top:1.5rem">
+        <div class="hs-filter-row">
+            <label class="hs-filter-label">School Year</label>
+            <select class="form-input hs-year-select" @bind="filterYear" @bind:after="ApplyFilter">
+                @foreach (var y in allYears)
+                {
+                    <option value="@y">@y</option>
+                }
+            </select>
+            <label class="hs-filter-label" style="margin-left:1rem">Campus</label>
+            <select class="form-input hs-campus-select" @bind="filterCampusId" @bind:after="ApplyFilter">
+                <option value="0">All Campuses</option>
+                @foreach (var c in allCampuses)
+                {
+                    <option value="@c.CampusId">@c.CampusName</option>
+                }
+            </select>
+            @if (dirtyRowIds.Count > 0)
+            {
+                <span class="hs-dirty-hint">⚠ @dirtyRowIds.Count unsaved change(s)</span>
+            }
+        </div>
+
+        @if (isLoading)
+        {
+            <div class="loading-msg">Loading...</div>
+        }
+        else if (filteredRows.Count == 0)
+        {
+            <div class="empty-state">
+                <p>No holidays configured for @filterYear. Use &ldquo;Add Holiday&rdquo; to create one.</p>
+            </div>
+        }
+        else
+        {
+            <div class="table-wrapper">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Holiday Name</th>
+                            <th>Date</th>
+                            <th>Day</th>
+                            <th>Hours Credited</th>
+                            <th>Campus</th>
+                            <th>Active</th>
+                            <th style="width:90px">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in filteredRows)
+                        {
+                            var isDirty = dirtyRowIds.Contains(row.HolidayId);
+                            <tr class="@(isDirty ? "hs-dirty-row" : "") @(row.HolidayDate < DateOnly.FromDateTime(DateTime.Today) ? "past" : "")">
+                                <td>
+                                    <input type="text"
+                                           class="form-input hs-name-input"
+                                           value="@row.HolidayName"
+                                           @onchange="e => OnNameChanged(row, e.Value?.ToString())" />
+                                </td>
+                                <td>
+                                    <input type="date"
+                                           class="form-input hs-date-input"
+                                           value="@row.HolidayDate.ToString("yyyy-MM-dd")"
+                                           @onchange="e => OnDateChanged(row, e.Value?.ToString())" />
+                                </td>
+                                <td>@row.HolidayDate.DayOfWeek.ToString().Substring(0, 3)</td>
+                                <td>
+                                    <input type="number"
+                                           class="form-input hs-hours-input"
+                                           step="0.5"
+                                           min="0"
+                                           max="24"
+                                           value="@row.HoursCredited"
+                                           @onchange="e => OnHoursChanged(row, e.Value?.ToString())" />
+                                </td>
+                                <td>
+                                    @if (row.AppliesToAllCampuses)
+                                    {
+                                        <span class="campus-badge all">All Campuses</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="campus-badge">@(row.Campus?.CampusName ?? row.CampusId?.ToString() ?? "—")</span>
+                                    }
+                                </td>
+                                <td style="text-align:center">
+                                    <input type="checkbox"
+                                           class="hs-checkbox"
+                                           checked="@row.IsActive"
+                                           @onchange="e => OnActiveChanged(row, e.Value is bool b && b)" />
+                                </td>
+                                <td>
+                                    <div style="display:flex; gap:0.25rem; align-items:center">
+                                        <button class="hs-btn-save"
+                                                disabled="@(!isDirty || savingRowId == row.HolidayId)"
+                                                @onclick="() => SaveRow(row)">
+                                            @(savingRowId == row.HolidayId ? "..." : "Save")
+                                        </button>
+                                        <button class="btn-danger-sm"
+                                                @onclick="() => ConfirmDelete(row)">Del</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="hs-summary">
+                <span>@filteredRows.Count(r => r.IsActive) active holidays</span>
+                <span>•</span>
+                <span>@filteredRows.Where(r => r.IsActive).Sum(r => r.HoursCredited).ToString("F1") total hours</span>
+            </div>
+        }
+    </div>
+</div>
+
+@if (showAddModal)
+{
+    <div class="modal-overlay" @onclick="CloseAddModal">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:480px">
+            <div class="modal-header">
+                <h2>Add Holiday</h2>
+                <button class="modal-close" @onclick="CloseAddModal">✕</button>
+            </div>
+            <div class="modal-body">
+                @if (!string.IsNullOrEmpty(addErrorMessage))
+                {
+                    <div class="alert alert-error" style="margin-bottom:1rem">@addErrorMessage</div>
+                }
+                <div class="form-group">
+                    <label>Holiday Name *</label>
+                    <input type="text" class="form-input" @bind="addHolidayName" placeholder="e.g. Thanksgiving Break" maxlength="100" />
+                </div>
+                <div class="form-group">
+                    <label>Date *</label>
+                    <input type="date" class="form-input" @bind="addHolidayDate" />
+                </div>
+                <div class="form-group">
+                    <label>Hours Credited</label>
+                    <input type="number" class="form-input" @bind="addHoursCredited" step="0.5" min="0" max="24" />
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" @bind="addAppliesToAll" />
+                        Applies to All Campuses
+                    </label>
+                </div>
+                @if (!addAppliesToAll)
+                {
+                    <div class="form-group">
+                        <label>Campus</label>
+                        <select class="form-input" @bind="addCampusId">
+                            <option value="0">-- Select Campus --</option>
+                            @foreach (var c in allCampuses)
+                            {
+                                <option value="@c.CampusId">@c.CampusName</option>
+                            }
+                        </select>
+                    </div>
+                }
+                <div class="form-group">
+                    <label>School Year</label>
+                    <input type="text" class="form-input" @bind="addSchoolYear" placeholder="e.g. 2025-2026" maxlength="9" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseAddModal">Cancel</button>
+                <button class="btn-save" @onclick="SaveNewRow" disabled="@isAdding">
+                    @(isAdding ? "Saving..." : "Add Holiday")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showDeleteConfirm && deleteTarget != null)
+{
+    <div class="modal-overlay" @onclick="() => showDeleteConfirm = false">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:380px">
+            <div class="modal-header" style="background:#7c2d12">
+                <h2>Delete Holiday</h2>
+                <button class="modal-close" @onclick="() => showDeleteConfirm = false">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Delete <strong>@deleteTarget.HolidayName</strong> on
+                   <strong>@deleteTarget.HolidayDate.ToString("MMMM d, yyyy")</strong>?</p>
+                <p style="color:#dc2626; font-size:0.875rem">This cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="() => showDeleteConfirm = false">Cancel</button>
+                <button class="btn-save" style="background:#dc2626" @onclick="DeleteRow">Delete</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showImportModal && importedHolidays.Count > 0)
+{
+    <div class="modal-overlay" @onclick="CloseImportModal">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:720px; max-height:85vh; display:flex; flex-direction:column">
+            <div class="modal-header" style="background:#0d6efd">
+                <h2>Import Calendar PDF</h2>
+                <button class="modal-close" @onclick="CloseImportModal">✕</button>
+            </div>
+            <div class="modal-body" style="overflow-y:auto; flex:1">
+                @if (!string.IsNullOrEmpty(importErrorMessage))
+                {
+                    <div class="alert alert-error" style="margin-bottom:1rem">@importErrorMessage</div>
+                }
+
+                <div class="import-meta">
+                    @if (!string.IsNullOrEmpty(importCampusName))
+                    {
+                        <span class="import-meta-badge">Campus: @importCampusName</span>
+                    }
+                    @if (!string.IsNullOrEmpty(importSchoolYear))
+                    {
+                        <span class="import-meta-badge">Year: @importSchoolYear</span>
+                    }
+                    <span class="import-meta-badge">@importedHolidays.Count date(s) found</span>
+                </div>
+
+                @if (importWarnings.Count > 0)
+                {
+                    <details class="import-warnings" style="margin-bottom:1rem">
+                        <summary>@importWarnings.Count warning(s)</summary>
+                        <ul>
+                            @foreach (var w in importWarnings)
+                            {
+                                <li>@w</li>
+                            }
+                        </ul>
+                    </details>
+                }
+
+                <div class="form-group" style="margin-bottom:1rem">
+                    <label style="font-weight:600">Campus Assignment</label>
+                    <div style="display:flex; gap:1rem; align-items:center; margin-top:0.25rem">
+                        <label><input type="radio" name="importCampusMode" value="all"
+                                      checked="@importAppliesToAll"
+                                      @onchange="() => { importAppliesToAll = true; }" /> All Campuses</label>
+                        <label><input type="radio" name="importCampusMode" value="specific"
+                                      checked="@(!importAppliesToAll)"
+                                      @onchange="() => { importAppliesToAll = false; }" /> Specific Campus</label>
+                        @if (!importAppliesToAll)
+                        {
+                            <select class="form-input" style="width:180px" @bind="importCampusId">
+                                <option value="0">-- Select --</option>
+                                @foreach (var c in allCampuses)
+                                {
+                                    <option value="@c.CampusId">@c.CampusName</option>
+                                }
+                            </select>
+                        }
+                    </div>
+                </div>
+
+                <div style="display:flex; gap:0.5rem; margin-bottom:0.5rem">
+                    <button class="hs-btn-save" @onclick="SelectAllImport">Select All</button>
+                    <button class="hs-btn-save" style="background:#6b7280" @onclick="DeselectAllImport">Deselect All</button>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th style="width:40px">
+                                <input type="checkbox"
+                                       checked="@importedHolidays.All(h => h.Selected)"
+                                       @onchange="e => { if (e.Value is bool b) { if (b) SelectAllImport(); else DeselectAllImport(); } }" />
+                            </th>
+                            <th>Holiday Name</th>
+                            <th>Date</th>
+                            <th>Day</th>
+                            <th>Hours</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (int i = 0; i < importedHolidays.Count; i++)
+                        {
+                            var idx = i;
+                            var h = importedHolidays[idx];
+                            var isDuplicate = existingDates.Contains(h.Date);
+                            <tr class="@(isDuplicate ? "import-duplicate" : "")">
+                                <td>
+                                    <input type="checkbox"
+                                           checked="@h.Selected"
+                                           disabled="@isDuplicate"
+                                           @onchange="e => ToggleImportRow(idx, e.Value is bool b && b)" />
+                                </td>
+                                <td>@h.Name</td>
+                                <td>@h.Date.ToString("MMM d, yyyy")</td>
+                                <td>@h.Date.DayOfWeek.ToString().Substring(0, 3)</td>
+                                <td>@h.HoursCredited.ToString("F1")</td>
+                                <td>
+                                    @if (isDuplicate)
+                                    {
+                                        <span class="import-status dup">Already exists</span>
+                                    }
+                                    else if (h.Selected)
+                                    {
+                                        <span class="import-status new">Will import</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="import-status skip">Skipped</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <span style="font-size:0.85rem; color:#666; margin-right:auto">
+                    @importedHolidays.Count(h => h.Selected && !existingDates.Contains(h.Date)) selected for import
+                </span>
+                <button class="btn-cancel" @onclick="CloseImportModal">Cancel</button>
+                <button class="btn-save" @onclick="SaveImportedHolidays" disabled="@isImporting">
+                    @(isImporting ? "Importing..." : "Import Selected")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .hs-filter-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .hs-filter-label { font-weight: 600; font-size: 0.85rem; color: #374151; }
+    .hs-year-select { width: 130px; }
+    .hs-campus-select { width: 180px; }
+    .hs-dirty-hint { color: #b45309; font-size: 0.8rem; font-weight: 600; margin-left: auto; }
+    .hs-dirty-row { background-color: #fffbeb !important; }
+    tr.past { opacity: 0.6; }
+
+    .hs-name-input { min-width: 180px; }
+    .hs-date-input { width: 150px; }
+    .hs-hours-input { width: 80px; }
+    .hs-checkbox { width: 18px; height: 18px; cursor: pointer; }
+
+    .campus-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;
+        background: #e5e7eb; color: #374151; font-weight: 600; }
+    .campus-badge.all { background: #dbeafe; color: #1e40af; }
+
+    .hs-btn-save { background: #1e3a5f; color: white; border: none; padding: 4px 12px;
+        border-radius: 4px; font-size: 0.8rem; cursor: pointer; }
+    .hs-btn-save:hover { background: #2a4f7f; }
+    .hs-btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .hs-summary { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem;
+        font-size: 0.85rem; color: #666; padding: 0.5rem 0; border-top: 1px solid #e5e7eb; }
+
+    .btn-import { display: inline-block; background: #0d6efd; color: white; border: none; padding: 0.5rem 1rem;
+        border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
+    .btn-import:hover { background: #0b5ed7; }
+
+    .import-meta { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .import-meta-badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem;
+        background: #e0f2fe; color: #0369a1; font-weight: 600; }
+    .import-warnings { font-size: 0.85rem; color: #92400e; background: #fffbeb; padding: 0.5rem 0.75rem; border-radius: 6px; }
+    .import-warnings ul { margin: 0.25rem 0 0 1.25rem; padding: 0; }
+    .import-duplicate { opacity: 0.5; background: #f9fafb !important; }
+    .import-status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .import-status.new { background: #dcfce7; color: #166534; }
+    .import-status.dup { background: #fef3c7; color: #92400e; }
+    .import-status.skip { background: #f3f4f6; color: #6b7280; }
+</style>
+
+@code {
+    private bool isLoading = true;
+    private string successMessage = "";
+    private string errorMessage = "";
+    private string currentUserEmail = "";
+
+    private List<TcHolidaySchedule> allRows = new();
+    private List<TcHolidaySchedule> filteredRows = new();
+    private List<Campus> allCampuses = new();
+    private List<string> allYears = new();
+    private HashSet<int> dirtyRowIds = new();
+    private string filterYear = "";
+    private int filterCampusId = 0;
+    private int savingRowId = 0;
+
+    private bool showAddModal = false;
+    private bool isAdding = false;
+    private string addErrorMessage = "";
+    private string addHolidayName = "";
+    private DateOnly addHolidayDate = DateOnly.FromDateTime(DateTime.Today);
+    private decimal addHoursCredited = 8.0m;
+    private bool addAppliesToAll = true;
+    private int addCampusId = 0;
+    private string addSchoolYear = "2025-2026";
+
+    private bool showDeleteConfirm = false;
+    private TcHolidaySchedule? deleteTarget;
+
+    // PDF Import state
+    private bool showImportModal = false;
+    private bool isImporting = false;
+    private string importErrorMessage = "";
+    private string importCampusName = "";
+    private string importSchoolYear = "";
+    private List<string> importWarnings = new();
+    private List<CalendarPdfParser.ParsedHoliday> importedHolidays = new();
+    private HashSet<DateOnly> existingDates = new();
+    private bool importAppliesToAll = true;
+    private int importCampusId = 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ?? "";
+        await LoadData();
+    }
+
+    private async Task LoadData()
+    {
+        isLoading = true;
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            allCampuses = await context.Campuses.AsNoTracking()
+                .OrderBy(c => c.CampusName)
+                .ToListAsync();
+
+            allRows = await context.TcHolidaySchedules
+                .Include(h => h.Campus)
+                .AsNoTracking()
+                .OrderBy(h => h.SchoolYear)
+                .ThenBy(h => h.HolidayDate)
+                .ToListAsync();
+
+            allYears = allRows
+                .Select(h => h.SchoolYear)
+                .Distinct()
+                .OrderByDescending(y => y)
+                .ToList();
+
+            if (allYears.Count == 0)
+                allYears.Add("2025-2026");
+
+            if (string.IsNullOrEmpty(filterYear))
+                filterYear = allYears.First();
+
+            ApplyFilter();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Load failed: {ex.Message}";
+            Logger.LogError(ex, "Error loading holiday schedule");
+        }
+        finally { isLoading = false; }
+    }
+
+    private void ApplyFilter()
+    {
+        filteredRows = allRows
+            .Where(h => h.SchoolYear == filterYear)
+            .Where(h => filterCampusId == 0 || h.AppliesToAllCampuses || h.CampusId == filterCampusId)
+            .ToList();
+    }
+
+    private void OnNameChanged(TcHolidaySchedule row, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        row.HolidayName = value.Trim();
+        dirtyRowIds.Add(row.HolidayId);
+    }
+
+    private void OnDateChanged(TcHolidaySchedule row, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (!DateOnly.TryParse(value, out var d)) return;
+        row.HolidayDate = d;
+        dirtyRowIds.Add(row.HolidayId);
+    }
+
+    private void OnHoursChanged(TcHolidaySchedule row, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (!decimal.TryParse(value, out var h)) return;
+        row.HoursCredited = h;
+        dirtyRowIds.Add(row.HolidayId);
+    }
+
+    private void OnActiveChanged(TcHolidaySchedule row, bool value)
+    {
+        row.IsActive = value;
+        dirtyRowIds.Add(row.HolidayId);
+    }
+
+    private async Task SaveRow(TcHolidaySchedule row)
+    {
+        savingRowId = row.HolidayId;
+        errorMessage = "";
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var entity = await context.TcHolidaySchedules.FindAsync(row.HolidayId);
+            if (entity == null)
+            {
+                errorMessage = "Record not found. Reload the page.";
+                return;
+            }
+            entity.HolidayName = row.HolidayName;
+            entity.HolidayDate = row.HolidayDate;
+            entity.HoursCredited = row.HoursCredited;
+            entity.IsActive = row.IsActive;
+            entity.ModifiedDate = DateTime.Now;
+            await context.SaveChangesAsync();
+
+            dirtyRowIds.Remove(row.HolidayId);
+            successMessage = $"Saved \"{row.HolidayName}\".";
+            Logger.LogInformation("Holiday {Id} updated by {User}", row.HolidayId, currentUserEmail);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Save failed: {ex.Message}";
+            Logger.LogError(ex, "Error saving holiday {Id}", row.HolidayId);
+        }
+        finally { savingRowId = 0; }
+    }
+
+    private void OpenAddModal()
+    {
+        addErrorMessage = "";
+        addHolidayName = "";
+        addHolidayDate = DateOnly.FromDateTime(DateTime.Today);
+        addHoursCredited = 8.0m;
+        addAppliesToAll = true;
+        addCampusId = allCampuses.FirstOrDefault()?.CampusId ?? 0;
+        addSchoolYear = filterYear;
+        showAddModal = true;
+    }
+
+    private void CloseAddModal()
+    {
+        showAddModal = false;
+        addErrorMessage = "";
+    }
+
+    private async Task SaveNewRow()
+    {
+        addErrorMessage = "";
+        if (string.IsNullOrWhiteSpace(addHolidayName)) { addErrorMessage = "Enter a holiday name."; return; }
+        if (string.IsNullOrWhiteSpace(addSchoolYear)) { addErrorMessage = "Enter a school year."; return; }
+        if (!addAppliesToAll && addCampusId == 0) { addErrorMessage = "Select a campus."; return; }
+
+        isAdding = true;
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            bool duplicate = await context.TcHolidaySchedules
+                .AnyAsync(h => h.HolidayDate == addHolidayDate
+                            && h.HolidayName == addHolidayName
+                            && h.SchoolYear == addSchoolYear);
+            if (duplicate)
+            {
+                addErrorMessage = "A holiday with that name and date already exists for this school year.";
+                return;
+            }
+
+            var newHoliday = new TcHolidaySchedule
+            {
+                HolidayName = addHolidayName.Trim(),
+                HolidayDate = addHolidayDate,
+                HoursCredited = addHoursCredited,
+                CampusId = addAppliesToAll ? null : addCampusId,
+                AppliesToAllCampuses = addAppliesToAll,
+                SchoolYear = addSchoolYear,
+                IsActive = true,
+                CreatedBy = currentUserEmail,
+                CreatedDate = DateTime.Now,
+                ModifiedDate = DateTime.Now
+            };
+
+            context.TcHolidaySchedules.Add(newHoliday);
+            await context.SaveChangesAsync();
+
+            successMessage = $"Added \"{addHolidayName}\" on {addHolidayDate:MMMM d, yyyy}.";
+            Logger.LogInformation("Holiday created by {User}: {Name} on {Date}",
+                currentUserEmail, addHolidayName, addHolidayDate);
+            showAddModal = false;
+            await LoadData();
+
+            if (!allYears.Contains(addSchoolYear))
+            {
+                filterYear = addSchoolYear;
+                allYears.Insert(0, addSchoolYear);
+            }
+            ApplyFilter();
+        }
+        catch (Exception ex)
+        {
+            addErrorMessage = $"Save failed: {ex.Message}";
+            Logger.LogError(ex, "Error creating holiday");
+        }
+        finally { isAdding = false; }
+    }
+
+    private void ConfirmDelete(TcHolidaySchedule row)
+    {
+        deleteTarget = row;
+        showDeleteConfirm = true;
+    }
+
+    private async Task DeleteRow()
+    {
+        showDeleteConfirm = false;
+        if (deleteTarget == null) return;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var entity = await context.TcHolidaySchedules.FindAsync(deleteTarget.HolidayId);
+            if (entity != null)
+            {
+                context.TcHolidaySchedules.Remove(entity);
+                await context.SaveChangesAsync();
+            }
+            successMessage = $"Deleted \"{deleteTarget.HolidayName}\".";
+            dirtyRowIds.Remove(deleteTarget.HolidayId);
+            deleteTarget = null;
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Delete failed: {ex.Message}";
+        }
+    }
+
+    // ── PDF Import methods ──────────────────────────────────────────
+
+    private async Task OnPdfSelected(InputFileChangeEventArgs e)
+    {
+        importErrorMessage = "";
+        errorMessage = "";
+        successMessage = "";
+
+        var file = e.File;
+        if (file == null) return;
+        if (!file.Name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+        {
+            errorMessage = "Please select a PDF file.";
+            return;
+        }
+
+        try
+        {
+            using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+
+            var result = CalendarPdfParser.ParseCalendarPdf(ms);
+
+            importCampusName = result.CampusName;
+            importSchoolYear = string.IsNullOrEmpty(result.SchoolYear) ? filterYear : result.SchoolYear;
+            importWarnings = result.Warnings;
+            importedHolidays = result.Holidays;
+
+            // Auto-detect campus assignment
+            if (!string.IsNullOrEmpty(result.CampusName))
+            {
+                var matchedCampus = allCampuses.FirstOrDefault(c =>
+                    c.CampusName.Contains(result.CampusName, StringComparison.OrdinalIgnoreCase) ||
+                    c.CampusCode.Contains(result.CampusName, StringComparison.OrdinalIgnoreCase));
+                if (matchedCampus != null)
+                {
+                    importAppliesToAll = false;
+                    importCampusId = matchedCampus.CampusId;
+                }
+                else
+                {
+                    importAppliesToAll = true;
+                    importCampusId = 0;
+                }
+            }
+            else
+            {
+                importAppliesToAll = true;
+                importCampusId = 0;
+            }
+
+            // Load existing dates for duplicate detection
+            using var context = await DbFactory.CreateDbContextAsync();
+            var year = importSchoolYear;
+            existingDates = (await context.TcHolidaySchedules
+                .Where(h => h.SchoolYear == year)
+                .Select(h => h.HolidayDate)
+                .ToListAsync())
+                .ToHashSet();
+
+            // Auto-deselect duplicates
+            importedHolidays = importedHolidays
+                .Select(h => existingDates.Contains(h.Date)
+                    ? h with { Selected = false }
+                    : h)
+                .ToList();
+
+            if (importedHolidays.Count == 0)
+            {
+                errorMessage = $"No holiday dates found in \"{file.Name}\". Warnings: {string.Join("; ", importWarnings)}";
+                return;
+            }
+
+            showImportModal = true;
+            Logger.LogInformation("PDF parsed: {File}, {Count} holidays, campus={Campus}, year={Year}",
+                file.Name, importedHolidays.Count, importCampusName, importSchoolYear);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to parse PDF: {ex.Message}";
+            Logger.LogError(ex, "Error parsing calendar PDF {File}", file.Name);
+        }
+    }
+
+    private void ToggleImportRow(int index, bool selected)
+    {
+        var h = importedHolidays[index];
+        importedHolidays[index] = h with { Selected = selected };
+    }
+
+    private void SelectAllImport()
+    {
+        importedHolidays = importedHolidays
+            .Select(h => existingDates.Contains(h.Date) ? h : h with { Selected = true })
+            .ToList();
+    }
+
+    private void DeselectAllImport()
+    {
+        importedHolidays = importedHolidays
+            .Select(h => h with { Selected = false })
+            .ToList();
+    }
+
+    private void CloseImportModal()
+    {
+        showImportModal = false;
+        importedHolidays.Clear();
+        importWarnings.Clear();
+        importErrorMessage = "";
+    }
+
+    private async Task SaveImportedHolidays()
+    {
+        importErrorMessage = "";
+        if (!importAppliesToAll && importCampusId == 0)
+        {
+            importErrorMessage = "Select a campus or choose All Campuses.";
+            return;
+        }
+
+        var toImport = importedHolidays
+            .Where(h => h.Selected && !existingDates.Contains(h.Date))
+            .ToList();
+
+        if (toImport.Count == 0)
+        {
+            importErrorMessage = "No dates selected for import.";
+            return;
+        }
+
+        isImporting = true;
+        StateHasChanged();
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var year = importSchoolYear;
+
+            foreach (var h in toImport)
+            {
+                context.TcHolidaySchedules.Add(new TcHolidaySchedule
+                {
+                    HolidayName = h.Name,
+                    HolidayDate = h.Date,
+                    HoursCredited = h.HoursCredited,
+                    CampusId = importAppliesToAll ? null : importCampusId,
+                    AppliesToAllCampuses = importAppliesToAll,
+                    SchoolYear = year,
+                    IsActive = true,
+                    CreatedBy = currentUserEmail,
+                    CreatedDate = DateTime.Now,
+                    ModifiedDate = DateTime.Now
+                });
+            }
+
+            await context.SaveChangesAsync();
+
+            successMessage = $"Imported {toImport.Count} holiday(s) from PDF.";
+            Logger.LogInformation("{Count} holidays imported from PDF by {User} for {Year}",
+                toImport.Count, currentUserEmail, year);
+
+            showImportModal = false;
+            importedHolidays.Clear();
+
+            // Refresh and switch filter to imported year
+            filterYear = year;
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            importErrorMessage = $"Import failed: {ex.Message}";
+            Logger.LogError(ex, "Error importing holidays from PDF");
+        }
+        finally { isImporting = false; }
+    }
+}

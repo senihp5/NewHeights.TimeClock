@@ -178,11 +178,12 @@
     
     // User type detection - supports both staff (Microsoft) and students (Google)
     private bool isStudent = false;
+#pragma warning disable CS0414 // Reserved for future user-type-specific logic
     private bool isStaff = false;
     private string userType = "Unknown";
-    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+#pragma warning restore CS0414
     private System.Timers.Timer? clockTimer;
-    private DateTime currentTime = DateTime.UtcNow;
+    private DateTime currentTime = DateTime.Now;
     private string userName = "";
     private string? staffIdNumber;
     private string? staffFirstName;
@@ -264,7 +265,7 @@
 
     private void OnClockTick(object? sender, System.Timers.ElapsedEventArgs e)
     {
-        currentTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+        currentTime = DateTime.Now;
         try { InvokeAsync(StateHasChanged); } catch { }
     }
 
@@ -517,19 +518,19 @@
             var transaction = new AttendanceTransaction
             {
                 TransactionType = isStudent ? "STUDENT" : "STAFF",
-                IdNumber = staff.IdNumber,
-                FirstName = staff.FirstName,
-                LastName = staff.LastName,
+                IdNumber = staff.IdNumber ?? string.Empty,
+                FirstName = staff.FirstName ?? string.Empty,
+                LastName = staff.LastName ?? string.Empty,
                 CampusId = nearestCampusId.Value,
                 LocationId = 1,
-                ScanDateTime = DateTime.UtcNow,
+                ScanDateTime = DateTime.Now,
                 ScanType = scanType,
                 ScanMethod = "QR_MOBILE",
                 TerminalId = 0,
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
                 PunchSubType = earlyOutReason,
-                CreatedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now
             };
 
             context.AttendanceTransactions.Add(transaction);
@@ -537,8 +538,8 @@
 
             isSuccess = true;
             lastCheckType = isCheckIn ? "IN" : "OUT";
-            var cstNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
-            var greeting = GetGreeting(cstNow.Hour);
+            var now = DateTime.Now;
+            var greeting = GetGreeting(now.Hour);
             resultMessage = isCheckIn
                 ? $"Good {greeting}, {staff.FirstName}!"
                 : $"Goodbye, {staff.FirstName}!";
@@ -668,22 +669,22 @@
                 LastName = staffLastName ?? "",
                 CampusId = nearestCampusId.Value,
                 LocationId = 1,
-                ScanDateTime = DateTime.UtcNow,
+                ScanDateTime = DateTime.Now,
                 ScanType = scanType,
                 ScanMethod = "GPS",
                 TerminalId = 0,
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
                 PunchSubType = earlyOutReason,
-                CreatedDate = DateTime.UtcNow
+                CreatedDate = DateTime.Now
             };
             context.AttendanceTransactions.Add(transaction);
             await context.SaveChangesAsync();
 
             isSuccess = true;
             lastCheckType = nextActionIsCheckIn ? "IN" : "OUT";
-            var cstNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
-            var greeting = GetGreeting(cstNow.Hour);
+            var now = DateTime.Now;
+            var greeting = GetGreeting(now.Hour);
             resultMessage = nextActionIsCheckIn
                 ? $"Good {greeting}, {staffFirstName}!"
                 : $"Goodbye, {staffFirstName}!";
@@ -756,7 +757,7 @@
 
     private async Task<bool> ShouldPromptEarlyOut(TimeClockDbContext context, int campusId, EmployeeShift shift = EmployeeShift.Day)
     {
-        var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, CentralTimeZone);
+        var now = DateTime.Now;
         var nowTime = TimeOnly.FromDateTime(now);
         var today = now.DayOfWeek;
 

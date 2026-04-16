@@ -168,6 +168,22 @@
     background: #16a34a;
 }
 
+.btn-manual-entry {
+    background: #f5b81c;
+    color: #1e3a5f;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.btn-manual-entry:hover {
+    background: #e5a80c;
+}
+
 .btn-change-campus {
     background: rgba(255,255,255,0.2);
     border: none;
@@ -186,6 +202,7 @@
     padding: 1rem;
     flex: 1;
     overflow: hidden;
+    min-height: 0;
 }
 
 /* On Site Section */
@@ -196,6 +213,7 @@
     border-radius: 12px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
     overflow: hidden;
+    min-height: 0;
 }
 
 .section-toolbar {
@@ -258,6 +276,15 @@
     text-transform: uppercase;
     position: sticky;
     top: 0;
+}
+
+.onsite-table thead th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.onsite-table thead th.sortable:hover {
+    background: #e8ecf1;
 }
 
 .onsite-table tbody tr:hover {

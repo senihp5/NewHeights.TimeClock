@@ -19,7 +19,7 @@ public class EmployeeSyncResult
     public int Skipped { get; set; }
     public List<string> Warnings { get; set; } = new();
     public List<string> Errors { get; set; } = new();
-    public DateTime CompletedAt { get; set; } = DateTime.UtcNow;
+    public DateTime CompletedAt { get; set; } = DateTime.Now;
     public bool Success => !Errors.Any();
 }
 
@@ -40,11 +40,13 @@ public class EmployeeSyncService : IEmployeeSyncService
     // useTransitive=true expands nested group membership (needed for Substitute group)
     private static readonly (string ConfigKey, EmployeeType Type, string? Campus, bool UseTransitive)[] GroupMeta =
     {
-        ( "GraphSync:EmployeeGroupIds:StopSix",           EmployeeType.HourlyStaff,   AppConstants.Campus.StopSixCode, false ),
-        ( "GraphSync:EmployeeGroupIds:McCart",            EmployeeType.HourlyStaff,   AppConstants.Campus.McCartCode,  false ),
-        ( "GraphSync:EmployeeGroupIds:Substitute",        EmployeeType.Substitute,    null,                            true  ),
-        ( "GraphSync:SupervisorGroupIds:StopSix",         EmployeeType.SalariedStaff, AppConstants.Campus.StopSixCode, false ),
-        ( "GraphSync:SupervisorGroupIds:McCart",          EmployeeType.SalariedStaff, AppConstants.Campus.McCartCode,  false ),
+        ( "GraphSync:EmployeeGroupIds:StopSix",           EmployeeType.HourlyStaff,     AppConstants.Campus.StopSixCode, false ),
+        ( "GraphSync:EmployeeGroupIds:McCart",            EmployeeType.HourlyStaff,     AppConstants.Campus.McCartCode,  false ),
+        ( "GraphSync:EmployeeGroupIds:StopSixPT",        EmployeeType.HourlyPartTime,  AppConstants.Campus.StopSixCode, false ),
+        ( "GraphSync:EmployeeGroupIds:McCartPT",         EmployeeType.HourlyPartTime,  AppConstants.Campus.McCartCode,  false ),
+        ( "GraphSync:EmployeeGroupIds:Substitute",        EmployeeType.Substitute,      null,                            true  ),
+        ( "GraphSync:SupervisorGroupIds:StopSix",         EmployeeType.SalariedStaff,   AppConstants.Campus.StopSixCode, false ),
+        ( "GraphSync:SupervisorGroupIds:McCart",          EmployeeType.SalariedStaff,   AppConstants.Campus.McCartCode,  false ),
     };
 
     public EmployeeSyncService(
@@ -155,14 +157,14 @@ public class EmployeeSyncService : IEmployeeSyncService
         foreach (var emp in toDeactivate)
         {
             emp.IsActive = false;
-            emp.ModifiedDate = DateTime.UtcNow;
+            emp.ModifiedDate = DateTime.Now;
             result.Deactivated++;
             _logger.LogInformation("Deactivated employee {Id} - no longer in any group", emp.IdNumber);
         }
 
         if (toDeactivate.Any()) await db.SaveChangesAsync(ct);
 
-        result.CompletedAt = DateTime.UtcNow;
+        result.CompletedAt = DateTime.Now;
         _logger.LogInformation("Sync complete: +{Added} updated:{Updated} deactivated:{Deact} skipped:{Skip} warnings:{Warn} errors:{Err}",
             result.Added, result.Updated, result.Deactivated, result.Skipped, result.Warnings.Count, result.Errors.Count);
 
@@ -241,8 +243,8 @@ public class EmployeeSyncService : IEmployeeSyncService
                 EntraObjectId  = user.ObjectId,
                 DepartmentCode = user.Department,
                 IsActive       = true,
-                CreatedDate    = DateTime.UtcNow,
-                ModifiedDate   = DateTime.UtcNow,
+                CreatedDate    = DateTime.Now,
+                ModifiedDate   = DateTime.Now,
             };
             db.TcEmployees.Add(emp);
             existingByObjectId[user.ObjectId] = emp;
@@ -262,7 +264,7 @@ public class EmployeeSyncService : IEmployeeSyncService
             if (staff != null && emp.StaffDcid != staff.Dcid) { emp.StaffDcid = staff.Dcid;   changed = true; }
             if (!emp.IsActive)                         { emp.IsActive       = true;            changed = true; }
 
-            if (changed) { emp.ModifiedDate = DateTime.UtcNow; result.Updated++; }
+            if (changed) { emp.ModifiedDate = DateTime.Now; result.Updated++; }
             else result.Skipped++;
         }
     }
@@ -356,13 +358,13 @@ public class EmployeeSyncService : IEmployeeSyncService
                         emp.SupervisorEmployeeId != fallback.EmployeeId)
                     {
                         emp.SupervisorEmployeeId = fallback.EmployeeId;
-                        emp.ModifiedDate = DateTime.UtcNow;
+                        emp.ModifiedDate = DateTime.Now;
                     }
                 }
                 else if (emp.SupervisorEmployeeId != null)
                 {
                     emp.SupervisorEmployeeId = null;
-                    emp.ModifiedDate = DateTime.UtcNow;
+                    emp.ModifiedDate = DateTime.Now;
                 }
                 continue;
             }
@@ -372,7 +374,7 @@ public class EmployeeSyncService : IEmployeeSyncService
                 if (emp.SupervisorEmployeeId != managerEmp.EmployeeId)
                 {
                     emp.SupervisorEmployeeId = managerEmp.EmployeeId;
-                    emp.ModifiedDate = DateTime.UtcNow;
+                    emp.ModifiedDate = DateTime.Now;
                 }
             }
             else
@@ -405,7 +407,7 @@ public class EmployeeSyncService : IEmployeeSyncService
                 ConfigType   = "INT",
                 Description  = "Auto-increment counter for substitute employee IDs",
                 ModifiedBy   = "EmployeeSync",
-                ModifiedDate = DateTime.UtcNow
+                ModifiedDate = DateTime.Now
             };
             db.TcSystemConfigs.Add(config);
         }
@@ -413,7 +415,7 @@ public class EmployeeSyncService : IEmployeeSyncService
         {
             next = int.TryParse(config.ConfigValue, out var n) ? n + 1 : 1;
             config.ConfigValue = next.ToString();
-            config.ModifiedDate = DateTime.UtcNow;
+            config.ModifiedDate = DateTime.Now;
         }
         return $"SUB-{next:D4}";
     }

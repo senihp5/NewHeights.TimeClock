@@ -21,8 +21,8 @@ public class TcCalendarEvent
     public string SourceType { get; set; } = "MANUAL";
     public long? SourceId { get; set; }
     public string? CreatedBy { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     public Campus Campus { get; set; } = null!;
     public TcEmployee? Employee { get; set; }

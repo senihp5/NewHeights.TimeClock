@@ -17,7 +17,7 @@ public class TcPayPeriod
     public string SchoolYear { get; set; } = string.Empty;
     public int PeriodNumber { get; set; }
     public DateOnly? EmployeeDeadline { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 
     public ICollection<TcPayPeriodSummary> Summaries { get; set; } = new List<TcPayPeriodSummary>();
     public ICollection<TcPayrollExport> Exports { get; set; } = new List<TcPayrollExport>();

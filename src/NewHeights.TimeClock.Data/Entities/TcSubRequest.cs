@@ -22,8 +22,8 @@ public class TcSubRequest
     public DateTime? SupervisorApprovedDate { get; set; }
     public string? CalendarEventId { get; set; }
     public bool IsCalendarSynced { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     public TcEmployee RequestingEmployee { get; set; } = null!;
     public Campus Campus { get; set; } = null!;

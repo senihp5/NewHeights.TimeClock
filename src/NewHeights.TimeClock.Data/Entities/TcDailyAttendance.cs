@@ -32,8 +32,8 @@ public class TcDailyAttendance
     public string? SupervisorNotes { get; set; }
     
     // Audit
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
     public string? ModifiedBy { get; set; }
 
     // Navigation

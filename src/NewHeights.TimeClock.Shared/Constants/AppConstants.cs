@@ -16,9 +16,13 @@ public static class AppConstants
         public const string SupervisorStopSix = "TimeClock.Supervisor.StopSix";
         public const string SupervisorMcCart  = "TimeClock.Supervisor.McCart";
 
-        // Campus-scoped hourly employees
+        // Campus-scoped hourly employees (full-time, benefits-eligible)
         public const string EmployeeStopSix = "TimeClock.Employee.StopSix";
         public const string EmployeeMcCart  = "TimeClock.Employee.McCart";
+
+        // Campus-scoped hourly employees (part-time, no holiday pay)
+        public const string EmployeeStopSixPT = "TimeClock.Employee.StopSix.PT";
+        public const string EmployeeMcCartPT  = "TimeClock.Employee.McCart.PT";
 
         // Substitutes (any campus, geofenced)
         public const string Substitute  = "TimeClock.Substitute";

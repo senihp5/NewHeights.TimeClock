@@ -41,7 +41,7 @@ public class TcTimePunch
     // DAY or NIGHT - derived from punch time vs TC_StaffHoursWindow
     public string? SessionType { get; set; }
 
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 
     // Navigation
     public TcEmployee? Employee { get; set; }

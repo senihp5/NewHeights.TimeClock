@@ -42,7 +42,7 @@
                                         <span class="live-badge">LIVE</span>
                                     </h2>
                                     <div class="reception-home-actions">
-                                        <span class="last-updated-sm">Updated @ToCst(_lastRefresh).ToString("h:mm:ss tt")</span>
+                                        <span class="last-updated-sm">Updated @_lastRefresh.ToString("h:mm:ss tt")</span>
                                         <button class="btn-refresh-sm" @onclick="RefreshLiveData" disabled="@_liveLoading" title="Refresh">🔄</button>
                                         <a class="btn-open-full" href="/reception" title="Open full reception dashboard">⛶ Full Dashboard</a>
                                         <a class="btn-open-full btn-open-safety" href="/safety" title="Open safety dashboard">🛡️ Safety View</a>
@@ -91,7 +91,7 @@
                                                     <span class="feed-icon">@GetIcon(item.ScanType)</span>
                                                     <span class="feed-name">@item.FirstName @item.LastName</span>
                                                     <span class="feed-type @item.TransactionType.ToLower()">@item.TransactionType</span>
-                                                    <span class="feed-time">@ToCst(item.ScanDateTime).ToString("h:mm tt")</span>
+                                                    <span class="feed-time">@item.ScanDateTime.ToString("h:mm tt")</span>
                                                 </div>
                                             }
                                             @if (!_recentActivity.Any())
@@ -249,12 +249,11 @@
 </div>
 
 @code {
-    private static readonly TimeZoneInfo CentralTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
     private bool _checked = false;
 
     // Live dashboard state — fires for any role covered by RequireReception policy
     private bool _liveLoading = false;
-    private DateTime _lastRefresh = DateTime.UtcNow;
+    private DateTime _lastRefresh = DateTime.Now;
     private int _staffCount = 0;
     private int _studentCount = 0;
     private int _todayTotal = 0;
@@ -409,18 +408,13 @@
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
-            var cstNow = ToCst(DateTime.UtcNow);
-            var today = cstNow.Date;
+            var today = DateTime.Today;
 
-            // Fetch recent transactions and filter by CST date in memory
-            var recentTx = await context.AttendanceTransactions.AsNoTracking()
-                .Where(t => t.CampusId == _selectedCampusId && t.ScanDateTime >= DateTime.UtcNow.AddDays(-1))
+            // ScanDateTime is stored as local time — query directly
+            var todayTx = await context.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.CampusId == _selectedCampusId && t.ScanDateTime >= today)
                 .OrderByDescending(t => t.ScanDateTime)
                 .ToListAsync();
-
-            var todayTx = recentTx
-                .Where(t => ToCst(t.ScanDateTime).Date == today)
-                .ToList();
 
             _todayTotal = todayTx.Count;
 
@@ -450,7 +444,7 @@
                 ScanDateTime = t.ScanDateTime
             }).ToList();
 
-            _lastRefresh = DateTime.UtcNow;
+            _lastRefresh = DateTime.Now;
         }
         catch (Exception ex)
         {
@@ -461,8 +455,6 @@
             _liveLoading = false;
         }
     }
-
-    private static DateTime ToCst(DateTime utcTime) => TimeZoneInfo.ConvertTimeFromUtc(utcTime, CentralTimeZone);
 
     private static string GetIcon(string scanType) => scanType switch
     {

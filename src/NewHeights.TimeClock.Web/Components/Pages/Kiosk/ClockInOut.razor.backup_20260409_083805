@@ -438,7 +438,7 @@
         if (string.IsNullOrWhiteSpace(scannedValue)) return;
 
         // Debounce: Ignore scans within 3 seconds of last scan
-        var now = DateTime.Now;
+        var now = DateTime.UtcNow;
         if ((now - lastScanTime).TotalSeconds < 3)
         {
             Logger.LogInformation("Scan ignored - debounce active (last scan {Seconds:F1}s ago)", (now - lastScanTime).TotalSeconds);
@@ -574,10 +574,10 @@
 
     // ── Early-out helpers ─────────────────────────────────────────────────
 
-    private Task<bool> ShouldPromptEarlyOut(TimeClockDbContext context, int campusId)
+    private async Task<bool> ShouldPromptEarlyOut(TimeClockDbContext context, int campusId)
     {
         // DISABLED: Kiosk never uses early-out prompts (no keyboard for input)
-        return Task.FromResult(false);
+        return false;
     }
 
     private void SelectEarlyOutReason(string code)
@@ -615,7 +615,7 @@
         return await earlyOutTcs.Task;
     }
 
-    private void SubmitEarlyOut(string? reason)
+    private async Task SubmitEarlyOut(string? reason)
     {
         earlyOutTimer?.Stop();
         earlyOutTimer?.Dispose();
@@ -758,7 +758,7 @@
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
-            var cutoff = DateTime.Now.AddSeconds(-30);
+            var cutoff = DateTime.UtcNow.AddSeconds(-30);
             var punch = await context.TcTimePunches
                 .Where(p => p.Employee!.IdNumber == idNumber &&
                             p.PunchType == PunchType.Out &&

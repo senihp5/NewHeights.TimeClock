@@ -37,6 +37,7 @@ public class TimeClockDbContext : DbContext
     public DbSet<TcBellPeriod> TcBellPeriods { get; set; } = null!;
     public DbSet<TcStaffHoursWindow> TcStaffHoursWindows { get; set; } = null!;
     public DbSet<TcMasterSchedule> TcMasterSchedules { get; set; } = null!;
+    public DbSet<TcHolidaySchedule> TcHolidaySchedules { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -441,6 +442,21 @@ public class TimeClockDbContext : DbContext
 
             entity.HasIndex(e => new { e.CampusId, e.TermName, e.SchoolYear });
             entity.HasIndex(e => e.TeacherStaffDcid);
+        });
+
+        modelBuilder.Entity<TcHolidaySchedule>(entity =>
+        {
+            entity.ToTable("TC_HolidaySchedule");
+            entity.HasKey(e => e.HolidayId);
+            entity.Property(e => e.HolidayName).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.HoursCredited).HasColumnType("decimal(5,2)");
+            entity.Property(e => e.SchoolYear).HasMaxLength(9).IsRequired();
+            entity.Property(e => e.CreatedBy).HasMaxLength(100);
+
+            entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(e => e.HolidayDate);
+            entity.HasIndex(e => e.SchoolYear);
         });
     }
 }

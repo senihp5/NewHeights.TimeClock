@@ -29,8 +29,8 @@ public class TcEmployee
     public string? Phone { get; set; }
     public bool IsActive { get; set; } = true;
     public string? EntraObjectId { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     public Staff? Staff { get; set; }
     public Campus? HomeCampus { get; set; }

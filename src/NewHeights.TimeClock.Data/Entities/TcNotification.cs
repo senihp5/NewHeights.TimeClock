@@ -15,7 +15,7 @@ public class TcNotification
     public NotificationStatus Status { get; set; } = NotificationStatus.Queued;
     public DateTime? SentDate { get; set; }
     public string? ErrorMessage { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 
     public TcEmployee RecipientEmployee { get; set; } = null!;
 }

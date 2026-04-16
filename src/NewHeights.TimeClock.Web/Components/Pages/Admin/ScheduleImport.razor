@@ -536,18 +536,18 @@
             string cellC  = ws.Cell(r, 3).GetString().Trim(); // Days pattern
 
             // Period columns
-            string mwP1   = NullIfEmpty(ws.Cell(r, 4).GetString().Trim());
-            string mwP2   = NullIfEmpty(ws.Cell(r, 5).GetString().Trim());
-            string mwP3   = NullIfEmpty(ws.Cell(r, 6).GetString().Trim());
-            string mwP4   = NullIfEmpty(ws.Cell(r, 7).GetString().Trim());
-            string mwP5   = NullIfEmpty(ws.Cell(r, 8).GetString().Trim());
-            string mwP6   = NullIfEmpty(ws.Cell(r, 9).GetString().Trim());
-            string tthP1  = NullIfEmpty(ws.Cell(r, 10).GetString().Trim());
-            string tthP2  = NullIfEmpty(ws.Cell(r, 11).GetString().Trim());
-            string tthP3  = NullIfEmpty(ws.Cell(r, 12).GetString().Trim());
-            string tthP4  = NullIfEmpty(ws.Cell(r, 13).GetString().Trim());
-            string tthP5  = NullIfEmpty(ws.Cell(r, 14).GetString().Trim());
-            string tthP6  = NullIfEmpty(ws.Cell(r, 15).GetString().Trim());
+            string? mwP1   = NullIfEmpty(ws.Cell(r, 4).GetString().Trim());
+            string? mwP2   = NullIfEmpty(ws.Cell(r, 5).GetString().Trim());
+            string? mwP3   = NullIfEmpty(ws.Cell(r, 6).GetString().Trim());
+            string? mwP4   = NullIfEmpty(ws.Cell(r, 7).GetString().Trim());
+            string? mwP5   = NullIfEmpty(ws.Cell(r, 8).GetString().Trim());
+            string? mwP6   = NullIfEmpty(ws.Cell(r, 9).GetString().Trim());
+            string? tthP1  = NullIfEmpty(ws.Cell(r, 10).GetString().Trim());
+            string? tthP2  = NullIfEmpty(ws.Cell(r, 11).GetString().Trim());
+            string? tthP3  = NullIfEmpty(ws.Cell(r, 12).GetString().Trim());
+            string? tthP4  = NullIfEmpty(ws.Cell(r, 13).GetString().Trim());
+            string? tthP5  = NullIfEmpty(ws.Cell(r, 14).GetString().Trim());
+            string? tthP6  = NullIfEmpty(ws.Cell(r, 15).GetString().Trim());
 
             // Strip parenthetical suffixes from teacher name: "Smith, J (PE)" -> last="Smith"
             string rawName = cellA;
@@ -722,7 +722,7 @@
                 .ToListAsync();
             foreach (var e in existing) e.IsActive = false;
 
-            var now = DateTime.UtcNow;
+            var now = DateTime.Now;
             foreach (var row in parsedRows)
             {
                 db.TcMasterSchedules.Add(new TcMasterSchedule

@@ -18,7 +18,7 @@ public class TcCorrectionRequest
     public DateTime? ReviewedDate { get; set; }
     public string? ReviewNotes { get; set; }
     public long? AppliedPunchId { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 
     public TcEmployee Employee { get; set; } = null!;
     public TcTimePunch? OriginalPunch { get; set; }

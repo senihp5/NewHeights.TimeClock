@@ -20,8 +20,8 @@ public class TcBellSchedule
     public string? Notes { get; set; }
     public string? UploadedBy { get; set; }
     public DateTime? UploadedDate { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     // Navigation
     public Campus? Campus { get; set; }

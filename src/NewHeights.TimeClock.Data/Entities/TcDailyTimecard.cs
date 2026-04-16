@@ -28,8 +28,8 @@ public class TcDailyTimecard
     public string? ApprovedBy { get; set; }
     public DateTime? ApprovedDate { get; set; }
     public string? ExceptionNotes { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     // Navigation
     public TcEmployee? Employee { get; set; }

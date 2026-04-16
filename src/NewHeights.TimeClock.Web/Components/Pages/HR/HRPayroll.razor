@@ -195,7 +195,7 @@
         var pp = await context.TcPayPeriods.FirstOrDefaultAsync(p => p.StartDate == currentPayPeriod.StartDate) 
                  ?? new TcPayPeriod { PeriodName = currentPayPeriod.PeriodName, StartDate = currentPayPeriod.StartDate, EndDate = currentPayPeriod.EndDate, PayDate = currentPayPeriod.PayDate };
         if (pp.PayPeriodId == 0) context.TcPayPeriods.Add(pp);
-        pp.Status = PayPeriodStatus.Exported; pp.ExportedDate = DateTime.UtcNow; pp.ExportedBy = currentUserEmail;
+        pp.Status = PayPeriodStatus.Exported; pp.ExportedDate = DateTime.Now; pp.ExportedBy = currentUserEmail;
         await context.SaveChangesAsync();
 
         var fn2 = $"Payroll_{currentPayPeriod.StartDate:yyyyMMdd}.csv";

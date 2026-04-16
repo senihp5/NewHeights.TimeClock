@@ -14,8 +14,8 @@ public class TcPayRule
     public int AutoDeductLunchMinutes { get; set; } = 0;
     public decimal RequireLunchPunchAfterHours { get; set; } = 6.00m;
     public bool IsActive { get; set; } = true;
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     // Navigation
     public ICollection<TcEmployee> Employees { get; set; } = new List<TcEmployee>();

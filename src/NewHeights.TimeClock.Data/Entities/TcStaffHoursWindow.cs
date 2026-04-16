@@ -20,8 +20,8 @@ public class TcStaffHoursWindow
     public bool IsActive { get; set; } = true;
     public string? Notes { get; set; }
     public string? CreatedBy { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     // Navigation
     public Campus? Campus { get; set; }

@@ -19,8 +19,8 @@ public class TcPayPeriodSummary
     public DateTime? SupervisorApprovedDate { get; set; }
     public string? HRApprovedBy { get; set; }
     public DateTime? HRApprovedDate { get; set; }
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     public TcPayPeriod PayPeriod { get; set; } = null!;
     public TcEmployee Employee { get; set; } = null!;

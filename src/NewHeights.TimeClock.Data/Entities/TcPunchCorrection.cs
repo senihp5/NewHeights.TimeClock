@@ -52,10 +52,10 @@ public class TcPunchCorrection
     public string SubmittedByUserId { get; set; } = string.Empty;
     public string SubmittedByName { get; set; } = string.Empty;
     public string? SubmittedByRole { get; set; }
-    public DateTime SubmittedDate { get; set; } = DateTime.UtcNow;
+    public DateTime SubmittedDate { get; set; } = DateTime.Now;
 
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
-    public DateTime ModifiedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
     // Navigation
     public TcEmployee? Employee { get; set; }

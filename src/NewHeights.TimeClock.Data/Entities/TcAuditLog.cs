@@ -37,5 +37,5 @@ public class TcAuditLog
     public string? IPAddress { get; set; }
     public string? SessionId { get; set; }
 
-    public DateTime CreatedDate { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 }
