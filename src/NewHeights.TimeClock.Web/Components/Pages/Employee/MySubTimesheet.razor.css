@@ -1,0 +1,492 @@
+.sub-timesheet-page {
+    padding: 1.5rem;
+    max-width: 1200px;
+    margin: 0 auto;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.sub-timesheet-header {
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 1rem;
+    margin-bottom: 1rem;
+}
+
+.header-brand {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.header-logo {
+    height: 64px;
+    width: auto;
+}
+
+.sub-timesheet-header h1 {
+    margin: 0;
+    font-size: 1.75rem;
+    color: #1f2937;
+}
+
+.header-subtitle {
+    margin: 0.25rem 0 0;
+    color: #6b7280;
+    font-size: 0.9rem;
+}
+
+.employee-info-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    background: #f9fafb;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    border: 1px solid #e5e7eb;
+}
+
+.info-item {
+    display: flex;
+    gap: 0.4rem;
+    align-items: baseline;
+}
+
+.info-label {
+    font-weight: 600;
+    color: #4b5563;
+    font-size: 0.85rem;
+}
+
+.info-value {
+    color: #111827;
+    font-size: 0.95rem;
+}
+
+.info-item.deadline {
+    color: #6b7280;
+}
+
+.info-item.deadline.urgent {
+    color: #b91c1c;
+    font-weight: 600;
+}
+
+.period-navigation {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.25rem;
+    padding: 0.75rem 1rem;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+}
+
+.btn-nav {
+    background: #eef2ff;
+    color: #3730a3;
+    border: 1px solid #c7d2fe;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.btn-nav:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-nav:hover:not(:disabled) {
+    background: #e0e7ff;
+}
+
+.current-period {
+    font-size: 1.05rem;
+    color: #1f2937;
+}
+
+.current-badge {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.5rem;
+    background: #10b981;
+    color: #fff;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.loading,
+.empty-state,
+.today-prompt,
+.error-panel {
+    padding: 1rem 1.25rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+}
+
+.loading {
+    background: #f3f4f6;
+    color: #4b5563;
+    text-align: center;
+}
+
+.empty-state {
+    background: #fafafa;
+    border: 1px dashed #d1d5db;
+    text-align: center;
+    color: #6b7280;
+}
+
+.empty-state h3 {
+    margin: 0 0 0.5rem 0;
+    color: #374151;
+}
+
+.error-panel {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+}
+
+.today-prompt {
+    background: #f0f9ff;
+    border: 1px solid #bae6fd;
+    color: #075985;
+}
+
+.today-prompt h3 {
+    margin: 0 0 0.5rem 0;
+    color: #0c4a6e;
+    font-size: 1.15rem;
+}
+
+.today-prompt-warn {
+    color: #92400e;
+}
+
+.campus-picker-row {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    margin-top: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.campus-picker-row label {
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.9rem;
+}
+
+.campus-picker-row select {
+    padding: 0.4rem 0.5rem;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    background: #fff;
+    color: #111827;
+    min-width: 10rem;
+}
+
+.day-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+}
+
+.day-card.approved {
+    border-color: #10b981;
+}
+
+.day-card.locked {
+    border-color: #6b7280;
+    background: #f9fafb;
+}
+
+.day-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: #f9fafb;
+    border-bottom: 1px solid #e5e7eb;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.day-date {
+    font-weight: 600;
+    color: #111827;
+    font-size: 1.05rem;
+}
+
+.day-campus {
+    color: #4b5563;
+    font-size: 0.9rem;
+    font-style: italic;
+}
+
+.day-status {
+    padding: 0.2rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-approved {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-rejected {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.status-locked {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.day-card-body {
+    padding: 0.75rem 1rem;
+}
+
+.period-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 0.5rem;
+}
+
+.period-table th,
+.period-table td {
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 0.9rem;
+}
+
+.period-table thead th {
+    background: #f9fafb;
+    font-weight: 600;
+    color: #4b5563;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.period-table tbody tr:hover {
+    background: #f9fafb;
+}
+
+.notes-cell {
+    color: #6b7280;
+    font-style: italic;
+    max-width: 18rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.notes-cell.editing {
+    white-space: normal;
+    overflow: visible;
+    max-width: none;
+}
+
+.inline-notes {
+    width: 100%;
+    padding: 0.35rem 0.45rem;
+    border: 1px solid #93c5fd;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-family: inherit;
+    color: #111827;
+    background: #fff;
+    resize: vertical;
+    min-height: 2.5rem;
+}
+
+.inline-notes:disabled {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
+.col-actions {
+    width: 10rem;
+}
+
+.actions-cell {
+    display: flex;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.actions-cell .muted {
+    color: #9ca3af;
+}
+
+.actions-cell button {
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+}
+
+.btn-inline-edit {
+    background: #eef2ff;
+    color: #3730a3;
+    border-color: #c7d2fe;
+}
+
+.btn-inline-edit:hover:not(:disabled) {
+    background: #e0e7ff;
+}
+
+.btn-inline-remove {
+    background: #fef2f2;
+    color: #991b1b;
+    border-color: #fecaca;
+}
+
+.btn-inline-remove:hover:not(:disabled) {
+    background: #fee2e2;
+}
+
+.btn-inline-save {
+    background: #2563eb;
+    color: #fff;
+    border-color: #2563eb;
+}
+
+.btn-inline-save:hover:not(:disabled) {
+    background: #1d4ed8;
+}
+
+.btn-inline-cancel {
+    background: #fff;
+    color: #374151;
+    border-color: #d1d5db;
+}
+
+.btn-inline-cancel:hover:not(:disabled) {
+    background: #f3f4f6;
+}
+
+.btn-confirm-remove {
+    background: #dc2626;
+    color: #fff;
+    border-color: #dc2626;
+}
+
+.btn-confirm-remove:hover:not(:disabled) {
+    background: #b91c1c;
+}
+
+.btn-confirm-remove:disabled,
+.btn-inline-save:disabled,
+.btn-inline-cancel:disabled,
+.btn-inline-edit:disabled,
+.btn-inline-remove:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.session-badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.session-day {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.session-night {
+    background: #ddd6fe;
+    color: #4c1d95;
+}
+
+.no-periods {
+    color: #9ca3af;
+    font-style: italic;
+    margin: 0.5rem 0;
+}
+
+.day-card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 0.5rem;
+    border-top: 1px solid #f3f4f6;
+    margin-top: 0.5rem;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.period-count {
+    color: #4b5563;
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.read-only-note {
+    color: #6b7280;
+    font-style: italic;
+    font-size: 0.85rem;
+}
+
+.btn-add-period {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.btn-add-period:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.btn-add-period:hover:not(:disabled) {
+    background: #1d4ed8;
+}
+
+.pay-period-summary {
+    margin-top: 1rem;
+    padding: 0.85rem 1rem;
+    background: #f3f4f6;
+    border-radius: 6px;
+    color: #374151;
+    font-size: 0.95rem;
+}
+
+.cross-campus-note {
+    color: #6b7280;
+    font-style: italic;
+    margin-left: 0.25rem;
+}

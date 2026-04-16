@@ -592,6 +592,15 @@
 
             if (employee != null)
             {
+                if (employee.EmployeeType == EmployeeType.Substitute)
+                {
+                    Logger.LogInformation(
+                        "Substitute {Email} redirected from /my/timesheet to /my/sub-timesheet (Phase 2).",
+                        currentUserEmail);
+                    Navigation.NavigateTo("/my/sub-timesheet", forceLoad: false);
+                    return;
+                }
+
                 employeeId = employee.EmployeeId;
                 employeeName = employee.Staff?.FullName ?? "Unknown";
                 isHolidayEligible = employee.EmployeeType != EmployeeType.HourlyPartTime

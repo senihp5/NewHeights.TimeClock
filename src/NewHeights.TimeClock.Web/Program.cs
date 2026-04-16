@@ -155,6 +155,9 @@ builder.Services.AddScoped<IAuditService, AuditService>();
 // Master schedule lookup — powers the substitute period picker
 builder.Services.AddScoped<IMasterScheduleLookupService, MasterScheduleLookupService>();
 
+// Substitute timecard service — sub-facing CRUD for period entries (Phase 2)
+builder.Services.AddScoped<ISubstituteTimesheetService, SubstituteTimesheetService>();
+
 // Email Service
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailService, EmailService>();

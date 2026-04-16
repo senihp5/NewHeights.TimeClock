@@ -1,0 +1,358 @@
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IMasterScheduleLookupService ScheduleLookup
+@inject ILogger<SubPeriodPickerModal> Logger
+
+@* ─────────────────────────────────────────────────────────────────────
+   SubPeriodPickerModal
+   Spec: SubstituteTimesheetSpec.md section 5.1 — "Period Picker Modal"
+   Shown by MySubTimesheet (and, later, supervisor add-period flow in
+   Phase 3). Emits PeriodPickerResult on save; parent handles persistence
+   via ISubstituteTimesheetService.AddPeriodEntryAsync.
+   ───────────────────────────────────────────────────────────────────── *@
+
+@if (Visible)
+{
+    <div class="modal-backdrop" @onclick="HandleBackdropClick">
+        <div class="modal-panel" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
+            <div class="modal-header">
+                <h3>Add Period</h3>
+                <button class="btn-close" @onclick="HandleCancel" title="Close" aria-label="Close">×</button>
+            </div>
+
+            <div class="modal-body">
+
+                <div class="form-row">
+                    <label>Session</label>
+                    <div class="session-toggle" role="radiogroup" aria-label="Session">
+                        <button type="button"
+                                class="toggle-btn @(selectedSession == "DAY" ? "active" : "")"
+                                @onclick='() => HandleSessionChangeAsync("DAY")'
+                                disabled="@isSaving">
+                            Day
+                        </button>
+                        <button type="button"
+                                class="toggle-btn @(selectedSession == "NIGHT" ? "active" : "")"
+                                @onclick='() => HandleSessionChangeAsync("NIGHT")'
+                                disabled="@isSaving">
+                            Night
+                        </button>
+                    </div>
+                </div>
+
+                @if (isLoadingPeriods)
+                {
+                    <div class="form-row"><em>Loading @selectedSession bell schedule…</em></div>
+                }
+                else if (bellPeriods.Count == 0)
+                {
+                    <div class="form-row warn">
+                        No active @selectedSession bell schedule for this campus. Ask an admin to upload one
+                        before you can log @selectedSession periods.
+                    </div>
+                }
+                else
+                {
+                    <div class="form-row">
+                        <label for="period-select">Period</label>
+                        <select id="period-select"
+                                @bind="selectedBellPeriodId"
+                                @bind:after="OnPeriodChangedAsync"
+                                disabled="@isSaving">
+                            <option value="0">— Select period —</option>
+                            @foreach (var p in bellPeriods)
+                            {
+                                var alreadyLogged = IsPeriodAlreadyLogged(p.PeriodNumber);
+                                <option value="@p.PeriodId" disabled="@alreadyLogged">
+                                    P@(p.PeriodNumber) — @p.PeriodName
+                                    (@p.StartTime.ToString("h:mm") – @p.EndTime.ToString("h:mm tt"))
+                                    @(alreadyLogged ? "  ✓ already logged" : "")
+                                </option>
+                            }
+                        </select>
+                    </div>
+
+                    @if (selectedBellPeriodId > 0)
+                    {
+                        <div class="form-row">
+                            <label for="teacher-select">Teacher covered</label>
+                            @if (isLoadingTeachers)
+                            {
+                                <em>Loading scheduled teachers…</em>
+                            }
+                            else if (masterSlots.Count == 0)
+                            {
+                                <div class="warn">
+                                    No teachers scheduled for this period on @WorkDate.ToString("dddd, MMM d").
+                                    You can still save — use the notes field to describe the assignment.
+                                </div>
+                                <select id="teacher-select" disabled>
+                                    <option value="0">(no matches)</option>
+                                </select>
+                            }
+                            else
+                            {
+                                <select id="teacher-select" @bind="selectedMasterScheduleId" disabled="@isSaving">
+                                    <option value="0">— Select teacher (optional) —</option>
+                                    @foreach (var slot in masterSlots)
+                                    {
+                                        <option value="@slot.MasterScheduleId">@FormatSlotOption(slot)</option>
+                                    }
+                                </select>
+                            }
+                        </div>
+
+                        @if (selectedSlot != null)
+                        {
+                            <div class="form-row auto-filled">
+                                <label>Auto-filled from master schedule</label>
+                                <div class="snapshot">
+                                    <div><strong>Content Area:</strong> @(selectedSlot.ContentArea ?? "—")</div>
+                                    <div><strong>Course:</strong> @(selectedSlot.CourseName ?? selectedSlot.ContentArea ?? "—")</div>
+                                    <div><strong>Room:</strong> @(selectedSlot.Room ?? "—")</div>
+                                </div>
+                            </div>
+                        }
+                    }
+
+                    <div class="form-row">
+                        <label for="notes-input">Notes (optional)</label>
+                        <textarea id="notes-input" @bind="notes" rows="2" maxlength="500"
+                                  placeholder="e.g. 'Covered partial period — teacher returned at 8:45'"
+                                  disabled="@isSaving"></textarea>
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="form-row error">@errorMessage</div>
+                }
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" @onclick="HandleCancel" disabled="@isSaving">Cancel</button>
+                <button type="button" class="btn-primary" @onclick="HandleSaveAsync"
+                        disabled="@(!CanSave() || isSaving)">
+                    @(isSaving ? "Saving…" : "Save Period")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public int CampusId { get; set; }
+    [Parameter] public DateOnly WorkDate { get; set; }
+
+    /// <summary>
+    /// Existing period entries on the parent card — used to grey-out periods
+    /// the sub has already logged for the active session. Pass null when the
+    /// parent doesn't yet have a card (e.g. first period of the day).
+    /// </summary>
+    [Parameter] public IReadOnlyList<TcSubstitutePeriodEntry>? ExistingEntries { get; set; }
+
+    [Parameter] public EventCallback<PeriodPickerResult> OnSave { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private string selectedSession = "DAY";
+    private int selectedBellPeriodId = 0;
+    private int selectedMasterScheduleId = 0;
+    private string notes = "";
+
+    private List<TcBellPeriod> bellPeriods = new();
+    private List<MasterScheduleSlot> masterSlots = new();
+
+    private MasterScheduleSlot? selectedSlot
+        => selectedMasterScheduleId > 0
+            ? masterSlots.FirstOrDefault(s => s.MasterScheduleId == selectedMasterScheduleId)
+            : null;
+
+    private bool isLoadingPeriods = false;
+    private bool isLoadingTeachers = false;
+    private bool isSaving = false;
+    private string errorMessage = "";
+
+    private bool _loadedForThisOpen = false;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Visible && !_loadedForThisOpen)
+        {
+            _loadedForThisOpen = true;
+            ResetFormState();
+            await LoadPeriodsAsync();
+        }
+        else if (!Visible)
+        {
+            _loadedForThisOpen = false;
+        }
+    }
+
+    private void ResetFormState()
+    {
+        selectedSession = "DAY";
+        selectedBellPeriodId = 0;
+        selectedMasterScheduleId = 0;
+        notes = "";
+        bellPeriods = new();
+        masterSlots = new();
+        errorMessage = "";
+    }
+
+    private async Task HandleSessionChangeAsync(string session)
+    {
+        if (session == selectedSession) return;
+        selectedSession = session;
+        selectedBellPeriodId = 0;
+        selectedMasterScheduleId = 0;
+        masterSlots = new();
+        await LoadPeriodsAsync();
+    }
+
+    private async Task LoadPeriodsAsync()
+    {
+        if (CampusId <= 0)
+        {
+            errorMessage = "Campus not set. Close and reopen the picker.";
+            return;
+        }
+
+        isLoadingPeriods = true;
+        errorMessage = "";
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var schedule = await ctx.TcBellSchedules
+                .AsNoTracking()
+                .Include(s => s.Periods)
+                .Where(s => s.CampusId == CampusId
+                         && s.SessionType == selectedSession
+                         && s.IsActive)
+                .OrderByDescending(s => s.IsDefault)
+                .ThenByDescending(s => s.CreatedDate)
+                .FirstOrDefaultAsync();
+
+            bellPeriods = schedule?.Periods
+                .Where(p => p.IsActive && p.PeriodType == "CLASS")
+                .OrderBy(p => p.PeriodNumber)
+                .ToList() ?? new List<TcBellPeriod>();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Failed to load bell periods for campus {CampusId} session {Session}",
+                CampusId, selectedSession);
+            errorMessage = "Could not load bell periods. Close and try again.";
+            bellPeriods = new();
+        }
+        finally
+        {
+            isLoadingPeriods = false;
+        }
+    }
+
+    private async Task OnPeriodChangedAsync()
+    {
+        masterSlots = new();
+        selectedMasterScheduleId = 0;
+        errorMessage = "";
+
+        if (selectedBellPeriodId <= 0) return;
+
+        var period = bellPeriods.FirstOrDefault(p => p.PeriodId == selectedBellPeriodId);
+        if (period == null) return;
+
+        isLoadingTeachers = true;
+        try
+        {
+            masterSlots = await ScheduleLookup.GetTeachersForPeriodAsync(
+                CampusId, WorkDate, period.PeriodNumber, selectedSession);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Failed to load teachers for campus {CampusId} period {Period} session {Session} date {Date}",
+                CampusId, period.PeriodNumber, selectedSession, WorkDate);
+            errorMessage = "Could not load teacher list. Saving without a teacher match is still allowed.";
+            masterSlots = new();
+        }
+        finally
+        {
+            isLoadingTeachers = false;
+        }
+    }
+
+    private bool IsPeriodAlreadyLogged(int periodNumber)
+    {
+        if (ExistingEntries == null || ExistingEntries.Count == 0)
+            return false;
+        return ExistingEntries.Any(e =>
+            e.PeriodNumber == periodNumber
+         && string.Equals(e.SessionType, selectedSession, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool CanSave()
+    {
+        return selectedBellPeriodId > 0
+            && !isLoadingPeriods
+            && !isLoadingTeachers
+            && !IsPeriodAlreadyLogged(GetSelectedPeriodNumber());
+    }
+
+    private int GetSelectedPeriodNumber()
+    {
+        var p = bellPeriods.FirstOrDefault(b => b.PeriodId == selectedBellPeriodId);
+        return p?.PeriodNumber ?? 0;
+    }
+
+    private static string FormatSlotOption(MasterScheduleSlot slot)
+    {
+        var extras = new List<string>();
+        if (!string.IsNullOrWhiteSpace(slot.ContentArea)) extras.Add(slot.ContentArea!);
+        if (!string.IsNullOrWhiteSpace(slot.Room)) extras.Add($"Rm {slot.Room}");
+        return extras.Count > 0
+            ? $"{slot.TeacherName}  —  {string.Join(" · ", extras)}"
+            : slot.TeacherName;
+    }
+
+    private async Task HandleSaveAsync()
+    {
+        if (!CanSave()) return;
+        isSaving = true;
+        errorMessage = "";
+        try
+        {
+            var result = new PeriodPickerResult(
+                BellPeriodId: selectedBellPeriodId,
+                MasterScheduleId: selectedMasterScheduleId > 0 ? selectedMasterScheduleId : null,
+                SessionType: selectedSession,
+                Notes: string.IsNullOrWhiteSpace(notes) ? null : notes.Trim());
+
+            await OnSave.InvokeAsync(result);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SubPeriodPickerModal.HandleSaveAsync failed during OnSave callback.");
+            errorMessage = $"Save failed: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task HandleCancel()
+    {
+        if (isSaving) return;
+        await OnCancel.InvokeAsync();
+    }
+
+    private async Task HandleBackdropClick()
+    {
+        await HandleCancel();
+    }
+}
