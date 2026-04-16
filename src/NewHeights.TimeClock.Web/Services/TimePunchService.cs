@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
+using NewHeights.TimeClock.Shared.Audit;
 using NewHeights.TimeClock.Shared.Enums;
 using NewHeights.TimeClock.Shared.DTOs;
 
@@ -21,12 +22,18 @@ public class TimePunchService : ITimePunchService
 {
     private readonly TimeClockDbContext _context;
     private readonly IGeofenceService _geofenceService;
+    private readonly IAuditService _audit;
     private readonly ILogger<TimePunchService> _logger;
 
-    public TimePunchService(TimeClockDbContext context, IGeofenceService geofenceService, ILogger<TimePunchService> logger)
+    public TimePunchService(
+        TimeClockDbContext context,
+        IGeofenceService geofenceService,
+        IAuditService audit,
+        ILogger<TimePunchService> logger)
     {
         _context = context;
         _geofenceService = geofenceService;
+        _audit = audit;
         _logger = logger;
     }
 
@@ -183,6 +190,31 @@ public class TimePunchService : ITimePunchService
             _context.TcTimePunches.Add(punch);
             await _context.SaveChangesAsync();
 
+            // Audit: PUNCH_CREATED. Source defaults to KIOSK — MobileClock.razor can later
+            // pass an explicit PunchRequest.Source override without changing this service.
+            // Fires AFTER save so punch.PunchId is populated.
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.Punch.Created,
+                entityType: AuditEntityTypes.Punch,
+                entityId: punch.PunchId.ToString(),
+                newValues: new
+                {
+                    punch.PunchId,
+                    punch.EmployeeId,
+                    punch.CampusId,
+                    PunchType = punch.PunchType.ToString(),
+                    punch.PunchDateTime,
+                    punch.RoundedDateTime,
+                    GeofenceStatus = punch.GeofenceStatus.ToString(),
+                    punch.ScanMethod,
+                    punch.VerificationMethod
+                },
+                deltaSummary: $"{punchType} punch at campus {campusId} for {employee.Staff?.FullName ?? employee.IdNumber}",
+                source: AuditSource.Kiosk,
+                employeeId: employee.EmployeeId,
+                campusId: campusId,
+                punchId: punch.PunchId);
+
             // Check for early checkout and flag if needed (server-side, no user prompt)
             if (punchType == PunchType.Out || punchType == PunchType.LunchOut)
             {
@@ -231,6 +263,7 @@ public class TimePunchService : ITimePunchService
         var punches = await GetTodayPunchesAsync(employeeId);
         var totalHours = await GetTodayHoursAsync(employeeId);
 
+        var isNewTimecard = false;
         if (timecard == null)
         {
             timecard = new TcDailyTimecard
@@ -242,6 +275,7 @@ public class TimePunchService : ITimePunchService
                 CreatedDate = DateTime.Now
             };
             _context.TcDailyTimecards.Add(timecard);
+            isNewTimecard = true;
         }
 
         timecard.FirstPunchIn = punches.FirstOrDefault(p => p.PunchType == PunchType.In)?.PunchDateTime;
@@ -252,6 +286,30 @@ public class TimePunchService : ITimePunchService
         timecard.ModifiedDate = DateTime.Now;
 
         await _context.SaveChangesAsync();
+
+        // Audit: TIMECARD_CREATED fires only on first-punch-of-day creation. We intentionally
+        // do NOT audit every timecard recalculation here — that would produce one audit row
+        // per punch, overwhelming the log. TIMECARD_RECALCULATED fires from TimesheetService
+        // on explicit recalc requests instead.
+        if (isNewTimecard)
+        {
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.Timecard.Created,
+                entityType: AuditEntityTypes.Timecard,
+                entityId: timecard.TimecardId.ToString(),
+                newValues: new
+                {
+                    timecard.TimecardId,
+                    timecard.EmployeeId,
+                    timecard.CampusId,
+                    timecard.WorkDate,
+                    ApprovalStatus = timecard.ApprovalStatus.ToString()
+                },
+                deltaSummary: $"Daily timecard opened for {workDateOnly:yyyy-MM-dd} on first punch",
+                source: AuditSource.System,
+                employeeId: employeeId,
+                campusId: campusId);
+        }
     }
 
     private async Task<string?> GetEmployeePhotoBase64Async(int staffDcid)
@@ -308,6 +366,28 @@ public class TimePunchService : ITimePunchService
 
                 _logger.LogInformation("Early checkout flagged for supervisor review: Employee={Id}, Time={Time}",
                                     punch.EmployeeId, punch.PunchDateTime);
+
+                // Audit: PUNCH_EARLY_OUT_FLAG — lets supervisors filter on "what went home early today"
+                // without having to scan every punch. Source=SYSTEM because the flag is set by
+                // the rule engine, not by a user action.
+                await _audit.LogActionAsync(
+                    actionCode: AuditActions.Punch.EarlyOutFlag,
+                    entityType: AuditEntityTypes.Punch,
+                    entityId: punch.PunchId.ToString(),
+                    newValues: new
+                    {
+                        punch.PunchId,
+                        punch.PunchSubType,
+                        punch.PunchDateTime,
+                        ExpectedDeparture = window.ExpectedDepartureTime,
+                        window.SessionType
+                    },
+                    deltaSummary: $"Early OUT at {punchTime} (expected ≥ {window.ExpectedDepartureTime}, session {window.SessionType})",
+                    source: AuditSource.System,
+                    employeeId: punch.EmployeeId,
+                    campusId: campusId,
+                    punchId: punch.PunchId);
+
                 return true;
             }
         }

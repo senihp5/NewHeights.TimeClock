@@ -149,6 +149,12 @@ builder.Services.AddScoped<IUserContextService, UserContextService>();
 builder.Services.AddSingleton<IGraphService, GraphService>();
 builder.Services.AddScoped<IEmployeeSyncService, EmployeeSyncService>();
 
+// Audit log service — writes to TC_AuditLog for all state-changing operations
+builder.Services.AddScoped<IAuditService, AuditService>();
+
+// Master schedule lookup — powers the substitute period picker
+builder.Services.AddScoped<IMasterScheduleLookupService, MasterScheduleLookupService>();
+
 // Email Service
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailService, EmailService>();

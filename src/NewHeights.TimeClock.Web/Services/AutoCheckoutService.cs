@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
+using NewHeights.TimeClock.Shared.Audit;
 using NewHeights.TimeClock.Shared.Enums;
 
 namespace NewHeights.TimeClock.Web.Services;
@@ -72,6 +73,7 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
     {
         using var scope = _scopeFactory.CreateScope();
         var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<TimeClockDbContext>>();
+        var audit = scope.ServiceProvider.GetRequiredService<IAuditService>();
         using var context = await dbFactory.CreateDbContextAsync();
 
         var now = DateTime.Now;
@@ -126,8 +128,29 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
                 await context.SaveChangesAsync();
 
                 var empName = inPunch.Employee?.Staff?.FullName ?? $"EmployeeID {inPunch.EmployeeId}";
-                _logger.LogInformation("Auto-checkout created for {Employee} - IN:{InPunchId} OUT:{OutPunchId}", 
+                _logger.LogInformation("Auto-checkout created for {Employee} - IN:{InPunchId} OUT:{OutPunchId}",
                     empName, inPunch.PunchId, outPunch.PunchId);
+
+                // Audit: one AUTO_CHECKOUT row per auto-generated OUT punch.
+                // Source=SYSTEM because there is no authenticated user in the BackgroundService loop.
+                await audit.LogActionAsync(
+                    actionCode: AuditActions.AutoCheckout.Created,
+                    entityType: AuditEntityTypes.Punch,
+                    entityId: outPunch.PunchId.ToString(),
+                    newValues: new
+                    {
+                        outPunch.PunchId,
+                        outPunch.EmployeeId,
+                        outPunch.CampusId,
+                        outPunch.PunchDateTime,
+                        PairedInPunchId = inPunch.PunchId,
+                        outPunch.SessionType
+                    },
+                    deltaSummary: $"Auto-checkout at {autoCheckoutTime:HH:mm} paired with IN punch #{inPunch.PunchId} for {empName}",
+                    source: AuditSource.System,
+                    employeeId: inPunch.EmployeeId,
+                    campusId: inPunch.CampusId,
+                    punchId: outPunch.PunchId);
 
                 // TODO: Send notification to employee and supervisor
                 // await _emailService.SendAutoCheckoutNotificationAsync(inPunch.EmployeeId, autoCheckoutTimeCst);

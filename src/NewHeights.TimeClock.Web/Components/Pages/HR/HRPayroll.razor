@@ -3,6 +3,7 @@
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireHR")]
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Shared.Constants
 @using NewHeights.TimeClock.Shared.Enums
 @using NewHeights.TimeClock.Data
@@ -15,6 +16,7 @@
 @inject ITimesheetService TimesheetService
 @inject IPayPeriodService PayPeriodService
 @inject IEmailService EmailService
+@inject IAuditService Audit
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -192,13 +194,40 @@
         }
 
         using var context = await DbFactory.CreateDbContextAsync();
-        var pp = await context.TcPayPeriods.FirstOrDefaultAsync(p => p.StartDate == currentPayPeriod.StartDate) 
+        var pp = await context.TcPayPeriods.FirstOrDefaultAsync(p => p.StartDate == currentPayPeriod.StartDate)
                  ?? new TcPayPeriod { PeriodName = currentPayPeriod.PeriodName, StartDate = currentPayPeriod.StartDate, EndDate = currentPayPeriod.EndDate, PayDate = currentPayPeriod.PayDate };
         if (pp.PayPeriodId == 0) context.TcPayPeriods.Add(pp);
         pp.Status = PayPeriodStatus.Exported; pp.ExportedDate = DateTime.Now; pp.ExportedBy = currentUserEmail;
         await context.SaveChangesAsync();
 
         var fn2 = $"Payroll_{currentPayPeriod.StartDate:yyyyMMdd}.csv";
+
+        // Audit: PAYROLL_EXPORTED. One row per export action with aggregate payroll figures
+        // so compliance can reconstruct what was sent to CSS/Ascender without re-running the
+        // query. Fires before the JS download prompt — order matters because the JS call
+        // opens a file-save dialog and we want the audit row durable regardless of whether
+        // the user saves or cancels the download.
+        var exportedEmployees = payrollSummaries.Where(p => p.HRApproved).ToList();
+        await Audit.LogActionAsync(
+            actionCode: AuditActions.Payroll.Exported,
+            entityType: AuditEntityTypes.PayPeriod,
+            entityId: pp.PayPeriodId.ToString(),
+            newValues: new
+            {
+                pp.PayPeriodId,
+                pp.PeriodName,
+                pp.StartDate,
+                pp.EndDate,
+                EmployeeCount = exportedEmployees.Count,
+                TotalRegularHours = exportedEmployees.Sum(e => e.RegularHours),
+                TotalOvertimeHours = exportedEmployees.Sum(e => e.OvertimeHours),
+                TotalHours = exportedEmployees.Sum(e => e.RegularHours + e.OvertimeHours),
+                FileName = fn2,
+                ExportedBy = currentUserEmail
+            },
+            deltaSummary: $"Exported payroll for {pp.PeriodName} ({exportedEmployees.Count} employees, {exportedEmployees.Sum(e => e.RegularHours + e.OvertimeHours):F2}h total) as {fn2}",
+            source: AuditSource.AdminUi);
+
         await JS.InvokeVoidAsync("downloadFile", fn2, Convert.ToBase64String(Encoding.UTF8.GetBytes(csv.ToString())));
         await LoadPayrollData();
     }

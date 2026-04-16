@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
+using NewHeights.TimeClock.Shared.Audit;
 using NewHeights.TimeClock.Shared.Constants;
 using NewHeights.TimeClock.Shared.Enums;
 
@@ -29,6 +30,7 @@ public class EmployeeSyncService : IEmployeeSyncService
     private readonly IGraphService _graph;
     private readonly IConfiguration _config;
     private readonly ILogger<EmployeeSyncService> _logger;
+    private readonly IAuditService _audit;
 
     // Config key -> (EmployeeType, campus code)
     // Priority order: first entry wins when a user appears in multiple groups.
@@ -53,18 +55,30 @@ public class EmployeeSyncService : IEmployeeSyncService
         IDbContextFactory<TimeClockDbContext> dbFactory,
         IGraphService graph,
         IConfiguration config,
-        ILogger<EmployeeSyncService> logger)
+        ILogger<EmployeeSyncService> logger,
+        IAuditService audit)
     {
         _dbFactory = dbFactory;
         _graph = graph;
         _config = config;
         _logger = logger;
+        _audit = audit;
     }
 
     public async Task<EmployeeSyncResult> SyncFromEntraAsync(CancellationToken ct = default)
     {
         var result = new EmployeeSyncResult();
         _logger.LogInformation("Starting Entra employee sync");
+
+        // Audit: batch start. EntityId is a constant marker since this is a batch-scope event
+        // with no single entity target. AdminUi source because sync is triggered from
+        // the EmployeeSync.razor admin page.
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.EmployeeSync.SyncStarted,
+            entityType: AuditEntityTypes.System,
+            entityId: "ENTRA_SYNC",
+            source: AuditSource.AdminUi,
+            ct: ct);
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
 
@@ -118,6 +132,16 @@ public class EmployeeSyncService : IEmployeeSyncService
             .Where(s => s.FirstName != null && s.LastName != null)
             .GroupBy(s => (s.FirstName! + "." + s.LastName!).ToLower())
             .ToDictionary(g => g.Key, g => g.First());
+        // Also index by first-initial+lastname (e.g., "galvarez" for Griselda Alvarez)
+        var staffByInitialLastName = allStaff
+            .Where(s => !string.IsNullOrEmpty(s.FirstName) && !string.IsNullOrEmpty(s.LastName))
+            .GroupBy(s => (s.FirstName![0] + s.LastName!).ToLower())
+            .ToDictionary(g => g.Key, g => g.First());
+        // Also index by FirstName + " " + LastName for Graph DisplayName matching
+        var staffByFullName = allStaff
+            .Where(s => !string.IsNullOrEmpty(s.FirstName) && !string.IsNullOrEmpty(s.LastName))
+            .GroupBy(s => (s.FirstName! + " " + s.LastName!).ToLower())
+            .ToDictionary(g => g.Key, g => g.First());
 
         var seenObjectIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -129,7 +153,8 @@ public class EmployeeSyncService : IEmployeeSyncService
             try
             {
                 await SyncOneUserAsync(db, result, user, empType, campusCode, campuses,
-                    existing, existingByEmail, staffByIdNumber, staffByUpnPrefix, ct);
+                    existing, existingByEmail, staffByIdNumber, staffByUpnPrefix,
+                    staffByInitialLastName, staffByFullName, ct);
             }
             catch (Exception ex)
             {
@@ -160,6 +185,17 @@ public class EmployeeSyncService : IEmployeeSyncService
             emp.ModifiedDate = DateTime.Now;
             result.Deactivated++;
             _logger.LogInformation("Deactivated employee {Id} - no longer in any group", emp.IdNumber);
+
+            // Audit: per-user deactivation. EmployeeId is known (loaded from DB).
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.EmployeeSync.Deactivated,
+                entityType: AuditEntityTypes.Employee,
+                entityId: emp.EmployeeId.ToString(),
+                deltaSummary: $"Deactivated {emp.DisplayName ?? emp.IdNumber} — no longer in any Entra group",
+                source: AuditSource.AdminUi,
+                employeeId: emp.EmployeeId,
+                campusId: emp.HomeCampusId,
+                ct: ct);
         }
 
         if (toDeactivate.Any()) await db.SaveChangesAsync(ct);
@@ -167,6 +203,28 @@ public class EmployeeSyncService : IEmployeeSyncService
         result.CompletedAt = DateTime.Now;
         _logger.LogInformation("Sync complete: +{Added} updated:{Updated} deactivated:{Deact} skipped:{Skip} warnings:{Warn} errors:{Err}",
             result.Added, result.Updated, result.Deactivated, result.Skipped, result.Warnings.Count, result.Errors.Count);
+
+        // Audit: batch end with full result summary in NewValues. Fires only on the
+        // happy path — early-return failure paths still audit SYNC_STARTED but not
+        // SYNC_COMPLETED, which is intentional so compliance queries can detect
+        // "started but never completed" as a signal of failure.
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.EmployeeSync.SyncCompleted,
+            entityType: AuditEntityTypes.System,
+            entityId: "ENTRA_SYNC",
+            newValues: new
+            {
+                result.Added,
+                result.Updated,
+                result.Deactivated,
+                result.Skipped,
+                WarningCount = result.Warnings.Count,
+                ErrorCount = result.Errors.Count,
+                result.CompletedAt
+            },
+            deltaSummary: $"Added {result.Added}, Updated {result.Updated}, Deactivated {result.Deactivated}, Skipped {result.Skipped}, Warnings {result.Warnings.Count}, Errors {result.Errors.Count}",
+            source: AuditSource.AdminUi,
+            ct: ct);
 
         return result;
     }
@@ -182,18 +240,38 @@ public class EmployeeSyncService : IEmployeeSyncService
         Dictionary<string, TcEmployee> existingByEmail,
         Dictionary<string, Staff> staffByIdNumber,
         Dictionary<string, Staff> staffByUpnPrefix,
+        Dictionary<string, Staff> staffByInitialLastName,
+        Dictionary<string, Staff> staffByFullName,
         CancellationToken ct)
     {
         Staff? staff = null;
 
-        // Match by UPN prefix (firstname.lastname) first — unique per person
-        var upn = (user.Email ?? "").ToLower();
-        var atIdx = upn.IndexOf('@');
-        var upnPrefix = atIdx > 0 ? upn[..atIdx] : upn;
-        if (!string.IsNullOrEmpty(upnPrefix) && staffByUpnPrefix.TryGetValue(upnPrefix, out var byUpn))
-            staff = byUpn;
+        // Strategy 1: Graph DisplayName match (e.g., "Griselda Alvarez")
+        var displayNameKey = (user.DisplayName ?? "").ToLower().Trim();
+        if (!string.IsNullOrEmpty(displayNameKey) && staffByFullName.TryGetValue(displayNameKey, out var byName))
+            staff = byName;
 
-        // Fall back to EmployeeId -> IdNumber match (can collide across roles)
+        // Strategy 2: UPN prefix as firstname.lastname (e.g., "griselda.alvarez")
+        if (staff == null)
+        {
+            var upn = (user.Email ?? "").ToLower();
+            var atIdx = upn.IndexOf('@');
+            var upnPrefix = atIdx > 0 ? upn[..atIdx] : upn;
+            if (!string.IsNullOrEmpty(upnPrefix) && staffByUpnPrefix.TryGetValue(upnPrefix, out var byUpn))
+                staff = byUpn;
+        }
+
+        // Strategy 3: UPN prefix as first-initial+lastname (e.g., "galvarez")
+        if (staff == null)
+        {
+            var upn = (user.Email ?? "").ToLower();
+            var atIdx = upn.IndexOf('@');
+            var upnPrefix = atIdx > 0 ? upn[..atIdx] : upn;
+            if (!string.IsNullOrEmpty(upnPrefix) && staffByInitialLastName.TryGetValue(upnPrefix, out var byInit))
+                staff = byInit;
+        }
+
+        // Strategy 4: EmployeeId -> IdNumber (last resort, can collide across roles)
         if (staff == null)
         {
             var empIdKey = (user.EmployeeId ?? "").TrimStart('0').ToLower();
@@ -237,41 +315,118 @@ public class EmployeeSyncService : IEmployeeSyncService
         {
             emp = new TcEmployee
             {
-                StaffDcid      = staff?.Dcid,
-                DisplayName    = user.DisplayName,
-                IdNumber       = staff?.IdNumber ?? await GetNextSubIdAsync(db, ct),
-                Email          = user.Email,
-                EmployeeType   = empType,
-                Shift          = mappedShift,
-                HomeCampusId   = campusId,
-                EntraObjectId  = user.ObjectId,
-                DepartmentCode = user.Department,
-                IsActive       = true,
-                CreatedDate    = DateTime.Now,
-                ModifiedDate   = DateTime.Now,
+                StaffDcid          = staff?.Dcid,
+                DisplayName        = user.DisplayName,
+                IdNumber           = staff?.IdNumber ?? await GetNextSubIdAsync(db, ct),
+                AscenderEmployeeId = PadAscenderId(user.EmployeeId),
+                Email              = user.Email,
+                EmployeeType       = empType,
+                Shift              = mappedShift,
+                HomeCampusId       = campusId,
+                EntraObjectId      = user.ObjectId,
+                DepartmentCode     = user.Department,
+                IsActive           = true,
+                CreatedDate        = DateTime.Now,
+                ModifiedDate       = DateTime.Now,
             };
             db.TcEmployees.Add(emp);
             existingByObjectId[user.ObjectId] = emp;
             if (!string.IsNullOrEmpty(user.Email)) existingByEmail[user.Email.ToLower()] = emp;
             result.Added++;
             _logger.LogInformation("Added employee {Name} ({Email}) as {Type} shift={Shift}", user.DisplayName, user.Email, empType, emp.Shift);
+
+            // Audit: per-user creation. EmployeeId is not yet assigned (bulk SaveChanges
+            // runs later), so EntityId uses EntraObjectId, which IS stable. Post-save
+            // queries can join EntraObjectId -> TC_Employees.EmployeeId when needed.
+            var staffMatchNote = staff != null ? $" [staff-matched to {staff.FirstName} {staff.LastName}]" : "";
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.EmployeeSync.Created,
+                entityType: AuditEntityTypes.Employee,
+                entityId: user.ObjectId,
+                newValues: new
+                {
+                    emp.EntraObjectId,
+                    emp.DisplayName,
+                    emp.Email,
+                    emp.IdNumber,
+                    emp.AscenderEmployeeId,
+                    EmployeeType = emp.EmployeeType.ToString(),
+                    Shift = emp.Shift.ToString(),
+                    emp.HomeCampusId,
+                    emp.StaffDcid
+                },
+                deltaSummary: $"Added {user.DisplayName} ({user.Email}) as {empType} shift={emp.Shift}{staffMatchNote}",
+                source: AuditSource.AdminUi,
+                campusId: emp.HomeCampusId,
+                ct: ct);
         }
         else
         {
             bool changed = false;
-            if (emp.EntraObjectId != user.ObjectId)    { emp.EntraObjectId  = user.ObjectId;  changed = true; }
-            if (emp.DisplayName != user.DisplayName)   { emp.DisplayName    = user.DisplayName; changed = true; }
-            if (emp.Email != user.Email)               { emp.Email          = user.Email;      changed = true; }
-            if (emp.EmployeeType != empType)           { emp.EmployeeType   = empType;         changed = true; }
-            if (emp.Shift != mappedShift)              { emp.Shift          = mappedShift;     changed = true; }
-            if (emp.HomeCampusId != campusId)          { emp.HomeCampusId   = campusId;        changed = true; }
-            if (emp.DepartmentCode != user.Department) { emp.DepartmentCode = user.Department; changed = true; }
-            if (staff != null && emp.StaffDcid != staff.Dcid) { emp.StaffDcid = staff.Dcid;   changed = true; }
-            if (!emp.IsActive)                         { emp.IsActive       = true;            changed = true; }
+            var changedFields = new List<string>();
+            var wasInactive = !emp.IsActive;
+            var paddedAscenderId = PadAscenderId(user.EmployeeId);
+            if (emp.EntraObjectId != user.ObjectId)    { emp.EntraObjectId  = user.ObjectId;  changed = true; changedFields.Add("EntraObjectId"); }
+            if (emp.DisplayName != user.DisplayName)   { emp.DisplayName    = user.DisplayName; changed = true; changedFields.Add("DisplayName"); }
+            if (emp.Email != user.Email)               { emp.Email          = user.Email;      changed = true; changedFields.Add("Email"); }
+            if (emp.EmployeeType != empType)           { emp.EmployeeType   = empType;         changed = true; changedFields.Add("EmployeeType"); }
+            if (emp.Shift != mappedShift)              { emp.Shift          = mappedShift;     changed = true; changedFields.Add("Shift"); }
+            if (emp.HomeCampusId != campusId)          { emp.HomeCampusId   = campusId;        changed = true; changedFields.Add("HomeCampusId"); }
+            if (emp.DepartmentCode != user.Department) { emp.DepartmentCode = user.Department; changed = true; changedFields.Add("DepartmentCode"); }
+            if (staff != null && emp.StaffDcid != staff.Dcid) { emp.StaffDcid = staff.Dcid;   changed = true; changedFields.Add("StaffDcid"); }
+            if (emp.AscenderEmployeeId != paddedAscenderId && paddedAscenderId != null)
+                                                       { emp.AscenderEmployeeId = paddedAscenderId; changed = true; changedFields.Add("AscenderEmployeeId"); }
+            if (!emp.IsActive)                         { emp.IsActive       = true;            changed = true; changedFields.Add("IsActive"); }
 
-            if (changed) { emp.ModifiedDate = DateTime.Now; result.Updated++; }
+            if (changed)
+            {
+                emp.ModifiedDate = DateTime.Now;
+                result.Updated++;
+
+                // Audit: per-user update. If the only reason changed=true is that we flipped
+                // IsActive back on, surface that as a REACTIVATED action instead of UPDATED
+                // so compliance reports can find "who came back" quickly.
+                var isReactivationOnly = wasInactive && changedFields.Count == 1 && changedFields[0] == "IsActive";
+                await _audit.LogActionAsync(
+                    actionCode: isReactivationOnly ? AuditActions.EmployeeSync.Reactivated : AuditActions.EmployeeSync.Updated,
+                    entityType: AuditEntityTypes.Employee,
+                    entityId: emp.EmployeeId.ToString(),
+                    newValues: new
+                    {
+                        emp.DisplayName,
+                        emp.Email,
+                        emp.IdNumber,
+                        emp.AscenderEmployeeId,
+                        EmployeeType = emp.EmployeeType.ToString(),
+                        Shift = emp.Shift.ToString(),
+                        emp.HomeCampusId,
+                        emp.StaffDcid,
+                        emp.IsActive
+                    },
+                    deltaSummary: isReactivationOnly
+                        ? $"Reactivated {emp.DisplayName ?? emp.IdNumber}"
+                        : $"Updated {emp.DisplayName ?? emp.IdNumber}: {string.Join(", ", changedFields)}",
+                    source: AuditSource.AdminUi,
+                    employeeId: emp.EmployeeId,
+                    campusId: emp.HomeCampusId,
+                    ct: ct);
+            }
             else result.Skipped++;
         }
+    }
+
+    /// <summary>
+    /// Formats the Entra EmployeeId attribute as a 6-digit zero-padded string
+    /// to match the CSS/Ascender "Emp Nbr" column (e.g. "76" -> "000076").
+    /// Returns null when Entra has no value — callers must treat null as
+    /// "leave existing AscenderEmployeeId alone" so we never wipe a good
+    /// value for a sub whose Entra attribute is temporarily missing.
+    /// Values already 6+ characters are returned unchanged (no truncation).
+    /// </summary>
+    private static string? PadAscenderId(string? entraEmployeeId)
+    {
+        if (string.IsNullOrWhiteSpace(entraEmployeeId)) return null;
+        return entraEmployeeId.Trim().PadLeft(6, '0');
     }
 
     /// <summary>

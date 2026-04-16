@@ -39,6 +39,10 @@ public class TimeClockDbContext : DbContext
     public DbSet<TcMasterSchedule> TcMasterSchedules { get; set; } = null!;
     public DbSet<TcHolidaySchedule> TcHolidaySchedules { get; set; } = null!;
 
+    // Added in migrations 033 and 034 (SubstituteTimesheetSpec Phase 1).
+    public DbSet<TcSubstituteTimecard> TcSubstituteTimecards { get; set; } = null!;
+    public DbSet<TcSubstitutePeriodEntry> TcSubstitutePeriodEntries { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -395,7 +399,7 @@ public class TimeClockDbContext : DbContext
 
         modelBuilder.Entity<TcBellPeriod>(entity =>
         {
-            entity.ToTable("TC_BellPeriod");
+            entity.ToTable("TC_BellPeriods");
             entity.HasKey(e => e.PeriodId);
             entity.Property(e => e.PeriodName).HasMaxLength(50).IsRequired();
             entity.Property(e => e.PeriodType).HasMaxLength(20).IsRequired();
@@ -458,6 +462,75 @@ public class TimeClockDbContext : DbContext
 
             entity.HasIndex(e => e.HolidayDate);
             entity.HasIndex(e => e.SchoolYear);
+        });
+
+        modelBuilder.Entity<TcSubstituteTimecard>(entity =>
+        {
+            entity.ToTable("TC_SubstituteTimecards");
+            entity.HasKey(e => e.SubTimecardId);
+
+            // ApprovalStatus stored as INT (ordinal) per spec migration 033 — NOT converted to string.
+            entity.Property(e => e.ApprovedBy).HasMaxLength(200);
+            entity.Property(e => e.Notes).HasMaxLength(500);
+
+            entity.HasOne(e => e.Employee)
+                .WithMany()
+                .HasForeignKey(e => e.EmployeeId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.Campus)
+                .WithMany()
+                .HasForeignKey(e => e.CampusId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.CheckInPunch)
+                .WithMany()
+                .HasForeignKey(e => e.CheckInPunchId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.CheckOutPunch)
+                .WithMany()
+                .HasForeignKey(e => e.CheckOutPunchId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(e => e.WorkDate);
+            entity.HasIndex(e => new { e.CampusId, e.WorkDate });
+            entity.HasIndex(e => new { e.EmployeeId, e.WorkDate });
+            entity.HasIndex(e => new { e.EmployeeId, e.CampusId, e.WorkDate }).IsUnique();
+        });
+
+        modelBuilder.Entity<TcSubstitutePeriodEntry>(entity =>
+        {
+            entity.ToTable("TC_SubstitutePeriodEntries");
+            entity.HasKey(e => e.EntryId);
+
+            entity.Property(e => e.PeriodName).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.TeacherReplaced).HasMaxLength(200);
+            entity.Property(e => e.CourseName).HasMaxLength(200);
+            entity.Property(e => e.ContentArea).HasMaxLength(50);
+            entity.Property(e => e.Room).HasMaxLength(50);
+            entity.Property(e => e.SessionType).HasMaxLength(10).IsRequired();
+            entity.Property(e => e.EntrySource).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.Notes).HasMaxLength(500);
+
+            entity.HasOne(e => e.SubTimecard)
+                .WithMany(t => t.PeriodEntries)
+                .HasForeignKey(e => e.SubTimecardId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.BellPeriod)
+                .WithMany()
+                .HasForeignKey(e => e.BellPeriodId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.MasterScheduleEntry)
+                .WithMany()
+                .HasForeignKey(e => e.MasterScheduleId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.SubRequest)
+                .WithMany()
+                .HasForeignKey(e => e.SubRequestId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(e => e.SubTimecardId);
+            entity.HasIndex(e => e.BellPeriodId);
+            entity.HasIndex(e => e.SessionType);
+            entity.HasIndex(e => new { e.SubTimecardId, e.PeriodNumber }).IsUnique();
         });
     }
 }

@@ -6,10 +6,12 @@
 @using NewHeights.TimeClock.Data.Entities
 @using Microsoft.EntityFrameworkCore
 @using System.Security.Claims
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Web.Services
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ILogger<HolidaySchedule> Logger
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IAuditService Audit
 
 <PageTitle>Holiday Schedule</PageTitle>
 
@@ -545,6 +547,16 @@
                 errorMessage = "Record not found. Reload the page.";
                 return;
             }
+
+            // Snapshot pre-change values so the audit row captures the delta.
+            var oldValues = new
+            {
+                entity.HolidayName,
+                entity.HolidayDate,
+                entity.HoursCredited,
+                entity.IsActive
+            };
+
             entity.HolidayName = row.HolidayName;
             entity.HolidayDate = row.HolidayDate;
             entity.HoursCredited = row.HoursCredited;
@@ -555,6 +567,16 @@
             dirtyRowIds.Remove(row.HolidayId);
             successMessage = $"Saved \"{row.HolidayName}\".";
             Logger.LogInformation("Holiday {Id} updated by {User}", row.HolidayId, currentUserEmail);
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Holiday.Modified,
+                entityType: AuditEntityTypes.Holiday,
+                entityId: entity.HolidayId.ToString(),
+                oldValues: oldValues,
+                newValues: new { entity.HolidayName, entity.HolidayDate, entity.HoursCredited, entity.IsActive },
+                deltaSummary: $"Holiday '{entity.HolidayName}' on {entity.HolidayDate:yyyy-MM-dd} modified",
+                source: AuditSource.AdminUi,
+                campusId: entity.CampusId);
         }
         catch (Exception ex)
         {
@@ -625,6 +647,25 @@
             successMessage = $"Added \"{addHolidayName}\" on {addHolidayDate:MMMM d, yyyy}.";
             Logger.LogInformation("Holiday created by {User}: {Name} on {Date}",
                 currentUserEmail, addHolidayName, addHolidayDate);
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Holiday.Created,
+                entityType: AuditEntityTypes.Holiday,
+                entityId: newHoliday.HolidayId.ToString(),
+                newValues: new
+                {
+                    newHoliday.HolidayId,
+                    newHoliday.HolidayName,
+                    newHoliday.HolidayDate,
+                    newHoliday.HoursCredited,
+                    newHoliday.SchoolYear,
+                    newHoliday.CampusId,
+                    newHoliday.AppliesToAllCampuses
+                },
+                deltaSummary: $"Added holiday '{newHoliday.HolidayName}' on {newHoliday.HolidayDate:yyyy-MM-dd} ({newHoliday.HoursCredited}h)",
+                source: AuditSource.AdminUi,
+                campusId: newHoliday.CampusId);
+
             showAddModal = false;
             await LoadData();
 
@@ -659,8 +700,32 @@
             var entity = await context.TcHolidaySchedules.FindAsync(deleteTarget.HolidayId);
             if (entity != null)
             {
+                // Snapshot entity state before removal so the audit log retains what was deleted.
+                var deletedValues = new
+                {
+                    entity.HolidayId,
+                    entity.HolidayName,
+                    entity.HolidayDate,
+                    entity.HoursCredited,
+                    entity.SchoolYear,
+                    entity.CampusId,
+                    entity.AppliesToAllCampuses
+                };
+                var deletedName = entity.HolidayName;
+                var deletedId = entity.HolidayId;
+                var deletedCampusId = entity.CampusId;
+
                 context.TcHolidaySchedules.Remove(entity);
                 await context.SaveChangesAsync();
+
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.Holiday.Deleted,
+                    entityType: AuditEntityTypes.Holiday,
+                    entityId: deletedId.ToString(),
+                    oldValues: deletedValues,
+                    deltaSummary: $"Deleted holiday '{deletedName}' (Id {deletedId})",
+                    source: AuditSource.AdminUi,
+                    campusId: deletedCampusId);
             }
             successMessage = $"Deleted \"{deleteTarget.HolidayName}\".";
             dirtyRowIds.Remove(deleteTarget.HolidayId);
@@ -835,6 +900,25 @@
             successMessage = $"Imported {toImport.Count} holiday(s) from PDF.";
             Logger.LogInformation("{Count} holidays imported from PDF by {User} for {Year}",
                 toImport.Count, currentUserEmail, year);
+
+            // Audit: single batch-level row for the PDF import. Individual holidays generate
+            // their own HOLIDAY_CREATED rows is not practical here — one row per imported
+            // batch keeps the audit log readable and links to the PDF action as a unit.
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Holiday.PdfImported,
+                entityType: AuditEntityTypes.Holiday,
+                entityId: $"PDF_IMPORT:{year}:{DateTime.Now:yyyyMMddHHmmss}",
+                newValues: new
+                {
+                    SchoolYear = year,
+                    Count = toImport.Count,
+                    HolidayNames = toImport.Select(h => h.Name).ToList(),
+                    AppliesToAllCampuses = importAppliesToAll,
+                    CampusId = importAppliesToAll ? (int?)null : importCampusId
+                },
+                deltaSummary: $"Imported {toImport.Count} holiday(s) from PDF for school year {year}",
+                source: AuditSource.AdminUi,
+                campusId: importAppliesToAll ? null : importCampusId);
 
             showImportModal = false;
             importedHolidays.Clear();

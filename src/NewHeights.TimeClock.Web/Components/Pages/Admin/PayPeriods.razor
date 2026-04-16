@@ -6,9 +6,12 @@
 @using NewHeights.TimeClock.Data.Entities
 @using Microsoft.EntityFrameworkCore
 @using System.Security.Claims
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Web.Services
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ILogger<PayPeriods> Logger
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IAuditService Audit
 
 <PageTitle>Pay Period Management</PageTitle>
 
@@ -337,11 +340,34 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
             var existing = await context.TcPayPeriods.Where(p => p.SchoolYear == schoolYear).ToListAsync();
-            if (existing.Count > 0) context.TcPayPeriods.RemoveRange(existing);
+            var existingCount = existing.Count;
+            if (existingCount > 0) context.TcPayPeriods.RemoveRange(existing);
             context.TcPayPeriods.AddRange(parsedPeriods);
             await context.SaveChangesAsync();
             Logger.LogInformation("Pay periods saved by {User}: {Count} periods for {Year}",
                 currentUserEmail, parsedPeriods.Count, schoolYear);
+
+            // Audit: one batch row for the upload. Replacement semantics matter for the
+            // paper trail — if existingCount > 0, this upload overwrote prior periods for
+            // that school year.
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.PayPeriod.Uploaded,
+                entityType: AuditEntityTypes.PayPeriod,
+                entityId: $"UPLOAD:{schoolYear}:{DateTime.Now:yyyyMMddHHmmss}",
+                newValues: new
+                {
+                    SchoolYear = schoolYear,
+                    NewCount = parsedPeriods.Count,
+                    ReplacedCount = existingCount,
+                    FirstStart = parsedPeriods.Min(p => p.StartDate),
+                    LastEnd = parsedPeriods.Max(p => p.EndDate),
+                    FileName = selectedFileName
+                },
+                deltaSummary: existingCount > 0
+                    ? $"Uploaded {parsedPeriods.Count} pay periods for {schoolYear}, replacing {existingCount} prior rows (file: {selectedFileName})"
+                    : $"Uploaded {parsedPeriods.Count} pay periods for {schoolYear} (file: {selectedFileName})",
+                source: AuditSource.AdminUi);
+
             successMessage = $"Saved {parsedPeriods.Count} pay periods for {schoolYear}.";
             await LoadExistingYears();
             await LoadYear(schoolYear);
@@ -376,10 +402,29 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
             var toDelete = await context.TcPayPeriods.Where(p => p.SchoolYear == deleteTargetYear).ToListAsync();
+            var deletedYear = deleteTargetYear;
+            var deletedCount = toDelete.Count;
+            var deletedPeriodIds = toDelete.Select(p => p.PayPeriodId).ToList();
             context.TcPayPeriods.RemoveRange(toDelete);
             await context.SaveChangesAsync();
-            successMessage = $"Deleted {toDelete.Count} periods for {deleteTargetYear}.";
-            if (selectedYear == deleteTargetYear) viewingPeriods.Clear();
+
+            // Audit: one batch row for the year deletion. Snapshot the count + IDs so the
+            // audit trail can reconstruct which records were removed.
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.PayPeriod.Deleted,
+                entityType: AuditEntityTypes.PayPeriod,
+                entityId: $"DELETE:{deletedYear}:{DateTime.Now:yyyyMMddHHmmss}",
+                oldValues: new
+                {
+                    SchoolYear = deletedYear,
+                    Count = deletedCount,
+                    PayPeriodIds = deletedPeriodIds
+                },
+                deltaSummary: $"Deleted all {deletedCount} pay periods for school year {deletedYear}",
+                source: AuditSource.AdminUi);
+
+            successMessage = $"Deleted {deletedCount} periods for {deletedYear}.";
+            if (selectedYear == deletedYear) viewingPeriods.Clear();
             await LoadExistingYears();
         }
         catch (Exception ex) { errorMessage = $"Delete failed: {ex.Message}"; }

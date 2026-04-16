@@ -7,9 +7,12 @@
 @using Microsoft.EntityFrameworkCore
 @using System.Security.Claims
 @using ClosedXML.Excel
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Web.Services
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ILogger<ScheduleImport> Logger
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IAuditService Audit
 
 <PageTitle>Schedule Import</PageTitle>
 
@@ -753,6 +756,55 @@
             }
 
             await db.SaveChangesAsync();
+
+            // Audit: emit one SCHEDULE_PRIOR_DEACTIVATED row when prior rows were deactivated
+            // (compliance needs a distinct event separate from IMPORTED so you can answer
+            // "when was the term 2025-2026 T4 schedule first superseded?"). Only fires when
+            // there was actually something to deactivate.
+            if (existing.Count > 0)
+            {
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.Schedule.PriorDeactivated,
+                    entityType: AuditEntityTypes.MasterSchedule,
+                    entityId: $"{selectedCampusId}:{selectedTerm}:{schoolYear}",
+                    oldValues: new
+                    {
+                        CampusId = selectedCampusId,
+                        TermName = selectedTerm,
+                        SchoolYear = schoolYear,
+                        DeactivatedCount = existing.Count,
+                        ScheduleIds = existing.Select(e => e.ScheduleId).ToList()
+                    },
+                    deltaSummary: $"Deactivated {existing.Count} prior schedule rows for campus {selectedCampusId} {selectedTerm} {schoolYear} (superseded by new import)",
+                    source: AuditSource.AdminUi,
+                    campusId: selectedCampusId);
+            }
+
+            // Audit: SCHEDULE_IMPORTED — one batch-level row per import with aggregate stats.
+            // Per-teacher SCHEDULE_TEACHER_MATCHED audits are intentionally skipped to avoid
+            // polluting the audit log with 100+ rows per import; match-method distribution
+            // is captured here so compliance can still analyze match quality per import.
+            var matchStats = parsedRows
+                .GroupBy(r => r.TeacherMatchMethod ?? "None")
+                .ToDictionary(g => g.Key, g => g.Count());
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Schedule.Imported,
+                entityType: AuditEntityTypes.MasterSchedule,
+                entityId: $"IMPORT:{selectedCampusId}:{selectedTerm}:{schoolYear}:{now:yyyyMMddHHmmss}",
+                newValues: new
+                {
+                    CampusId = selectedCampusId,
+                    TermName = selectedTerm,
+                    SchoolYear = schoolYear,
+                    RowCount = parsedRows.Count,
+                    PriorRowsDeactivated = existing.Count,
+                    TeacherMatchBreakdown = matchStats,
+                    ImportedBy = importedBy
+                },
+                deltaSummary: $"Imported {parsedRows.Count} schedule rows for campus {selectedCampusId} {selectedTerm} {schoolYear} (replacing {existing.Count} prior rows)",
+                source: AuditSource.AdminUi,
+                campusId: selectedCampusId);
 
             successMessage = $"✓ Imported {parsedRows.Count} rows for {selectedTerm} {schoolYear}. " +
                              $"Previous import deactivated ({existing.Count} rows).";

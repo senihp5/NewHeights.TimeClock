@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
+using NewHeights.TimeClock.Shared.Audit;
 using NewHeights.TimeClock.Shared.Enums;
 using NewHeights.TimeClock.Shared.DTOs;
 
@@ -21,13 +22,18 @@ public interface ITimesheetService
 public class TimesheetService : ITimesheetService
 {
     private readonly IDbContextFactory<TimeClockDbContext> _contextFactory;
+    private readonly IAuditService _audit;
     private readonly ILogger<TimesheetService> _logger;
     private const decimal OVERTIME_THRESHOLD = 40m;
     private const int ROUNDING_MINUTES = 15;
 
-    public TimesheetService(IDbContextFactory<TimeClockDbContext> contextFactory, ILogger<TimesheetService> logger)
+    public TimesheetService(
+        IDbContextFactory<TimeClockDbContext> contextFactory,
+        IAuditService audit,
+        ILogger<TimesheetService> logger)
     {
         _contextFactory = contextFactory;
+        _audit = audit;
         _logger = logger;
     }
 
@@ -206,8 +212,28 @@ public class TimesheetService : ITimesheetService
         }
 
         await context.SaveChangesAsync();
-        _logger.LogInformation("Timesheet submitted: Employee={EmployeeId}, Week={WeekEnd}, By={SubmittedBy}", 
+        _logger.LogInformation("Timesheet submitted: Employee={EmployeeId}, Week={WeekEnd}, By={SubmittedBy}",
             employeeId, weekEndDate, submittedBy);
+
+        // Audit: one TIMESHEET_SUBMITTED per submission (not per daily card) to avoid
+        // polluting the audit log with 5-7 rows every time someone submits a week.
+        // EntityId is a composite logical identifier since the action spans multiple cards.
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.Timesheet.Submitted,
+            entityType: AuditEntityTypes.Timecard,
+            entityId: $"{employeeId}:week:{weekEndDate:yyyy-MM-dd}",
+            newValues: new
+            {
+                EmployeeId = employeeId,
+                WeekStart = weekStart,
+                WeekEnd = weekEndDate,
+                CardCount = dailyCards.Count,
+                TotalHours = dailyCards.Sum(c => c.TotalHours),
+                SubmittedBy = submittedBy
+            },
+            deltaSummary: $"Submitted timesheet for week ending {weekEndDate:yyyy-MM-dd} ({dailyCards.Count} cards) by {submittedBy}",
+            source: AuditSource.AdminUi,
+            employeeId: employeeId);
 
         return true;
     }
@@ -272,6 +298,35 @@ public class TimesheetService : ITimesheetService
 
         _logger.LogInformation("Timesheet approved: Employee={EmployeeId}, Period={Start}-{End}, By={ApprovedBy}, Role={Role}",
             employeeId, periodStart, periodEnd, approvedBy, approverRole);
+
+        // Audit: branch on approver role. Supervisor approval lands on PAY_SUMMARY with
+        // SUPERVISOR_APPROVED; HR approval flips status to Locked with HR_APPROVED.
+        // This dual-code split mirrors spec sections 19.1.E and 19.1.F.
+        var auditAction = approverRole == "HR"
+            ? AuditActions.Payroll.HRApproved
+            : AuditActions.Timesheet.SupervisorApproved;
+
+        await _audit.LogActionAsync(
+            actionCode: auditAction,
+            entityType: AuditEntityTypes.PaySummary,
+            entityId: summary.SummaryId.ToString(),
+            newValues: new
+            {
+                summary.SummaryId,
+                summary.PayPeriodId,
+                summary.EmployeeId,
+                summary.TotalRegularHours,
+                summary.TotalOvertimeHours,
+                summary.TotalHours,
+                ApprovalStatus = summary.ApprovalStatus.ToString(),
+                summary.SupervisorApprovedBy,
+                summary.SupervisorApprovedDate,
+                summary.HRApprovedBy,
+                summary.HRApprovedDate
+            },
+            deltaSummary: $"{approverRole} approved pay-period summary for employee {employeeId}, {periodStart:yyyy-MM-dd} to {periodEnd:yyyy-MM-dd} by {approvedBy}",
+            source: AuditSource.AdminUi,
+            employeeId: employeeId);
 
         return true;
     }
@@ -420,6 +475,30 @@ public class TimesheetService : ITimesheetService
 
         timecard.ModifiedDate = DateTime.Now;
         await context.SaveChangesAsync();
+
+        // Audit: TIMECARD_RECALCULATED. This is an admin-initiated operation from
+        // TeamTimesheets or HRPayroll, so AdminUi source. Includes the final totals
+        // so compliance reports can see what was adjusted.
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.Timecard.Recalculated,
+            entityType: AuditEntityTypes.Timecard,
+            entityId: timecard.TimecardId.ToString(),
+            newValues: new
+            {
+                timecard.TimecardId,
+                timecard.EmployeeId,
+                timecard.WorkDate,
+                timecard.TotalHours,
+                timecard.RegularHours,
+                timecard.OvertimeHours,
+                timecard.HasException,
+                timecard.ExceptionNotes,
+                PunchCount = punches.Count
+            },
+            deltaSummary: $"Recalculated timecard for {workDate:yyyy-MM-dd}: {punches.Count} punches → {totalHours:F2}h{(timecard.HasException ? " (exception)" : "")}",
+            source: AuditSource.AdminUi,
+            employeeId: employeeId,
+            campusId: timecard.CampusId);
     }
 
     public async Task RecalculateWeeklyOvertimeAsync(int employeeId, DateOnly weekStartDate)
@@ -447,7 +526,7 @@ public class TimesheetService : ITimesheetService
             foreach (var card in dailyCards.OrderByDescending(d => d.WorkDate))
             {
                 if (remainingOT <= 0) break;
-                
+
                 var cardOT = Math.Min(card.TotalHours, remainingOT);
                 card.OvertimeHours = cardOT;
                 card.RegularHours = card.TotalHours - cardOT;
@@ -456,6 +535,30 @@ public class TimesheetService : ITimesheetService
         }
 
         await context.SaveChangesAsync();
+
+        // Audit: TIMECARD_OVERTIME_REDISTRIBUTED only fires when overtime actually exists.
+        // Calls with zero OT are no-ops from an audit perspective — they don't change
+        // distribution, just confirm the status, and we don't need to log that.
+        if (overtimeHours > 0)
+        {
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.Timecard.OvertimeRedistributed,
+                entityType: AuditEntityTypes.Timecard,
+                entityId: $"{employeeId}:week:{weekStartDate:yyyy-MM-dd}",
+                newValues: new
+                {
+                    EmployeeId = employeeId,
+                    WeekStart = weekStartDate,
+                    WeekEnd = weekEndDate,
+                    TotalWeekHours = totalWeekHours,
+                    RegularHours = regularHours,
+                    OvertimeHours = overtimeHours,
+                    CardCount = dailyCards.Count
+                },
+                deltaSummary: $"Redistributed {overtimeHours:F2}h OT across week {weekStartDate:yyyy-MM-dd} (total {totalWeekHours:F2}h worked)",
+                source: AuditSource.AdminUi,
+                employeeId: employeeId);
+        }
     }
 
     private static decimal CalculateDayHours(List<TcTimePunch> punches)

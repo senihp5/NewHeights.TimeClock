@@ -6,9 +6,12 @@
 @using NewHeights.TimeClock.Data.Entities
 @using Microsoft.EntityFrameworkCore
 @using System.Security.Claims
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Web.Services
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ILogger<StaffHoursWindow> Logger
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IAuditService Audit
 
 <PageTitle>Staff Hours Windows</PageTitle>
 
@@ -328,6 +331,16 @@
                 errorMessage = "Record not found. Reload the page.";
                 return;
             }
+
+            // Snapshot pre-change values so the audit row captures what changed.
+            var oldValues = new
+            {
+                entity.ExpectedArrivalTime,
+                entity.ExpectedDepartureTime,
+                entity.IsActive,
+                entity.Notes
+            };
+
             entity.ExpectedArrivalTime = row.ExpectedArrivalTime;
             entity.ExpectedDepartureTime = row.ExpectedDepartureTime;
             entity.IsActive = row.IsActive;
@@ -338,6 +351,16 @@
             dirtyRowIds.Remove(row.WindowId);
             successMessage = $"Saved {row.Campus?.CampusName} {row.SessionType} window.";
             Logger.LogInformation("StaffHoursWindow {Id} updated by {User}", row.WindowId, currentUserEmail);
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.HoursWindow.Modified,
+                entityType: AuditEntityTypes.HoursWindow,
+                entityId: entity.WindowId.ToString(),
+                oldValues: oldValues,
+                newValues: new { entity.ExpectedArrivalTime, entity.ExpectedDepartureTime, entity.IsActive, entity.Notes },
+                deltaSummary: $"Modified {entity.SessionType} hours window for campus {entity.CampusId}: {entity.ExpectedArrivalTime}–{entity.ExpectedDepartureTime}",
+                source: AuditSource.AdminUi,
+                campusId: entity.CampusId);
         }
         catch (Exception ex)
         {
@@ -410,6 +433,28 @@
             successMessage = "New staff hours window added.";
             Logger.LogInformation("StaffHoursWindow created by {User}: Campus={Campus} {Session} {Year}",
                 currentUserEmail, addCampusId, addSessionType, addSchoolYear);
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.HoursWindow.Created,
+                entityType: AuditEntityTypes.HoursWindow,
+                entityId: newWindow.WindowId.ToString(),
+                newValues: new
+                {
+                    newWindow.WindowId,
+                    newWindow.CampusId,
+                    newWindow.SessionType,
+                    newWindow.SchoolYear,
+                    newWindow.ExpectedArrivalTime,
+                    newWindow.ExpectedDepartureTime,
+                    newWindow.LateArrivalThresholdMin,
+                    newWindow.EarlyDepartureThresholdMin,
+                    newWindow.MissedPunchAlertMin,
+                    newWindow.Notes
+                },
+                deltaSummary: $"Added {newWindow.SessionType} hours window for campus {newWindow.CampusId} school year {newWindow.SchoolYear}: {newWindow.ExpectedArrivalTime}–{newWindow.ExpectedDepartureTime}",
+                source: AuditSource.AdminUi,
+                campusId: newWindow.CampusId);
+
             showAddModal = false;
             await LoadData();
 
@@ -444,8 +489,32 @@
             var entity = await context.TcStaffHoursWindows.FindAsync(deleteTarget.WindowId);
             if (entity != null)
             {
+                // Snapshot the row before Remove() so the audit log retains what was deleted.
+                var deletedValues = new
+                {
+                    entity.WindowId,
+                    entity.CampusId,
+                    entity.SessionType,
+                    entity.SchoolYear,
+                    entity.ExpectedArrivalTime,
+                    entity.ExpectedDepartureTime,
+                    entity.Notes
+                };
+                var deletedId = entity.WindowId;
+                var deletedCampusId = entity.CampusId;
+                var deletedSummary = $"{entity.SessionType} window for campus {entity.CampusId} ({entity.SchoolYear})";
+
                 context.TcStaffHoursWindows.Remove(entity);
                 await context.SaveChangesAsync();
+
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.HoursWindow.Deleted,
+                    entityType: AuditEntityTypes.HoursWindow,
+                    entityId: deletedId.ToString(),
+                    oldValues: deletedValues,
+                    deltaSummary: $"Deleted {deletedSummary}",
+                    source: AuditSource.AdminUi,
+                    campusId: deletedCampusId);
             }
             successMessage = $"Deleted {deleteTarget.Campus?.CampusName} {deleteTarget.SessionType} window.";
             dirtyRowIds.Remove(deleteTarget.WindowId);
