@@ -3,7 +3,7 @@
 public enum SubRequestStatus
 {
     Submitted,
-    Approved,
+    AbsenceApproved,
     SubAssigned,
     SubConfirmed,
     Denied,
