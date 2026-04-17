@@ -79,14 +79,19 @@ main {
 
 /* Sidebar Navigation */
 .top-row.navbar {
-    padding: 1.5rem 1rem;
+    padding: 0.5rem 0.75rem;
+    min-height: 96px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .nav-logo {
-    width: 32px;
-    height: 32px;
+    width: auto;
+    max-width: 140px;
+    height: 72px;
     object-fit: contain;
-    margin-right: 0.5rem;
+    margin: 0;
     vertical-align: middle;
     border-radius: 4px;
 }
@@ -96,13 +101,17 @@ main {
     font-weight: 700;
     color: var(--white);
     vertical-align: middle;
+    margin-left: 0.5rem;
 }
 
 .navbar-brand {
     display: flex;
+    flex-direction: column;
     align-items: center;
+    justify-content: center;
     text-decoration: none;
-    gap: 0.5rem;
+    gap: 0.25rem;
+    width: 100%;
 }
 
 .brand-text {
