@@ -1,0 +1,100 @@
+@page "/policies/sms-consent"
+@layout KioskLayout
+@using NewHeights.TimeClock.Shared.Constants
+@attribute [AllowAnonymous]
+
+<PageTitle>SMS Consent Policy - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="policy-page">
+    <div class="policy-sheet">
+
+        <header class="policy-masthead">
+            <div class="policy-logo">
+                <img src="/images/logo.jpg" alt="New Heights" class="policy-logo-img" />
+            </div>
+            <div class="policy-title-block">
+                <h1>NEW HEIGHTS</h1>
+                <p class="policy-subtitle">Adult High School | Administrative Offices</p>
+            </div>
+        </header>
+
+        <div class="masthead-rule"></div>
+
+        <table class="policy-meta" role="presentation">
+            <tbody>
+                <tr>
+                    <td class="meta-key">Policy Title:</td>
+                    <td class="meta-val">SMS Notification Consent &mdash; Substitute Teachers</td>
+                    <td class="meta-key">Department:</td>
+                    <td class="meta-val">Human Resources</td>
+                </tr>
+                <tr>
+                    <td class="meta-key">Effective Date:</td>
+                    <td class="meta-val">April 17, 2026</td>
+                    <td class="meta-key">Policy ID:</td>
+                    <td class="meta-val">NH-SMS-001</td>
+                </tr>
+                <tr>
+                    <td class="meta-key">Contact:</td>
+                    <td class="meta-val">Campus Manager / HR</td>
+                    <td class="meta-key">Revision Number:</td>
+                    <td class="meta-val">0</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2 class="policy-h1">POLICY DESCRIPTION</h2>
+        <div class="policy-description-box">
+            <strong>POLICY - SMS CONSENT</strong>
+        </div>
+
+        <h2 class="policy-h1">POLICY OVERVIEW</h2>
+        <p>
+            New Heights Adult High School utilizes SMS communications to efficiently manage
+            staff scheduling and emergency alerts. This policy ensures all substitute teachers
+            are informed of the messaging process and have provided documented consent in
+            alignment with school district employment standards.
+        </p>
+
+        <h2 class="policy-h1">POLICY STATEMENT</h2>
+        <p>
+            New Heights uses SMS to notify substitute teachers of day-of assignments, including
+            campus, dates, and subject details. Recipients receive a link to accept or decline;
+            confirmation and check-in instructions follow acceptance. All recipients are employees
+            who provided explicit consent via signed employment agreements. Additionally, we may
+            notify all staff via SMS regarding emergency situations, such as weather-related
+            campus closings.
+        </p>
+
+        <h2 class="policy-h1">CONSENT LANGUAGE &amp; DOCUMENTATION</h2>
+        <p>
+            As part of the Staff Handbook Acknowledgment completed during onboarding, the
+            following explicit language is accepted by the employee:
+        </p>
+
+        <div class="consent-callout">
+            <em>
+                &ldquo;I consent to receive SMS messages from New Heights Adult High School
+                for substitute assignment notifications. Reply STOP to opt out.&rdquo;
+            </em>
+        </div>
+
+        <p>
+            A signed copy of this acknowledgment is retained in the employee's permanent HR file.
+            Existing substitutes not previously enrolled are required to sign a separate addendum
+            acknowledgment.
+        </p>
+
+        <div class="signature-block">
+            <div class="signature-line">
+                <span class="sig-bar"></span>
+                <span class="sig-label">Employee Signature</span>
+            </div>
+            <div class="signature-line">
+                <span class="sig-bar"></span>
+                <span class="sig-label">Date</span>
+            </div>
+        </div>
+
+    </div>
+</div>
