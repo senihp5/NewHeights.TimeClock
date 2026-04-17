@@ -53,6 +53,12 @@
                 </span>
             </div>
         }
+        <div class="info-item history-shortcut">
+            <button type="button" class="btn-history-inline" @onclick="OpenHistory"
+                    disabled="@(employeeId == 0 || currentPayPeriod == null)">
+                View My History
+            </button>
+        </div>
     </div>
 
     <div class="period-navigation">
@@ -281,6 +287,13 @@
                       OnSave="HandlePickerSaveAsync"
                       OnCancel="HandlePickerCancel" />
 
+<AuditHistoryPanel Visible="@showHistory"
+                   EmployeeId="@employeeId"
+                   EmployeeName="@employeeName"
+                   FromDate="@(currentPayPeriod?.StartDate ?? DateOnly.FromDateTime(DateTime.Today))"
+                   ToDate="@(currentPayPeriod?.EndDate ?? DateOnly.FromDateTime(DateTime.Today))"
+                   OnClose="CloseHistory" />
+
 @code {
     [Parameter] public int? PeriodOffset { get; set; }
 
@@ -322,6 +335,9 @@
     private long? editingNotesEntryId = null;
     private string editedNotes = "";
     private bool isSavingNotes = false;
+
+    // ── History panel state ───────────────────────────────────────────────
+    private bool showHistory = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -641,5 +657,18 @@
         {
             isSavingNotes = false;
         }
+    }
+
+    // ── History panel handlers ────────────────────────────────────────────
+
+    private void OpenHistory()
+    {
+        if (employeeId == 0 || currentPayPeriod == null) return;
+        showHistory = true;
+    }
+
+    private void CloseHistory()
+    {
+        showHistory = false;
     }
 }

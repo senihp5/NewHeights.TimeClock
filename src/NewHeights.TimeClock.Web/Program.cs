@@ -158,6 +158,10 @@ builder.Services.AddScoped<IMasterScheduleLookupService, MasterScheduleLookupSer
 // Substitute timecard service — sub-facing CRUD for period entries (Phase 2)
 builder.Services.AddScoped<ISubstituteTimesheetService, SubstituteTimesheetService>();
 
+// SMS service — Azure Communication Services wrapper (Phase 6).
+// Degrades to no-op when AzureCommunication:Enabled=false or connection string is empty.
+builder.Services.AddScoped<ISmsService, AzureSmsService>();
+
 // Substitute outreach service — absence-request sub assignment + accept/decline (Phase 5)
 builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
 

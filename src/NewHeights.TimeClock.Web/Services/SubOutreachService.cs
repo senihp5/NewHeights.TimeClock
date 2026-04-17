@@ -75,6 +75,7 @@ public class SubOutreachService : ISubOutreachService
     private readonly IDbContextFactory<TimeClockDbContext> _dbFactory;
     private readonly IAuditService _audit;
     private readonly IEmailService _emailService;
+    private readonly ISmsService _smsService;
     private readonly IConfiguration _configuration;
     private readonly ILogger<SubOutreachService> _logger;
 
@@ -82,18 +83,43 @@ public class SubOutreachService : ISubOutreachService
     private const int TokenByteLength = 48;
     private const int TokenValidityHours = 48;
 
+    // SMS body limits. ACS splits >160 chars into multi-segment messages (billed per
+    // segment). We aim for <=320 chars so outreach fits in 2 segments at worst.
+    private const int SmsMaxLength = 320;
+
     public SubOutreachService(
         IDbContextFactory<TimeClockDbContext> dbFactory,
         IAuditService audit,
         IEmailService emailService,
+        ISmsService smsService,
         IConfiguration configuration,
         ILogger<SubOutreachService> logger)
     {
         _dbFactory = dbFactory;
         _audit = audit;
         _emailService = emailService;
+        _smsService = smsService;
         _configuration = configuration;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Result of attempting a single outreach or confirmation dispatch. Each channel
+    /// is independent — we always try both (if eligible) and record what actually sent.
+    /// </summary>
+    private record ChannelDispatchResult(
+        bool SmsAttempted, bool SmsDelivered, string? SmsMessageId, string? SmsError,
+        bool EmailAttempted, bool EmailDelivered, string? EmailError)
+    {
+        public bool AnyDelivered => SmsDelivered || EmailDelivered;
+        public string OutreachMethodLabel =>
+            (SmsDelivered, EmailDelivered) switch
+            {
+                (true, true) => "BOTH",
+                (true, false) => "SMS",
+                (false, true) => "EMAIL",
+                _ => "NONE"
+            };
     }
 
     // ── Send ─────────────────────────────────────────────────────────────
@@ -170,9 +196,12 @@ public class SubOutreachService : ISubOutreachService
             // First in the list sends immediately; rest are queued (auto-cascade).
             if (i == 0)
             {
-                var sendOk = await TrySendOutreachEmailAsync(row, request, sub);
+                var dispatch = await TryDispatchOutreachAsync(row, request, sub);
                 row.MessageSentAt = DateTime.Now;
-                row.DeliveryStatus = sendOk ? "DELIVERED" : "FAILED";
+                row.OutreachMethod = dispatch.OutreachMethodLabel;
+                row.DeliveryStatus = dispatch.AnyDelivered ? "DELIVERED" : "FAILED";
+                row.MessageId = dispatch.SmsMessageId;
+                row.Notes = BuildDispatchNote(dispatch);
             }
 
             context.TcSubOutreach.Add(row);
@@ -188,28 +217,13 @@ public class SubOutreachService : ISubOutreachService
 
         await context.SaveChangesAsync();
 
-        // Audit each *sent* outreach (not the queued ones).
+        // Audit each *sent* outreach (not the queued ones). Phase 6 splits channels:
+        // SUB_SMS_SENT / SUB_SMS_FAILED / SUB_EMAIL_SENT fire separately based on what
+        // actually happened. OutreachMethod on the row indicates the net outcome (SMS /
+        // EMAIL / BOTH / NONE).
         foreach (var row in outreachRows.Where(r => r.MessageSentAt.HasValue))
         {
-            await _audit.LogActionAsync(
-                actionCode: AuditActions.SubOutreach.SmsSent,
-                entityType: AuditEntityTypes.SubOutreach,
-                entityId: row.OutreachId.ToString(),
-                newValues: new
-                {
-                    row.SubRequestId,
-                    row.SubEmployeeId,
-                    row.OutreachMethod,
-                    row.SequenceOrder,
-                    row.DeliveryStatus,
-                    row.EmailAddress,
-                    SentBy = sentByEmail,
-                    row.TokenExpiresAt
-                },
-                deltaSummary: $"Sent {row.OutreachMethod} outreach (seq {row.SequenceOrder}) "
-                            + $"to employee {row.SubEmployeeId} for sub request {subRequestId}",
-                source: AuditSource.AdminUi,
-                employeeId: row.SubEmployeeId);
+            await AuditDispatchAsync(row, subRequestId, sentByEmail, AuditSource.AdminUi);
         }
 
         return outreachRows;
@@ -265,9 +279,9 @@ public class SubOutreachService : ISubOutreachService
             source: AuditSource.PublicLink,
             employeeId: outreach.SubEmployeeId);
 
-        // Confirmation email to the sub (+ eventual supervisor notification).
-        var confirmOk = await TrySendConfirmationEmailAsync(outreach, request);
-        if (confirmOk)
+        // Confirmation — try both channels.
+        var confirm = await TryDispatchConfirmationAsync(outreach, request);
+        if (confirm.AnyDelivered)
         {
             request.ConfirmationSentAt = DateTime.Now;
             await context.SaveChangesAsync();
@@ -276,7 +290,12 @@ public class SubOutreachService : ISubOutreachService
                 actionCode: AuditActions.SubOutreach.ConfirmationSent,
                 entityType: AuditEntityTypes.SubOutreach,
                 entityId: outreach.OutreachId.ToString(),
-                deltaSummary: $"Sent confirmation email to employee {outreach.SubEmployeeId} for sub request {outreach.SubRequestId}",
+                newValues: new
+                {
+                    Channels = confirm.OutreachMethodLabel,
+                    SmsMessageId = confirm.SmsMessageId
+                },
+                deltaSummary: $"Sent confirmation ({confirm.OutreachMethodLabel}) to employee {outreach.SubEmployeeId} for sub request {outreach.SubRequestId}",
                 source: AuditSource.System,
                 employeeId: outreach.SubEmployeeId);
         }
@@ -428,11 +447,14 @@ public class SubOutreachService : ISubOutreachService
             return;
         }
 
-        // Refresh token expiry for this send, then dispatch.
+        // Refresh token expiry for this send, then dispatch via both channels.
         nextQueued.TokenExpiresAt = DateTime.Now.AddHours(TokenValidityHours);
-        var sendOk = await TrySendOutreachEmailAsync(nextQueued, request, nextQueued.SubEmployee!);
+        var dispatch = await TryDispatchOutreachAsync(nextQueued, request, nextQueued.SubEmployee!);
         nextQueued.MessageSentAt = DateTime.Now;
-        nextQueued.DeliveryStatus = sendOk ? "DELIVERED" : "FAILED";
+        nextQueued.OutreachMethod = dispatch.OutreachMethodLabel;
+        nextQueued.DeliveryStatus = dispatch.AnyDelivered ? "DELIVERED" : "FAILED";
+        nextQueued.MessageId = dispatch.SmsMessageId;
+        nextQueued.Notes = BuildDispatchNote(dispatch);
         await context.SaveChangesAsync();
 
         await _audit.LogActionAsync(
@@ -450,40 +472,276 @@ public class SubOutreachService : ISubOutreachService
             source: AuditSource.System,
             employeeId: nextQueued.SubEmployeeId);
 
-        await _audit.LogActionAsync(
-            actionCode: AuditActions.SubOutreach.SmsSent,
-            entityType: AuditEntityTypes.SubOutreach,
-            entityId: nextQueued.OutreachId.ToString(),
-            newValues: new
-            {
-                nextQueued.SubRequestId,
-                nextQueued.SubEmployeeId,
-                nextQueued.OutreachMethod,
-                nextQueued.SequenceOrder,
-                nextQueued.DeliveryStatus,
-                nextQueued.EmailAddress,
-                nextQueued.TokenExpiresAt
-            },
-            deltaSummary: $"Sent cascaded {nextQueued.OutreachMethod} outreach (seq {nextQueued.SequenceOrder}) "
-                        + $"to employee {nextQueued.SubEmployeeId} for sub request {subRequestId}",
-            source: AuditSource.System,
-            employeeId: nextQueued.SubEmployeeId);
+        await AuditDispatchAsync(nextQueued, subRequestId,
+            sentByEmail: nextQueued.SentBy ?? "system",
+            source: AuditSource.System);
     }
 
-    // ── Email templates ──────────────────────────────────────────────────
+    // ── Audit helper (Phase 6 per-channel) ───────────────────────────────
 
-    private async Task<bool> TrySendOutreachEmailAsync(
-        TcSubOutreach outreach, TcSubRequest request, TcEmployee sub)
+    /// <summary>
+    /// Emits the correct mix of SUB_SMS_SENT / SUB_SMS_FAILED / SUB_EMAIL_SENT
+    /// for an outreach row, based on its OutreachMethod + Notes summary.
+    /// </summary>
+    private async Task AuditDispatchAsync(
+        TcSubOutreach row, long subRequestId, string sentByEmail, string source)
     {
-        if (string.IsNullOrWhiteSpace(sub.Email))
+        var method = row.OutreachMethod ?? "NONE";
+        var anyDelivered = method != "NONE";
+
+        // SMS audits
+        if (method == "BOTH" || method == "SMS")
         {
-            _logger.LogWarning(
-                "Cannot send outreach email — employee {EmployeeId} has no email on record.",
-                sub.EmployeeId);
-            return false;
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.SubOutreach.SmsSent,
+                entityType: AuditEntityTypes.SubOutreach,
+                entityId: row.OutreachId.ToString(),
+                newValues: new
+                {
+                    row.SubRequestId,
+                    row.SubEmployeeId,
+                    row.SequenceOrder,
+                    row.PhoneNumber,
+                    row.MessageId,
+                    SentBy = sentByEmail
+                },
+                deltaSummary: $"Sent SMS (seq {row.SequenceOrder}) to employee {row.SubEmployeeId} for sub request {subRequestId}",
+                source: source,
+                employeeId: row.SubEmployeeId);
+        }
+        else if (!string.IsNullOrWhiteSpace(row.PhoneNumber) && method != "BOTH" && method != "SMS")
+        {
+            // SMS was attempted (sub has a phone) but not delivered. Note: we only know
+            // the "attempted" signal from BuildDispatchNote's SmsAttempted flag stored in Notes.
+            // If Notes contains "sms-attempted", audit the failure explicitly.
+            if (row.Notes != null && row.Notes.Contains("sms-attempted", StringComparison.OrdinalIgnoreCase))
+            {
+                await _audit.LogActionAsync(
+                    actionCode: AuditActions.SubOutreach.SmsFailed,
+                    entityType: AuditEntityTypes.SubOutreach,
+                    entityId: row.OutreachId.ToString(),
+                    newValues: new
+                    {
+                        row.SubRequestId,
+                        row.SubEmployeeId,
+                        row.SequenceOrder,
+                        row.PhoneNumber,
+                        DispatchNote = row.Notes,
+                        SentBy = sentByEmail
+                    },
+                    deltaSummary: $"SMS failed (seq {row.SequenceOrder}) for employee {row.SubEmployeeId} on sub request {subRequestId}",
+                    source: source,
+                    employeeId: row.SubEmployeeId);
+            }
         }
 
-        var baseUrl = _configuration["App:BaseUrl"] ?? "https://clock.newheightsed.com";
+        // Email audits
+        if (method == "BOTH" || method == "EMAIL")
+        {
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.SubOutreach.EmailSent,
+                entityType: AuditEntityTypes.SubOutreach,
+                entityId: row.OutreachId.ToString(),
+                newValues: new
+                {
+                    row.SubRequestId,
+                    row.SubEmployeeId,
+                    row.SequenceOrder,
+                    row.EmailAddress,
+                    SentBy = sentByEmail
+                },
+                deltaSummary: $"Sent email (seq {row.SequenceOrder}) to employee {row.SubEmployeeId} for sub request {subRequestId}",
+                source: source,
+                employeeId: row.SubEmployeeId);
+        }
+
+        if (!anyDelivered)
+        {
+            _logger.LogWarning(
+                "Dispatch landed NONE for outreach {OutreachId} — neither SMS nor email delivered. Notes: {Notes}",
+                row.OutreachId, row.Notes);
+        }
+    }
+
+    private static string BuildDispatchNote(ChannelDispatchResult dispatch)
+    {
+        var parts = new List<string>();
+        if (dispatch.SmsAttempted)
+            parts.Add(dispatch.SmsDelivered
+                ? "sms-attempted:delivered"
+                : $"sms-attempted:failed:{dispatch.SmsError ?? "unknown"}");
+        if (dispatch.EmailAttempted)
+            parts.Add(dispatch.EmailDelivered
+                ? "email-attempted:delivered"
+                : $"email-attempted:failed:{dispatch.EmailError ?? "unknown"}");
+        return parts.Count == 0 ? "no-channel-attempted" : string.Join(" | ", parts);
+    }
+
+    // ── Dispatch (Phase 6: SMS + email parallel) ─────────────────────────
+
+    /// <summary>
+    /// Attempts SMS (if the service is enabled + sub has phone + not SmsOptedOut)
+    /// AND email (if sub has email) for an outreach send. Each channel is
+    /// independent — a failure on one does not abort the other. Returns a result
+    /// describing what actually happened for audit + TcSubOutreach bookkeeping.
+    /// The outreach row is required so the accept link can include its token.
+    /// </summary>
+    private async Task<ChannelDispatchResult> TryDispatchOutreachAsync(
+        TcSubOutreach outreach, TcSubRequest request, TcEmployee sub)
+    {
+        // SMS eligibility
+        var smsEligible = _smsService.IsEnabled
+                       && !sub.SmsOptedOut
+                       && !string.IsNullOrWhiteSpace(sub.Phone);
+
+        var smsAttempted = false;
+        var smsDelivered = false;
+        string? smsMessageId = null;
+        string? smsError = null;
+
+        if (smsEligible)
+        {
+            var smsBody = BuildSmsOutreachBody(outreach, request);
+            var smsResult = await _smsService.SendAsync(sub.Phone!, smsBody);
+            smsAttempted = smsResult.Attempted;
+            smsDelivered = smsResult.Delivered;
+            smsMessageId = smsResult.MessageId;
+            smsError = smsResult.ErrorReason;
+        }
+
+        // Email
+        var emailAttempted = false;
+        var emailDelivered = false;
+        string? emailError = null;
+        if (!string.IsNullOrWhiteSpace(sub.Email))
+        {
+            emailAttempted = true;
+            try
+            {
+                var (subject, html) = BuildOutreachEmail(outreach, request, sub);
+                emailDelivered = await _emailService.SendEmailAsync(sub.Email!, subject, html);
+                if (!emailDelivered) emailError = "email-service-returned-false";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Outreach email dispatch threw for employee {EmployeeId} request {SubRequestId}",
+                    sub.EmployeeId, request.SubRequestId);
+                emailError = $"exception:{ex.GetType().Name}";
+            }
+        }
+
+        if (!smsAttempted && !emailAttempted)
+        {
+            _logger.LogWarning(
+                "Outreach dispatch had no eligible channels for employee {EmployeeId} (phone={HasPhone}, email={HasEmail}, smsEnabled={SmsEnabled}, optedOut={OptedOut}).",
+                sub.EmployeeId,
+                !string.IsNullOrWhiteSpace(sub.Phone),
+                !string.IsNullOrWhiteSpace(sub.Email),
+                _smsService.IsEnabled, sub.SmsOptedOut);
+        }
+
+        return new ChannelDispatchResult(
+            SmsAttempted: smsAttempted, SmsDelivered: smsDelivered,
+            SmsMessageId: smsMessageId, SmsError: smsError,
+            EmailAttempted: emailAttempted, EmailDelivered: emailDelivered,
+            EmailError: emailError);
+    }
+
+    private async Task<ChannelDispatchResult> TryDispatchConfirmationAsync(
+        TcSubOutreach outreach, TcSubRequest request)
+    {
+        var sub = outreach.SubEmployee;
+        if (sub == null)
+        {
+            return new ChannelDispatchResult(false, false, null, null, false, false, null);
+        }
+
+        var smsEligible = _smsService.IsEnabled
+                       && !sub.SmsOptedOut
+                       && !string.IsNullOrWhiteSpace(sub.Phone);
+
+        var smsAttempted = false;
+        var smsDelivered = false;
+        string? smsMessageId = null;
+        string? smsError = null;
+
+        if (smsEligible)
+        {
+            var body = BuildSmsConfirmationBody(request);
+            var smsResult = await _smsService.SendAsync(sub.Phone!, body);
+            smsAttempted = smsResult.Attempted;
+            smsDelivered = smsResult.Delivered;
+            smsMessageId = smsResult.MessageId;
+            smsError = smsResult.ErrorReason;
+        }
+
+        var emailAttempted = false;
+        var emailDelivered = false;
+        string? emailError = null;
+        if (!string.IsNullOrWhiteSpace(sub.Email))
+        {
+            emailAttempted = true;
+            try
+            {
+                var (subject, html) = BuildConfirmationEmail(request, sub);
+                emailDelivered = await _emailService.SendEmailAsync(sub.Email, subject, html);
+                if (!emailDelivered) emailError = "email-service-returned-false";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "Confirmation email threw for employee {EmployeeId} request {SubRequestId}",
+                    sub.EmployeeId, request.SubRequestId);
+                emailError = $"exception:{ex.GetType().Name}";
+            }
+        }
+
+        return new ChannelDispatchResult(
+            SmsAttempted: smsAttempted, SmsDelivered: smsDelivered,
+            SmsMessageId: smsMessageId, SmsError: smsError,
+            EmailAttempted: emailAttempted, EmailDelivered: emailDelivered,
+            EmailError: emailError);
+    }
+
+    // ── SMS body builders ────────────────────────────────────────────────
+
+    private string BuildSmsOutreachBody(TcSubOutreach outreach, TcSubRequest request)
+    {
+        var baseUrl = _configuration["AzureCommunication:BaseUrl"]
+                   ?? _configuration["App:BaseUrl"]
+                   ?? "https://clock.newheightsed.com";
+
+        var campusName = request.Campus?.CampusName ?? "New Heights";
+        var dates = request.StartDate == request.EndDate
+            ? request.StartDate.ToString("MMM d")
+            : $"{request.StartDate:MMM d}-{request.EndDate:MMM d}";
+        var periods = string.IsNullOrWhiteSpace(request.PeriodsNeeded) ? "TBD" : request.PeriodsNeeded;
+        var link = $"{baseUrl.TrimEnd('/')}/sub/respond/{outreach.ResponseToken}";
+
+        var body = $"New Heights: Sub request at {campusName} {dates}, {periods}. Accept or decline: {link} Reply STOP to opt out.";
+
+        return body.Length <= SmsMaxLength ? body : body.Substring(0, SmsMaxLength);
+    }
+
+    private static string BuildSmsConfirmationBody(TcSubRequest request)
+    {
+        var campusName = request.Campus?.CampusName ?? "New Heights";
+        var dates = request.StartDate == request.EndDate
+            ? request.StartDate.ToString("MMM d")
+            : $"{request.StartDate:MMM d}-{request.EndDate:MMM d}";
+        var body = $"Confirmed! You are scheduled at New Heights {campusName} on {dates}. Check in with the front receptionist on arrival. Reply STOP to opt out.";
+        return body.Length <= SmsMaxLength ? body : body.Substring(0, SmsMaxLength);
+    }
+
+    // ── Email body builders (refactored from Phase 5; no longer send themselves) ──
+
+    private (string subject, string html) BuildOutreachEmail(
+        TcSubOutreach outreach, TcSubRequest request, TcEmployee sub)
+    {
+        var baseUrl = _configuration["AzureCommunication:BaseUrl"]
+                   ?? _configuration["App:BaseUrl"]
+                   ?? "https://clock.newheightsed.com";
         var link = $"{baseUrl.TrimEnd('/')}/sub/respond/{outreach.ResponseToken}";
 
         var subName = sub.Staff?.FirstName ?? sub.Staff?.FullName ?? "Substitute";
@@ -520,37 +778,12 @@ public class SubOutreachService : ISubOutreachService
   </p>
 </div>";
 
-        try
-        {
-            var ok = await _emailService.SendEmailAsync(sub.Email, subject, html);
-            if (!ok)
-            {
-                _logger.LogWarning(
-                    "Outreach email send returned false for employee {EmployeeId} request {SubRequestId}",
-                    sub.EmployeeId, request.SubRequestId);
-            }
-            return ok;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "Outreach email send threw for employee {EmployeeId} request {SubRequestId}",
-                sub.EmployeeId, request.SubRequestId);
-            return false;
-        }
+        return (subject, html);
     }
 
-    private async Task<bool> TrySendConfirmationEmailAsync(TcSubOutreach outreach, TcSubRequest request)
+    private static (string subject, string html) BuildConfirmationEmail(
+        TcSubRequest request, TcEmployee sub)
     {
-        var sub = outreach.SubEmployee;
-        if (sub == null || string.IsNullOrWhiteSpace(sub.Email))
-        {
-            _logger.LogWarning(
-                "Cannot send confirmation email — employee {EmployeeId} has no email on record.",
-                outreach.SubEmployeeId);
-            return false;
-        }
-
         var subName = sub.Staff?.FirstName ?? sub.Staff?.FullName ?? "Substitute";
         var campusName = request.Campus?.CampusName ?? "New Heights";
         var dateRange = request.StartDate == request.EndDate
@@ -573,17 +806,7 @@ public class SubOutreachService : ISubOutreachService
   <p style='color:#6b7280;font-size:0.85rem;'>Questions? Contact your campus manager.</p>
 </div>";
 
-        try
-        {
-            return await _emailService.SendEmailAsync(sub.Email, subject, html);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "Confirmation email send threw for employee {EmployeeId} request {SubRequestId}",
-                outreach.SubEmployeeId, request.SubRequestId);
-            return false;
-        }
+        return (subject, html);
     }
 
     // ── Token ────────────────────────────────────────────────────────────

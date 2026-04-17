@@ -1,0 +1,351 @@
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@inject ISubstituteTimesheetService SubTimesheetService
+@inject IJSRuntime JS
+@inject ILogger<SubstitutePayrollSection> Logger
+
+@* ─────────────────────────────────────────────────────────────────────
+   SubstitutePayrollSection
+   Renders the sub-payroll tab on /hr/payroll. Aggregates cards per sub
+   per pay-period, gates HR approve on AllSupervisorApproved, gates CSV
+   export on at least one HRApproved sub. Fires SUB_PAYROLL_APPROVED
+   and SUB_PAYROLL_EXPORTED via SubstituteTimesheetService.
+   ───────────────────────────────────────────────────────────────────── *@
+
+<div class="sub-payroll-section">
+
+    <div class="section-header">
+        <div class="section-stats">
+            @if (!isLoading && summaries.Count > 0)
+            {
+                <span><strong>@summaries.Count</strong> sub@(summaries.Count == 1 ? "" : "s")</span>
+                <span class="divider">·</span>
+                <span>
+                    <strong>@summaries.Count(s => s.HRApproved)</strong> HR approved
+                </span>
+                <span class="divider">·</span>
+                <span>
+                    <strong>@summaries.Sum(s => s.TotalPeriods)</strong>
+                    period@(summaries.Sum(s => s.TotalPeriods) == 1 ? "" : "s") total
+                </span>
+                @if (summaries.Any(s => string.IsNullOrWhiteSpace(s.AscenderEmployeeId)))
+                {
+                    var missingCount = summaries.Count(s => string.IsNullOrWhiteSpace(s.AscenderEmployeeId));
+                    <span class="divider">·</span>
+                    <span class="warn-inline">
+                        <strong>@missingCount</strong> missing CSS Emp Nbr
+                    </span>
+                }
+            }
+        </div>
+        <div class="section-actions">
+            <button type="button" class="btn-export"
+                    @onclick="ExportCsvAsync"
+                    disabled="@(!CanExport || isExporting)">
+                @(isExporting ? "Exporting…" : "Export Sub Payroll CSV")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="error-panel" role="alert">@errorMessage</div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading substitute summaries…</div>
+    }
+    else if (summaries.Count == 0)
+    {
+        <div class="empty-state">
+            <h3>No substitute period work in this pay period.</h3>
+            <p>Subs appear here as soon as they log periods on their sub timesheets.</p>
+        </div>
+    }
+    else
+    {
+        <table class="sub-payroll-table">
+            <thead>
+                <tr>
+                    <th class="expand-col"></th>
+                    <th>Name</th>
+                    <th>Emp Nbr</th>
+                    <th class="num">StopSix</th>
+                    <th class="num">McCart</th>
+                    <th class="num">Day</th>
+                    <th class="num">Night</th>
+                    <th class="num">Total</th>
+                    <th>Supervisor</th>
+                    <th>HR</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var s in summaries)
+                {
+                    var isExpanded = expandedEmployeeIds.Contains(s.EmployeeId);
+                    var canApprove = s.AllSupervisorApproved && !s.HRApproved;
+                    var isApprovingThis = approvingEmployeeId == s.EmployeeId;
+                    <tr class="sub-row @(isExpanded ? "expanded" : "") @(s.HRApproved ? "hr-approved" : "")"
+                        @onclick="() => ToggleRow(s.EmployeeId)">
+                        <td class="expand-cell">@(isExpanded ? "▼" : "▶")</td>
+                        <td class="name-cell"><strong>@s.EmployeeName</strong></td>
+                        <td class="empnbr-cell">
+                            @if (string.IsNullOrWhiteSpace(s.AscenderEmployeeId))
+                            {
+                                <span class="missing-empnbr" title="No CSS Emp Nbr — this sub will export with a blank Emp Nbr">—</span>
+                            }
+                            else
+                            {
+                                @s.AscenderEmployeeId
+                            }
+                        </td>
+                        <td class="num">@s.StopSixPeriods</td>
+                        <td class="num">@s.McCartPeriods</td>
+                        <td class="num">@s.DayPeriods</td>
+                        <td class="num">@s.NightPeriods</td>
+                        <td class="num total"><strong>@s.TotalPeriods</strong></td>
+                        <td class="sup-cell">
+                            @if (s.AllSupervisorApproved)
+                            {
+                                <span class="chip approved">All approved</span>
+                            }
+                            else if (s.RejectedCount > 0)
+                            {
+                                <span class="chip rejected">
+                                    @s.ApprovedCount/@s.CardCount approved · @s.RejectedCount rejected
+                                </span>
+                            }
+                            else if (s.LockedCount > 0 && s.LockedCount < s.CardCount)
+                            {
+                                <span class="chip pending">
+                                    @s.LockedCount/@s.CardCount locked · @s.PendingCount pending
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="chip pending">
+                                    @s.ApprovedCount/@s.CardCount approved · @s.PendingCount pending
+                                </span>
+                            }
+                        </td>
+                        <td class="hr-cell">
+                            @if (s.HRApproved)
+                            {
+                                <span class="chip approved">Approved</span>
+                            }
+                            else
+                            {
+                                <span class="chip pending">Pending</span>
+                            }
+                        </td>
+                        <td class="action-cell" @onclick:stopPropagation="true">
+                            @if (s.HRApproved)
+                            {
+                                <span class="muted">Locked</span>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn-approve-hr"
+                                        @onclick="() => ApproveSubAsync(s)"
+                                        disabled="@(!canApprove || isApprovingThis || (approvingEmployeeId != null && !isApprovingThis))"
+                                        title="@(canApprove ? "HR approve and lock all cards in this pay period" : "All cards must be supervisor-approved first")">
+                                    @(isApprovingThis ? "Approving…" : "Approve")
+                                </button>
+                            }
+                        </td>
+                    </tr>
+
+                    @if (isExpanded)
+                    {
+                        <tr class="detail-row">
+                            <td colspan="11">
+                                <div class="detail-panel">
+                                    <div class="detail-meta">
+                                        @(string.IsNullOrWhiteSpace(s.Email) ? "(no email on record)" : s.Email)
+                                        @if (string.IsNullOrWhiteSpace(s.AscenderEmployeeId))
+                                        {
+                                            <span class="missing-empnbr">
+                                                · no CSS Emp Nbr — populate in Entra before export
+                                            </span>
+                                        }
+                                    </div>
+                                    <table class="cards-mini-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Date</th>
+                                                <th>Campus</th>
+                                                <th class="num">Periods</th>
+                                                <th>Status</th>
+                                                <th>Decided by</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var c in s.Cards)
+                                            {
+                                                <tr>
+                                                    <td>@c.WorkDate.ToString("ddd, MMM d")</td>
+                                                    <td>@(c.Campus?.CampusName ?? $"Campus {c.CampusId}")</td>
+                                                    <td class="num">@c.TotalPeriodsWorked</td>
+                                                    <td>
+                                                        <span class="chip @c.ApprovalStatus.ToString().ToLower()">
+                                                            @c.ApprovalStatus
+                                                        </span>
+                                                    </td>
+                                                    <td>
+                                                        @(c.ApprovedBy ?? "—")@(c.ApprovedDate.HasValue ? $" · {c.ApprovedDate:M/d h:mm tt}" : "")
+                                                    </td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    }
+
+</div>
+
+@code {
+    [Parameter, EditorRequired] public DateOnly? PeriodStart { get; set; }
+    [Parameter, EditorRequired] public DateOnly? PeriodEnd { get; set; }
+    [Parameter, EditorRequired] public string CurrentUserEmail { get; set; } = "";
+
+    /// <summary>Fires after a state change (approve or export) so parent can refresh.</summary>
+    [Parameter] public EventCallback OnStateChanged { get; set; }
+
+    private List<SubstitutePayrollSummary> summaries = new();
+    private HashSet<int> expandedEmployeeIds = new();
+    private int? approvingEmployeeId = null;
+    private bool isExporting = false;
+    private bool isLoading = true;
+    private string errorMessage = "";
+
+    private DateOnly _lastStart;
+    private DateOnly _lastEnd;
+    private bool _everLoaded = false;
+
+    private bool CanExport => summaries.Any(s => s.HRApproved);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (PeriodStart == null || PeriodEnd == null) return;
+
+        var inputsChanged = !_everLoaded
+                         || _lastStart != PeriodStart.Value
+                         || _lastEnd != PeriodEnd.Value;
+        if (!inputsChanged) return;
+
+        _lastStart = PeriodStart.Value;
+        _lastEnd = PeriodEnd.Value;
+        _everLoaded = true;
+        expandedEmployeeIds = new();
+        await LoadSummariesAsync();
+    }
+
+    private async Task LoadSummariesAsync()
+    {
+        isLoading = true;
+        errorMessage = "";
+        try
+        {
+            summaries = await SubTimesheetService.GetPayrollSummariesAsync(_lastStart, _lastEnd);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Error loading sub payroll summaries for {Start}–{End}", _lastStart, _lastEnd);
+            errorMessage = "Could not load substitute payroll summaries.";
+            summaries = new();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void ToggleRow(int employeeId)
+    {
+        if (!expandedEmployeeIds.Add(employeeId))
+            expandedEmployeeIds.Remove(employeeId);
+    }
+
+    private async Task ApproveSubAsync(SubstitutePayrollSummary s)
+    {
+        if (approvingEmployeeId != null || isExporting) return;
+        if (string.IsNullOrWhiteSpace(CurrentUserEmail))
+        {
+            errorMessage = "Your session lost its user context — refresh and try again.";
+            return;
+        }
+
+        approvingEmployeeId = s.EmployeeId;
+        errorMessage = "";
+        try
+        {
+            await SubTimesheetService.ApproveForPayrollAsync(
+                s.EmployeeId, _lastStart, _lastEnd, CurrentUserEmail);
+            await LoadSummariesAsync();
+            await OnStateChanged.InvokeAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex,
+                "ApproveForPayrollAsync refused for employee {EmployeeId}", s.EmployeeId);
+            errorMessage = ex.Message;
+        }
+        catch (ArgumentException ex)
+        {
+            Logger.LogWarning(ex,
+                "ApproveForPayrollAsync argument error for employee {EmployeeId}", s.EmployeeId);
+            errorMessage = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Unexpected error HR-approving sub payroll for employee {EmployeeId}", s.EmployeeId);
+            errorMessage = "Could not HR-approve this sub's payroll.";
+        }
+        finally
+        {
+            approvingEmployeeId = null;
+        }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        if (!CanExport || isExporting || approvingEmployeeId != null) return;
+        if (string.IsNullOrWhiteSpace(CurrentUserEmail))
+        {
+            errorMessage = "Your session lost its user context — refresh and try again.";
+            return;
+        }
+
+        isExporting = true;
+        errorMessage = "";
+        try
+        {
+            var bytes = await SubTimesheetService.ExportSubstitutePayrollCsvAsync(
+                _lastStart, _lastEnd, CurrentUserEmail);
+            var fileName = $"SubPayroll_{_lastStart:yyyyMMdd}-{_lastEnd:yyyyMMdd}.csv";
+            await JS.InvokeVoidAsync("downloadFile", fileName, Convert.ToBase64String(bytes));
+            await OnStateChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Sub payroll CSV export failed for {Start}–{End}", _lastStart, _lastEnd);
+            errorMessage = "Could not export sub payroll CSV. Please try again.";
+        }
+        finally
+        {
+            isExporting = false;
+        }
+    }
+}

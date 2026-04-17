@@ -1,0 +1,254 @@
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@inject IAuditService AuditService
+@inject ILogger<AuditHistoryPanel> Logger
+
+@* ─────────────────────────────────────────────────────────────────────
+   AuditHistoryPanel
+   Mounted from /supervisor/sub-timesheets (per-sub) and
+   /my/sub-timesheet (self). Shows all SUB_* audit rows for the given
+   employee in the given date range, with drill-down to full JSON.
+   Read-only — never writes anything.
+   ───────────────────────────────────────────────────────────────────── *@
+
+@if (Visible)
+{
+    <div class="modal-backdrop" @onclick="HandleCloseAsync">
+        <div class="modal-panel" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
+
+            <div class="modal-header">
+                <div>
+                    <h3>History — @EmployeeName</h3>
+                    <p class="history-window">
+                        @FromDate.ToString("MMM d") – @ToDate.ToString("MMM d, yyyy")
+                    </p>
+                </div>
+                <button class="btn-close" @onclick="HandleCloseAsync" title="Close" aria-label="Close">×</button>
+            </div>
+
+            <div class="modal-body">
+                @if (isLoading)
+                {
+                    <div class="history-loading">Loading history…</div>
+                }
+                else if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="history-error">@errorMessage</div>
+                }
+                else if (rows.Count == 0)
+                {
+                    <div class="history-empty">
+                        No substitute-related audit events for this employee in this period.
+                    </div>
+                }
+                else
+                {
+                    <div class="history-summary">
+                        @rows.Count event@(rows.Count == 1 ? "" : "s") ·
+                        @rows.Select(r => r.ActionCode).Distinct().Count() distinct action@(rows.Select(r => r.ActionCode).Distinct().Count() == 1 ? "" : "s")
+                    </div>
+
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th>When</th>
+                                <th>Action</th>
+                                <th>Source</th>
+                                <th>By</th>
+                                <th>Summary</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in rows)
+                            {
+                                var isExpanded = expandedRowIds.Contains(row.AuditId);
+                                <tr class="history-row @(isExpanded ? "expanded" : "")"
+                                    @onclick="() => ToggleRow(row.AuditId)">
+                                    <td class="expand-cell">@(isExpanded ? "▼" : "▶")</td>
+                                    <td class="when-cell">@row.CreatedDate.ToString("MMM d h:mm tt")</td>
+                                    <td class="action-cell">
+                                        <span class="action-code @GetActionCssClass(row.ActionCode)">
+                                            @FormatAction(row.ActionCode)
+                                        </span>
+                                    </td>
+                                    <td class="source-cell">@row.Source</td>
+                                    <td class="by-cell">@GetDisplayUser(row)</td>
+                                    <td class="summary-cell">@(row.DeltaSummary ?? "")</td>
+                                </tr>
+                                @if (isExpanded)
+                                {
+                                    <tr class="history-detail-row">
+                                        <td colspan="6">
+                                            <div class="history-detail">
+                                                <div class="detail-row">
+                                                    <span class="detail-label">Entity:</span>
+                                                    <span class="detail-value">@row.EntityType #@row.EntityId</span>
+                                                </div>
+                                                @if (!string.IsNullOrEmpty(row.Reason))
+                                                {
+                                                    <div class="detail-row reason">
+                                                        <span class="detail-label">Reason:</span>
+                                                        <span class="detail-value">@row.Reason</span>
+                                                    </div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(row.OldValuesJson))
+                                                {
+                                                    <div class="detail-block">
+                                                        <span class="detail-label">Before:</span>
+                                                        <pre class="json-block">@row.OldValuesJson</pre>
+                                                    </div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(row.NewValuesJson))
+                                                {
+                                                    <div class="detail-block">
+                                                        <span class="detail-label">After:</span>
+                                                        <pre class="json-block">@row.NewValuesJson</pre>
+                                                    </div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(row.IPAddress))
+                                                {
+                                                    <div class="detail-row subtle">
+                                                        <span class="detail-label">IP:</span>
+                                                        <span class="detail-value">@row.IPAddress</span>
+                                                    </div>
+                                                }
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="HandleCloseAsync">Close</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public int EmployeeId { get; set; }
+    [Parameter] public string EmployeeName { get; set; } = "";
+    [Parameter] public DateOnly FromDate { get; set; }
+    [Parameter] public DateOnly ToDate { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private List<TcAuditLog> rows = new();
+    private HashSet<long> expandedRowIds = new();
+    private bool isLoading = false;
+    private string errorMessage = "";
+
+    // Remember what we last loaded so we only re-fetch on meaningful change.
+    private int _lastEmployeeId = 0;
+    private DateOnly _lastFrom;
+    private DateOnly _lastTo;
+    private bool _loadedForThisOpen = false;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!Visible)
+        {
+            _loadedForThisOpen = false;
+            return;
+        }
+
+        var inputsChanged = _lastEmployeeId != EmployeeId
+                         || _lastFrom != FromDate
+                         || _lastTo != ToDate;
+
+        if (!_loadedForThisOpen || inputsChanged)
+        {
+            _loadedForThisOpen = true;
+            _lastEmployeeId = EmployeeId;
+            _lastFrom = FromDate;
+            _lastTo = ToDate;
+            expandedRowIds = new();
+            await LoadHistoryAsync();
+        }
+    }
+
+    private async Task LoadHistoryAsync()
+    {
+        if (EmployeeId <= 0)
+        {
+            errorMessage = "Missing employee id.";
+            rows = new();
+            return;
+        }
+
+        isLoading = true;
+        errorMessage = "";
+        try
+        {
+            var fromDt = FromDate.ToDateTime(TimeOnly.MinValue);
+            var toDt = ToDate.ToDateTime(TimeOnly.MaxValue);
+
+            var all = await AuditService.GetEmployeeHistoryAsync(EmployeeId, fromDt, toDt);
+
+            rows = all
+                .Where(r => r.ActionCode != null && r.ActionCode.StartsWith("SUB_", StringComparison.Ordinal))
+                .OrderByDescending(r => r.CreatedDate)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "AuditHistoryPanel.LoadHistoryAsync failed for employee {EmployeeId} range {From}–{To}",
+                EmployeeId, FromDate, ToDate);
+            errorMessage = "Could not load history. Close and try again.";
+            rows = new();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void ToggleRow(long auditId)
+    {
+        if (!expandedRowIds.Add(auditId))
+            expandedRowIds.Remove(auditId);
+    }
+
+    private async Task HandleCloseAsync()
+    {
+        await OnClose.InvokeAsync();
+    }
+
+    private static string GetDisplayUser(TcAuditLog row)
+    {
+        if (!string.IsNullOrWhiteSpace(row.UserName)) return row.UserName;
+        if (!string.IsNullOrWhiteSpace(row.UserEmail)) return row.UserEmail!;
+        return "system";
+    }
+
+    private static string FormatAction(string code)
+    {
+        // SUB_TIMECARD_CREATED → Timecard Created
+        // SUB_PERIOD_ADDED    → Period Added
+        if (string.IsNullOrEmpty(code)) return "";
+        var trimmed = code.StartsWith("SUB_", StringComparison.Ordinal) ? code.Substring(4) : code;
+        var parts = trimmed.Split('_');
+        return string.Join(" ", parts.Select(p =>
+            p.Length == 0 ? p : char.ToUpper(p[0]) + p.Substring(1).ToLower()));
+    }
+
+    private static string GetActionCssClass(string code)
+    {
+        if (string.IsNullOrEmpty(code)) return "action-generic";
+        if (code.Contains("CREATED") || code.Contains("ADDED")) return "action-create";
+        if (code.Contains("APPROVED")) return "action-approve";
+        if (code.Contains("REJECTED")) return "action-reject";
+        if (code.Contains("REMOVED") || code.Contains("DELETED")) return "action-delete";
+        if (code.Contains("MODIFIED") || code.Contains("UPDATED")) return "action-modify";
+        if (code.Contains("UNLOCKED")) return "action-unlock";
+        if (code.Contains("VERIFIED")) return "action-verify";
+        if (code.Contains("EXPORTED")) return "action-export";
+        return "action-generic";
+    }
+}

@@ -71,6 +71,30 @@
     font-weight: 600;
 }
 
+.history-shortcut {
+    margin-left: auto;
+}
+
+.btn-history-inline {
+    background: #eef2ff;
+    color: #3730a3;
+    border: 1px solid #c7d2fe;
+    padding: 0.35rem 0.8rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.btn-history-inline:hover:not(:disabled) {
+    background: #e0e7ff;
+}
+
+.btn-history-inline:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .period-navigation {
     display: flex;
     align-items: center;

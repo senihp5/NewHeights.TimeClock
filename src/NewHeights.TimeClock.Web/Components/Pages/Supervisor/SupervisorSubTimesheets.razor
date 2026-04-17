@@ -1,0 +1,601 @@
+@page "/supervisor/sub-timesheets"
+@page "/supervisor/sub-timesheets/{PeriodOffset:int}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ISubstituteTimesheetService SubTimesheetService
+@inject IPayPeriodService PayPeriodService
+@inject IUserContextService UserContextSvc
+@inject NavigationManager Navigation
+@inject ILogger<SupervisorSubTimesheets> Logger
+
+<PageTitle>Substitute Timesheets - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="sup-sub-page">
+
+    <header class="sup-sub-header">
+        <h1>Substitute Timesheets</h1>
+        <p class="header-subtitle">Review and approve substitute period entries for your campus.</p>
+    </header>
+
+    <div class="filter-bar">
+        <div class="info-item">
+            <span class="info-label">Pay Period:</span>
+            <span class="info-value">
+                @(currentPayPeriod != null
+                    ? $"{currentPayPeriod.StartDate:MMM d} – {currentPayPeriod.EndDate:MMM d, yyyy}"
+                    : "—")
+            </span>
+        </div>
+        @if (isAdmin)
+        {
+            <div class="info-item">
+                <label for="campus-filter" class="info-label">Campus:</label>
+                <select id="campus-filter"
+                        @bind="selectedCampusFilter"
+                        @bind:after="OnCampusFilterChangedAsync">
+                    <option value="0">All Campuses</option>
+                    @foreach (var kv in campusNameById.OrderBy(k => k.Value))
+                    {
+                        <option value="@kv.Key">@kv.Value</option>
+                    }
+                </select>
+            </div>
+        }
+        else
+        {
+            <div class="info-item">
+                <span class="info-label">Campus:</span>
+                <span class="info-value">@scopedCampusDisplay</span>
+            </div>
+        }
+    </div>
+
+    <div class="period-nav">
+        <button class="btn-nav" @onclick="PreviousPeriod" disabled="@isLoading">← Previous</button>
+        <div class="current-period-wrap">
+            <strong>@(currentPayPeriod?.PeriodName ?? "—")</strong>
+            @if (periodOffset == 0)
+            {
+                <span class="current-badge">Current</span>
+            }
+        </div>
+        <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0 || isLoading)">Next →</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(actionError))
+    {
+        <div class="error-panel" role="alert">@actionError</div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading substitute timesheets...</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="error-panel">@loadError</div>
+    }
+    else if (groups.Count == 0)
+    {
+        <div class="empty-state">
+            <h3>No substitute timecards in this period.</h3>
+            <p>Cards appear here once subs add periods to their timesheets.</p>
+        </div>
+    }
+    else
+    {
+        <div class="summary-stats">
+            <div class="stat-card">
+                <span class="stat-value">@groups.Count</span>
+                <span class="stat-label">Substitutes</span>
+            </div>
+            <div class="stat-card pending">
+                <span class="stat-value">@totalPending</span>
+                <span class="stat-label">Pending</span>
+            </div>
+            <div class="stat-card success">
+                <span class="stat-value">@totalApproved</span>
+                <span class="stat-label">Approved</span>
+            </div>
+            <div class="stat-card error">
+                <span class="stat-value">@totalRejected</span>
+                <span class="stat-label">Rejected</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">@totalPeriods</span>
+                <span class="stat-label">Total Periods</span>
+            </div>
+        </div>
+
+        @foreach (var g in groups)
+        {
+            var isGroupExpanded = expandedEmployees.Contains(g.EmployeeId);
+            <div class="sub-group @(isGroupExpanded ? "expanded" : "")">
+
+                <div class="sub-group-header" @onclick="() => ToggleGroup(g.EmployeeId)">
+                    <div class="sub-name">
+                        <span class="expand-icon">@(isGroupExpanded ? "▼" : "▶")</span>
+                        <strong>@g.EmployeeName</strong>
+                    </div>
+                    <div class="sub-summary">
+                        <span class="period-count">
+                            @g.TotalPeriods period@(g.TotalPeriods == 1 ? "" : "s")
+                            across @g.Cards.Count day@(g.Cards.Count == 1 ? "" : "s")
+                        </span>
+                        @if (g.PendingCount > 0)
+                        {
+                            <span class="chip pending">@g.PendingCount pending</span>
+                        }
+                        @if (g.ApprovedCount > 0)
+                        {
+                            <span class="chip approved">@g.ApprovedCount approved</span>
+                        }
+                        @if (g.RejectedCount > 0)
+                        {
+                            <span class="chip rejected">@g.RejectedCount rejected</span>
+                        }
+                    </div>
+                    <div class="sub-actions" @onclick:stopPropagation="true">
+                        <button class="btn-history"
+                                @onclick="() => OpenHistory(g.EmployeeId, g.EmployeeName)">
+                            View History
+                        </button>
+                    </div>
+                </div>
+
+                @if (isGroupExpanded)
+                {
+                    <div class="sub-group-body">
+                        @foreach (var card in g.Cards)
+                        {
+                            var isCardExpanded = expandedCards.Contains(card.SubTimecardId);
+                            var statusClass = "status-" + card.ApprovalStatus.ToString().ToLower();
+                            <div class="card-row @statusClass">
+
+                                <div class="card-row-header" @onclick="() => ToggleCard(card.SubTimecardId)">
+                                    <span class="card-expand">@(isCardExpanded ? "▼" : "▶")</span>
+                                    <span class="card-date">@card.WorkDate.ToString("ddd, MMM d")</span>
+                                    <span class="card-campus">@(card.Campus?.CampusName ?? GetCampusName(card.CampusId))</span>
+                                    <span class="card-periods">
+                                        @card.TotalPeriodsWorked period@(card.TotalPeriodsWorked == 1 ? "" : "s"):
+                                        @string.Join(", ", card.PeriodEntries
+                                            .OrderBy(p => p.PeriodNumber)
+                                            .Select(p => $"P{p.PeriodNumber}"))
+                                    </span>
+                                    <span class="card-status @statusClass">@card.ApprovalStatus</span>
+                                    <div class="card-actions" @onclick:stopPropagation="true">
+                                        @if (card.ApprovalStatus == ApprovalStatus.Pending)
+                                        {
+                                            @if (rejectingCardId == card.SubTimecardId)
+                                            {
+                                                <span class="reject-inline-label">Rejecting — reason required below</span>
+                                            }
+                                            else
+                                            {
+                                                <button type="button"
+                                                        class="btn-approve"
+                                                        @onclick="() => ApproveAsync(card)"
+                                                        disabled="@(IsBusy(card.SubTimecardId))">
+                                                    @(approvingCardId == card.SubTimecardId ? "Approving…" : "Approve")
+                                                </button>
+                                                <button type="button"
+                                                        class="btn-reject"
+                                                        @onclick="() => BeginReject(card.SubTimecardId)"
+                                                        disabled="@(IsBusy(card.SubTimecardId))">
+                                                    Reject
+                                                </button>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            <span class="decided-by">
+                                                @card.ApprovalStatus by @(card.ApprovedBy ?? "—")
+                                                @if (card.ApprovedDate.HasValue)
+                                                {
+                                                    <text> · @card.ApprovedDate.Value.ToString("M/d h:mm tt")</text>
+                                                }
+                                            </span>
+                                        }
+                                    </div>
+                                </div>
+
+                                @if (rejectingCardId == card.SubTimecardId)
+                                {
+                                    <div class="reject-form-panel" @onclick:stopPropagation="true">
+                                        <label for="reject-reason-@card.SubTimecardId">Rejection reason (required):</label>
+                                        <textarea id="reject-reason-@card.SubTimecardId"
+                                                  @bind="rejectionReason"
+                                                  rows="2"
+                                                  maxlength="500"
+                                                  placeholder="Explain why this timecard is being rejected — the sub will see this in their history."
+                                                  disabled="@isRejecting"></textarea>
+                                        <div class="reject-form-buttons">
+                                            <button type="button"
+                                                    class="btn-confirm-reject"
+                                                    @onclick="() => ConfirmRejectAsync(card)"
+                                                    disabled="@(isRejecting || string.IsNullOrWhiteSpace(rejectionReason))">
+                                                @(isRejecting ? "Rejecting…" : "Confirm Reject")
+                                            </button>
+                                            <button type="button"
+                                                    class="btn-cancel-reject"
+                                                    @onclick="CancelReject"
+                                                    disabled="@isRejecting">
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+
+                                @if (isCardExpanded)
+                                {
+                                    <div class="card-detail">
+                                        @if (card.PeriodEntries.Count == 0)
+                                        {
+                                            <p class="no-periods">No periods logged on this card.</p>
+                                        }
+                                        else
+                                        {
+                                            <table class="period-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Period</th>
+                                                        <th>Time</th>
+                                                        <th>Session</th>
+                                                        <th>Teacher</th>
+                                                        <th>Room</th>
+                                                        <th>Content</th>
+                                                        <th>Notes</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var e in card.PeriodEntries.OrderBy(p => p.PeriodNumber))
+                                                    {
+                                                        <tr>
+                                                            <td><strong>P@(e.PeriodNumber)</strong> — @e.PeriodName</td>
+                                                            <td>
+                                                                @e.StartTime.ToString("h:mm") –
+                                                                @e.EndTime.ToString("h:mm tt")
+                                                            </td>
+                                                            <td>
+                                                                <span class="session-badge session-@e.SessionType.ToLower()">
+                                                                    @e.SessionType
+                                                                </span>
+                                                            </td>
+                                                            <td>@(e.TeacherReplaced ?? "—")</td>
+                                                            <td>@(e.Room ?? "—")</td>
+                                                            <td>@(e.ContentArea ?? "—")</td>
+                                                            <td class="notes-cell">@(e.Notes ?? "")</td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    }
+
+</div>
+
+<AuditHistoryPanel Visible="@showHistory"
+                   EmployeeId="@historyEmployeeId"
+                   EmployeeName="@historyEmployeeName"
+                   FromDate="@(currentPayPeriod?.StartDate ?? DateOnly.FromDateTime(DateTime.Today))"
+                   ToDate="@(currentPayPeriod?.EndDate ?? DateOnly.FromDateTime(DateTime.Today))"
+                   OnClose="CloseHistory" />
+
+@code {
+    [Parameter] public int? PeriodOffset { get; set; }
+
+    private int periodOffset = 0;
+    private bool isLoading = true;
+    private string loadError = "";
+    private string actionError = "";
+
+    private UserContext? userCtx;
+    private bool isAdmin = false;
+    private int? scopedCampusId = null;
+    private string scopedCampusDisplay = "";
+
+    // Admin-only campus filter. 0 = All Campuses.
+    private int selectedCampusFilter = 0;
+
+    private PayPeriodInfo? currentPayPeriod;
+    private List<TcSubstituteTimecard> cards = new();
+    private List<SubGroup> groups = new();
+    private Dictionary<int, string> campusNameById = new();
+
+    private HashSet<int> expandedEmployees = new();
+    private HashSet<long> expandedCards = new();
+
+    private int totalPending = 0;
+    private int totalApproved = 0;
+    private int totalRejected = 0;
+    private int totalPeriods = 0;
+
+    // ── Approve / Reject flow state ───────────────────────────────────────
+    private string currentUserEmail = "";
+    private long? approvingCardId = null;
+    private long? rejectingCardId = null;
+    private string rejectionReason = "";
+    private bool isRejecting = false;
+
+    // ── History panel state ───────────────────────────────────────────────
+    private bool showHistory = false;
+    private int historyEmployeeId = 0;
+    private string historyEmployeeName = "";
+
+    private class SubGroup
+    {
+        public int EmployeeId { get; set; }
+        public string EmployeeName { get; set; } = "";
+        public List<TcSubstituteTimecard> Cards { get; set; } = new();
+        public int TotalPeriods => Cards.Sum(c => c.TotalPeriodsWorked);
+        public int PendingCount => Cards.Count(c => c.ApprovalStatus == ApprovalStatus.Pending);
+        public int ApprovedCount => Cards.Count(c => c.ApprovalStatus == ApprovalStatus.Approved);
+        public int RejectedCount => Cards.Count(c => c.ApprovalStatus == ApprovalStatus.Rejected);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        periodOffset = PeriodOffset ?? 0;
+        userCtx = await UserContextSvc.GetCurrentUserAsync();
+        isAdmin = userCtx.IsAdmin;
+        currentUserEmail = userCtx.Email ?? "";
+
+        if (!isAdmin)
+        {
+            if (!userCtx.CampusId.HasValue)
+            {
+                loadError = "Your account isn't assigned to a campus. Contact an administrator.";
+                isLoading = false;
+                return;
+            }
+            scopedCampusId = userCtx.CampusId;
+            scopedCampusDisplay = userCtx.CampusDisplayName;
+        }
+
+        await LoadData();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var incoming = PeriodOffset ?? 0;
+        if (incoming != periodOffset)
+        {
+            periodOffset = incoming;
+            await LoadData();
+        }
+    }
+
+    private async Task LoadData()
+    {
+        isLoading = true;
+        loadError = "";
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            campusNameById = await context.Campuses
+                .AsNoTracking()
+                .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
+
+            var anchor = DateTime.Today.AddDays(-15 * periodOffset);
+            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchor);
+            if (currentPayPeriod == null)
+            {
+                loadError = "Could not resolve pay period for this date.";
+                return;
+            }
+
+            int? filterCampusId = isAdmin
+                ? (selectedCampusFilter > 0 ? (int?)selectedCampusFilter : null)
+                : scopedCampusId;
+
+            cards = await SubTimesheetService.GetCampusCardsForPayPeriodAsync(
+                filterCampusId, currentPayPeriod.StartDate, currentPayPeriod.EndDate);
+
+            groups = cards
+                .GroupBy(c => c.EmployeeId)
+                .Select(g => new SubGroup
+                {
+                    EmployeeId = g.Key,
+                    EmployeeName = g.First().Employee?.Staff?.FullName
+                                 ?? g.First().Employee?.Email
+                                 ?? $"Employee {g.Key}",
+                    Cards = g.OrderBy(c => c.WorkDate).ThenBy(c => c.CampusId).ToList()
+                })
+                .OrderBy(g => g.EmployeeName)
+                .ToList();
+
+            totalPending = groups.Sum(g => g.PendingCount);
+            totalApproved = groups.Sum(g => g.ApprovedCount);
+            totalRejected = groups.Sum(g => g.RejectedCount);
+            totalPeriods = groups.Sum(g => g.TotalPeriods);
+
+            // Preserve any previously expanded groups/cards that are still in view.
+            var visibleEmployeeIds = groups.Select(g => g.EmployeeId).ToHashSet();
+            expandedEmployees.IntersectWith(visibleEmployeeIds);
+            var visibleCardIds = cards.Select(c => c.SubTimecardId).ToHashSet();
+            expandedCards.IntersectWith(visibleCardIds);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Error loading sub timesheets for supervisor campus={Campus} admin={IsAdmin}",
+                scopedCampusId, isAdmin);
+            loadError = "Unable to load substitute timesheets. Please refresh and try again.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task OnCampusFilterChangedAsync() => await LoadData();
+
+    private string GetCampusName(int campusId)
+        => campusNameById.TryGetValue(campusId, out var n) ? n : $"Campus {campusId}";
+
+    private void ToggleGroup(int employeeId)
+    {
+        if (!expandedEmployees.Add(employeeId))
+            expandedEmployees.Remove(employeeId);
+    }
+
+    private void ToggleCard(long cardId)
+    {
+        if (!expandedCards.Add(cardId))
+            expandedCards.Remove(cardId);
+    }
+
+    private void PreviousPeriod()
+    {
+        periodOffset--;
+        Navigation.NavigateTo($"/supervisor/sub-timesheets/{periodOffset}");
+    }
+
+    private void NextPeriod()
+    {
+        if (periodOffset >= 0) return;
+        periodOffset++;
+        if (periodOffset == 0)
+            Navigation.NavigateTo("/supervisor/sub-timesheets");
+        else
+            Navigation.NavigateTo($"/supervisor/sub-timesheets/{periodOffset}");
+    }
+
+    // ── Approve / Reject handlers ─────────────────────────────────────────
+
+    private bool IsBusy(long cardId)
+        => approvingCardId != null
+        || (rejectingCardId != null && rejectingCardId != cardId)
+        || isRejecting;
+
+    private async Task ApproveAsync(TcSubstituteTimecard card)
+    {
+        if (approvingCardId != null || isRejecting) return;
+        if (string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            actionError = "Your session lost its user context — refresh and try again.";
+            return;
+        }
+
+        approvingCardId = card.SubTimecardId;
+        actionError = "";
+        try
+        {
+            await SubTimesheetService.ApproveCardAsync(card.SubTimecardId, currentUserEmail);
+            await LoadData();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex,
+                "ApproveCardAsync rejected for card {CardId} by {Email}",
+                card.SubTimecardId, currentUserEmail);
+            actionError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Unexpected error approving card {CardId} by {Email}",
+                card.SubTimecardId, currentUserEmail);
+            actionError = "Could not approve the timecard. Please try again.";
+        }
+        finally
+        {
+            approvingCardId = null;
+        }
+    }
+
+    private void BeginReject(long cardId)
+    {
+        actionError = "";
+        rejectingCardId = cardId;
+        rejectionReason = "";
+    }
+
+    private void CancelReject()
+    {
+        rejectingCardId = null;
+        rejectionReason = "";
+    }
+
+    private async Task ConfirmRejectAsync(TcSubstituteTimecard card)
+    {
+        if (isRejecting) return;
+        if (string.IsNullOrWhiteSpace(rejectionReason))
+        {
+            actionError = "Rejection reason is required.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            actionError = "Your session lost its user context — refresh and try again.";
+            return;
+        }
+
+        isRejecting = true;
+        actionError = "";
+        try
+        {
+            await SubTimesheetService.RejectCardAsync(card.SubTimecardId, currentUserEmail, rejectionReason);
+            rejectingCardId = null;
+            rejectionReason = "";
+            await LoadData();
+        }
+        catch (ArgumentException ex)
+        {
+            Logger.LogWarning(ex,
+                "RejectCardAsync argument error for card {CardId} by {Email}",
+                card.SubTimecardId, currentUserEmail);
+            actionError = ex.Message;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex,
+                "RejectCardAsync refused card {CardId} by {Email}",
+                card.SubTimecardId, currentUserEmail);
+            actionError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Unexpected error rejecting card {CardId} by {Email}",
+                card.SubTimecardId, currentUserEmail);
+            actionError = "Could not reject the timecard. Please try again.";
+        }
+        finally
+        {
+            isRejecting = false;
+        }
+    }
+
+    // ── History panel handlers ────────────────────────────────────────────
+
+    private void OpenHistory(int employeeId, string employeeName)
+    {
+        historyEmployeeId = employeeId;
+        historyEmployeeName = employeeName;
+        showHistory = true;
+    }
+
+    private void CloseHistory()
+    {
+        showHistory = false;
+    }
+}

@@ -53,64 +53,90 @@
         </div>
     </div>
 
-    @if (isLoading)
-    {
-        <div class="loading">Loading...</div>
-    }
-    else
-    {
-        <div class="payroll-actions-bar">
-            <select @bind="filterStatus">
-                <option value="all">All</option>
-                <option value="pending_hr">Ready for HR</option>
-                <option value="approved">Approved</option>
-            </select>
-            <button class="btn-approve-all" @onclick="ApproveAllReady">Approve All Ready</button>
-            <button class="btn-export" @onclick="ExportToCSV" disabled="@(!allHRApproved)">Export CSV</button>
-        </div>
+    <div class="payroll-tabs" role="tablist">
+        <button type="button"
+                class="payroll-tab @(activeTab == "hourly" ? "active" : "")"
+                role="tab"
+                aria-selected="@(activeTab == "hourly")"
+                @onclick='() => SetTab("hourly")'>
+            Hourly
+        </button>
+        <button type="button"
+                class="payroll-tab @(activeTab == "substitutes" ? "active" : "")"
+                role="tab"
+                aria-selected="@(activeTab == "substitutes")"
+                @onclick='() => SetTab("substitutes")'>
+            Substitutes
+        </button>
+    </div>
 
-        <table class="payroll-table">
-            <thead>
-                <tr>
-                    <th>Employee</th>
-                    <th>Supervisor</th>
-                    <th>Regular</th>
-                    <th>OT</th>
-                    <th>Total</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var emp in FilteredSummaries)
-                {
-                    <tr>
-                        <td>@emp.EmployeeName<br/><small>@emp.IdNumber</small></td>
-                        <td>@emp.SupervisorName</td>
-                        <td>@emp.RegularHours.ToString("F1")</td>
-                        <td>@emp.OvertimeHours.ToString("F1")</td>
-                        <td><strong>@emp.TotalHours.ToString("F1")</strong></td>
-                        <td>
-                            @(emp.EmployeeApproved ? "E✓" : "E⏳")
-                            @(emp.SupervisorApproved ? "S✓" : "S⏳")
-                            @(emp.HRApproved ? "HR✓" : "HR⏳")
-                        </td>
-                        <td>
-                            <button @onclick="() => ViewDetails(emp.EmployeeId)">View</button>
-                            @if (emp.SupervisorApproved && !emp.HRApproved)
-                            {
-                                <button @onclick="() => ApproveEmployee(emp.EmployeeId)">Approve</button>
-                            }
-                        </td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-
-        @if (payPeriodExported)
+    @if (activeTab == "hourly")
+    {
+        @if (isLoading)
         {
-            <div class="export-info">Exported on @exportedDate?.ToString("MMM d") by @exportedBy</div>
+            <div class="loading">Loading...</div>
         }
+        else
+        {
+            <div class="payroll-actions-bar">
+                <select @bind="filterStatus">
+                    <option value="all">All</option>
+                    <option value="pending_hr">Ready for HR</option>
+                    <option value="approved">Approved</option>
+                </select>
+                <button class="btn-approve-all" @onclick="ApproveAllReady">Approve All Ready</button>
+                <button class="btn-export" @onclick="ExportToCSV" disabled="@(!allHRApproved)">Export CSV</button>
+            </div>
+
+            <table class="payroll-table">
+                <thead>
+                    <tr>
+                        <th>Employee</th>
+                        <th>Supervisor</th>
+                        <th>Regular</th>
+                        <th>OT</th>
+                        <th>Total</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var emp in FilteredSummaries)
+                    {
+                        <tr>
+                            <td>@emp.EmployeeName<br/><small>@emp.IdNumber</small></td>
+                            <td>@emp.SupervisorName</td>
+                            <td>@emp.RegularHours.ToString("F1")</td>
+                            <td>@emp.OvertimeHours.ToString("F1")</td>
+                            <td><strong>@emp.TotalHours.ToString("F1")</strong></td>
+                            <td>
+                                @(emp.EmployeeApproved ? "E✓" : "E⏳")
+                                @(emp.SupervisorApproved ? "S✓" : "S⏳")
+                                @(emp.HRApproved ? "HR✓" : "HR⏳")
+                            </td>
+                            <td>
+                                <button @onclick="() => ViewDetails(emp.EmployeeId)">View</button>
+                                @if (emp.SupervisorApproved && !emp.HRApproved)
+                                {
+                                    <button @onclick="() => ApproveEmployee(emp.EmployeeId)">Approve</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            @if (payPeriodExported)
+            {
+                <div class="export-info">Exported on @exportedDate?.ToString("MMM d") by @exportedBy</div>
+            }
+        }
+    }
+    else if (activeTab == "substitutes")
+    {
+        <SubstitutePayrollSection PeriodStart="@currentPayPeriod?.StartDate"
+                                  PeriodEnd="@currentPayPeriod?.EndDate"
+                                  CurrentUserEmail="@currentUserEmail" />
     }
 </div>
 
@@ -126,6 +152,15 @@
     private bool payPeriodExported = false;
     private DateTime? exportedDate;
     private string? exportedBy;
+
+    // Phase 4: Hourly / Substitutes tab switcher.
+    private string activeTab = "hourly";
+
+    private void SetTab(string tab)
+    {
+        if (tab != "hourly" && tab != "substitutes") return;
+        activeTab = tab;
+    }
 
     private bool allHRApproved => payrollSummaries.Count > 0 && payrollSummaries.All(p => p.HRApproved);
 

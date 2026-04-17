@@ -1,11 +1,38 @@
 @page "/policies/sms-consent"
-@layout KioskLayout
 @using NewHeights.TimeClock.Shared.Constants
 @attribute [AllowAnonymous]
 
 <PageTitle>SMS Consent Policy - @AppConstants.Branding.ShortName</PageTitle>
 
-<div class="policy-page">
+<style>
+    /* Inline-scoped to #nh-policy-root so global resets (kiosk.css * reset, MainLayout chrome) can't override. !important on layout rules only. */
+    #nh-policy-root { background: #f3f4f6 !important; min-height: 100vh; padding: 2rem 1rem !important; font-family: Arial, "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; justify-content: center; align-items: flex-start; }
+    #nh-policy-root * { box-sizing: border-box; }
+    #nh-policy-root .policy-sheet { max-width: 820px; width: 100%; background: #fff !important; padding: 2.25rem 2.5rem 3rem !important; box-shadow: 0 4px 20px rgba(0,0,0,0.08); color: #1f2937; line-height: 1.55; }
+    #nh-policy-root .policy-masthead { display: flex !important; align-items: center; gap: 1.25rem; }
+    #nh-policy-root .policy-logo { flex-shrink: 0; }
+    #nh-policy-root .policy-logo-img { display: block; height: 72px; width: auto; max-width: 140px; object-fit: contain; }
+    #nh-policy-root .policy-title-block { flex: 1; text-align: center; }
+    #nh-policy-root .policy-title-block h1 { margin: 0 !important; color: #2D2D6D !important; font-size: 2rem !important; font-weight: 800 !important; letter-spacing: 0.15em; }
+    #nh-policy-root .policy-subtitle { margin: 0.15rem 0 0 !important; color: #6b7280 !important; font-size: 0.9rem !important; letter-spacing: 0.02em; font-weight: 400 !important; }
+    #nh-policy-root .masthead-rule { height: 2px !important; background: #2D2D6D !important; margin: 0.75rem 0 1.25rem !important; }
+    #nh-policy-root .policy-meta { width: 100% !important; border-collapse: collapse !important; border: 1px solid #d1d5db !important; margin-bottom: 1.5rem !important; }
+    #nh-policy-root .policy-meta td { padding: 0.65rem 0.75rem !important; border: 1px solid #d1d5db !important; font-size: 0.9rem; vertical-align: top; width: 25%; }
+    #nh-policy-root .meta-key { background: #fff; color: #2D2D6D !important; font-weight: 700 !important; }
+    #nh-policy-root .meta-val { color: #1f2937 !important; }
+    #nh-policy-root .policy-h1 { color: #2D2D6D !important; font-size: 1.1rem !important; font-weight: 700 !important; letter-spacing: 0.02em; margin: 1.5rem 0 0.6rem !important; padding: 0 0 0 0.75rem !important; border-left: 4px solid #2D2D6D !important; line-height: 1.3; text-transform: uppercase; }
+    #nh-policy-root .policy-description-box { background: #f3f4f6 !important; border: 1px solid #e5e7eb; padding: 0.6rem 0.9rem !important; margin-bottom: 0.5rem !important; font-size: 0.88rem; color: #374151; }
+    #nh-policy-root .policy-sheet p { margin: 0.5rem 0 0.75rem !important; color: #374151 !important; font-size: 0.95rem; }
+    #nh-policy-root .consent-callout { border: 1px dashed #6b7280 !important; padding: 0.95rem 1.25rem !important; margin: 1rem 0 1.25rem !important; text-align: center; color: #1f2937; font-size: 0.95rem; background: #fff; }
+    #nh-policy-root .consent-callout em { font-style: italic; font-weight: 500; }
+    #nh-policy-root .signature-block { display: flex !important; justify-content: space-between; gap: 3rem; margin-top: 3rem !important; padding-top: 1rem !important; }
+    #nh-policy-root .signature-line { flex: 1; display: flex; flex-direction: column; }
+    #nh-policy-root .sig-bar { display: block; height: 1px !important; background: #1f2937 !important; margin-bottom: 0.35rem !important; width: 100%; min-width: 12rem; }
+    #nh-policy-root .sig-label { color: #374151 !important; font-size: 0.85rem; }
+    @@media print { #nh-policy-root { background: #fff !important; padding: 0 !important; } #nh-policy-root .policy-sheet { box-shadow: none !important; padding: 1rem !important; } }
+</style>
+
+<div id="nh-policy-root">
     <div class="policy-sheet">
 
         <header class="policy-masthead">

@@ -1,7 +1,10 @@
+using System.Globalization;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
 using NewHeights.TimeClock.Shared.Audit;
+using NewHeights.TimeClock.Shared.Constants;
 using NewHeights.TimeClock.Shared.Enums;
 
 namespace NewHeights.TimeClock.Web.Services;
@@ -80,6 +83,104 @@ public interface ISubstituteTimesheetService
     /// page can call it unconditionally once Phase 5 lights it up.
     /// </summary>
     Task AutoPopulatePreAssignedAsync(long subTimecardId);
+
+    // ── Supervisor-facing (Phase 3) ───────────────────────────────────────
+
+    /// <summary>
+    /// Every sub timecard with at least one period entry in the given pay-period
+    /// window, scoped by campus. Pass <paramref name="campusId"/> = null to
+    /// return all campuses (for admin users). Includes Employee+Staff (name),
+    /// Campus, and PeriodEntries (ordered) for UI rendering. No audit — read-only.
+    /// </summary>
+    Task<List<TcSubstituteTimecard>> GetCampusCardsForPayPeriodAsync(
+        int? campusId, DateOnly payPeriodStart, DateOnly payPeriodEnd);
+
+    /// <summary>
+    /// Approves one sub timecard. Sets ApprovalStatus=Approved, stamps ApprovedBy
+    /// + ApprovedDate from the supervisor's email. Throws if the card is already
+    /// Approved or Locked. Fires SUB_TIMECARD_APPROVED with old/new status.
+    /// </summary>
+    Task ApproveCardAsync(long subTimecardId, string approverEmail);
+
+    /// <summary>
+    /// Rejects one sub timecard with a required reason. Sets ApprovalStatus=Rejected,
+    /// stamps ApprovedBy + ApprovedDate (used as decidedBy/decidedDate semantically).
+    /// Stores the reason in TcAuditLog.Reason — no schema change needed. Throws if
+    /// reason is null/empty or the card is already Approved or Locked. Fires
+    /// SUB_TIMECARD_REJECTED with old/new status and the reason on the audit row.
+    /// </summary>
+    Task RejectCardAsync(long subTimecardId, string approverEmail, string reason);
+
+    // ── HR-facing (Phase 4) ───────────────────────────────────────────────
+
+    /// <summary>
+    /// One aggregate summary row per substitute who has any card in the given
+    /// pay-period window. Includes per-campus + per-session period counts,
+    /// supervisor-approval readiness, and an HRApproved flag derived from
+    /// card-level Locked status. Read-only — no audit.
+    /// </summary>
+    Task<List<SubstitutePayrollSummary>> GetPayrollSummariesAsync(
+        DateOnly periodStart, DateOnly periodEnd);
+
+    /// <summary>
+    /// HR approves one sub's payroll for the given pay-period. Validates every
+    /// card for (employee, period) is in Approved status (throws if any are
+    /// Pending / Rejected / already Locked), then flips all cards to Locked
+    /// in a single transaction. Fires SUB_PAYROLL_APPROVED once for the batch.
+    /// </summary>
+    Task ApproveForPayrollAsync(
+        int employeeId, DateOnly periodStart, DateOnly periodEnd, string approverEmail);
+
+    /// <summary>
+    /// Builds a CSV byte array with one row per sub per pay-period per spec
+    /// section 12: EmpNbr, LastName, FirstName, PayPeriodStart, PayPeriodEnd,
+    /// DayPeriods, NightPeriods, TotalPeriods, StopSixPeriods, McCartPeriods.
+    /// Only includes subs with AllCardsLocked = true (HR-approved). Fires
+    /// SUB_PAYROLL_EXPORTED once with aggregate metrics. Does NOT invoke the
+    /// browser download — the caller is responsible for pushing the bytes.
+    /// </summary>
+    Task<byte[]> ExportSubstitutePayrollCsvAsync(
+        DateOnly periodStart, DateOnly periodEnd, string exportedByEmail);
+}
+
+/// <summary>
+/// Spec section 6.2 — one row per sub per pay-period, used by /hr/payroll
+/// 'Substitutes' tab. Fields StopSix* / McCart* are hard-coded in the service
+/// using AppConstants.Campus.StopSixPowerSchoolId / McCartPowerSchoolId to
+/// keep the wire contract stable even if new campuses are added later.
+/// </summary>
+public class SubstitutePayrollSummary
+{
+    public int EmployeeId { get; set; }
+    public string EmployeeName { get; set; } = "";
+    public string FirstName { get; set; } = "";
+    public string LastName { get; set; } = "";
+    public string? AscenderEmployeeId { get; set; }
+    public string? Email { get; set; }
+
+    public int StopSixPeriods { get; set; }
+    public int McCartPeriods { get; set; }
+    public int DayPeriods { get; set; }
+    public int NightPeriods { get; set; }
+    public int TotalPeriods { get; set; }
+
+    public int CardCount { get; set; }
+    public int PendingCount { get; set; }
+    public int ApprovedCount { get; set; }
+    public int RejectedCount { get; set; }
+    public int LockedCount { get; set; }
+
+    /// <summary>True iff every card for this sub in the period is Approved status.</summary>
+    public bool AllSupervisorApproved { get; set; }
+
+    /// <summary>True iff every card for this sub in the period is Locked status.</summary>
+    public bool HRApproved { get; set; }
+
+    /// <summary>Most recent card's ApprovedDate — informational only.</summary>
+    public DateTime? LastDecidedDate { get; set; }
+
+    /// <summary>Employee's cards in the period — for expand-to-detail UI.</summary>
+    public List<TcSubstituteTimecard> Cards { get; set; } = new();
 }
 
 public class SubstituteTimesheetService : ISubstituteTimesheetService
@@ -415,5 +516,355 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
             "AutoPopulatePreAssignedAsync is a Phase 5 no-op. Card {SubTimecardId} skipped until the outreach-accept flow lands with migration 035.",
             subTimecardId);
         return Task.CompletedTask;
+    }
+
+    // ── Supervisor-facing implementations (Phase 3) ───────────────────────
+
+    public async Task<List<TcSubstituteTimecard>> GetCampusCardsForPayPeriodAsync(
+        int? campusId, DateOnly payPeriodStart, DateOnly payPeriodEnd)
+    {
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var query = context.TcSubstituteTimecards
+            .AsNoTracking()
+            .Include(t => t.Employee!).ThenInclude(e => e.Staff)
+            .Include(t => t.Campus)
+            .Include(t => t.PeriodEntries.OrderBy(p => p.PeriodNumber))
+            .Where(t => t.WorkDate >= payPeriodStart && t.WorkDate <= payPeriodEnd);
+
+        if (campusId.HasValue)
+            query = query.Where(t => t.CampusId == campusId.Value);
+
+        return await query
+            .OrderBy(t => t.EmployeeId)
+            .ThenBy(t => t.WorkDate)
+            .ThenBy(t => t.CampusId)
+            .ToListAsync();
+    }
+
+    public async Task ApproveCardAsync(long subTimecardId, string approverEmail)
+    {
+        if (string.IsNullOrWhiteSpace(approverEmail))
+            throw new ArgumentException("approverEmail is required.", nameof(approverEmail));
+
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var card = await context.TcSubstituteTimecards
+            .FirstOrDefaultAsync(t => t.SubTimecardId == subTimecardId);
+        if (card == null)
+            throw new InvalidOperationException($"Sub timecard {subTimecardId} not found.");
+        if (card.ApprovalStatus == ApprovalStatus.Approved)
+            throw new InvalidOperationException("This timecard is already approved.");
+        if (card.ApprovalStatus == ApprovalStatus.Locked)
+            throw new InvalidOperationException("This timecard is locked and cannot be approved.");
+
+        var oldStatus = card.ApprovalStatus;
+        var oldApprovedBy = card.ApprovedBy;
+        var oldApprovedDate = card.ApprovedDate;
+
+        card.ApprovalStatus = ApprovalStatus.Approved;
+        card.ApprovedBy = approverEmail;
+        card.ApprovedDate = DateTime.Now;
+        card.ModifiedDate = DateTime.Now;
+
+        await context.SaveChangesAsync();
+
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.SubTimecard.Approved,
+            entityType: AuditEntityTypes.SubTimecard,
+            entityId: card.SubTimecardId.ToString(),
+            oldValues: new
+            {
+                ApprovalStatus = oldStatus.ToString(),
+                ApprovedBy = oldApprovedBy,
+                ApprovedDate = oldApprovedDate
+            },
+            newValues: new
+            {
+                ApprovalStatus = card.ApprovalStatus.ToString(),
+                ApprovedBy = card.ApprovedBy,
+                ApprovedDate = card.ApprovedDate,
+                card.TotalPeriodsWorked
+            },
+            deltaSummary: $"Approved sub timecard for {card.WorkDate:yyyy-MM-dd} "
+                        + $"({card.TotalPeriodsWorked} period{(card.TotalPeriodsWorked == 1 ? "" : "s")}) "
+                        + $"by {approverEmail}",
+            source: AuditSource.AdminUi,
+            employeeId: card.EmployeeId,
+            campusId: card.CampusId);
+    }
+
+    public async Task RejectCardAsync(long subTimecardId, string approverEmail, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(approverEmail))
+            throw new ArgumentException("approverEmail is required.", nameof(approverEmail));
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("A rejection reason is required.", nameof(reason));
+
+        var trimmedReason = reason.Trim();
+        if (trimmedReason.Length > 500)
+            trimmedReason = trimmedReason.Substring(0, 500);
+
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var card = await context.TcSubstituteTimecards
+            .FirstOrDefaultAsync(t => t.SubTimecardId == subTimecardId);
+        if (card == null)
+            throw new InvalidOperationException($"Sub timecard {subTimecardId} not found.");
+        if (card.ApprovalStatus == ApprovalStatus.Approved)
+            throw new InvalidOperationException("This timecard is already approved. Unlock it first to reject.");
+        if (card.ApprovalStatus == ApprovalStatus.Locked)
+            throw new InvalidOperationException("This timecard is locked and cannot be rejected.");
+
+        var oldStatus = card.ApprovalStatus;
+        var oldApprovedBy = card.ApprovedBy;
+        var oldApprovedDate = card.ApprovedDate;
+
+        card.ApprovalStatus = ApprovalStatus.Rejected;
+        card.ApprovedBy = approverEmail;
+        card.ApprovedDate = DateTime.Now;
+        card.ModifiedDate = DateTime.Now;
+
+        await context.SaveChangesAsync();
+
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.SubTimecard.Rejected,
+            entityType: AuditEntityTypes.SubTimecard,
+            entityId: card.SubTimecardId.ToString(),
+            oldValues: new
+            {
+                ApprovalStatus = oldStatus.ToString(),
+                ApprovedBy = oldApprovedBy,
+                ApprovedDate = oldApprovedDate
+            },
+            newValues: new
+            {
+                ApprovalStatus = card.ApprovalStatus.ToString(),
+                ApprovedBy = card.ApprovedBy,
+                ApprovedDate = card.ApprovedDate,
+                card.TotalPeriodsWorked
+            },
+            deltaSummary: $"Rejected sub timecard for {card.WorkDate:yyyy-MM-dd} "
+                        + $"({card.TotalPeriodsWorked} period{(card.TotalPeriodsWorked == 1 ? "" : "s")}) "
+                        + $"by {approverEmail}",
+            reason: trimmedReason,
+            source: AuditSource.AdminUi,
+            employeeId: card.EmployeeId,
+            campusId: card.CampusId);
+    }
+
+    // ── HR-facing implementations (Phase 4) ───────────────────────────────
+
+    public async Task<List<SubstitutePayrollSummary>> GetPayrollSummariesAsync(
+        DateOnly periodStart, DateOnly periodEnd)
+    {
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var cards = await context.TcSubstituteTimecards
+            .AsNoTracking()
+            .Include(t => t.Employee!).ThenInclude(e => e.Staff)
+            .Include(t => t.Campus)
+            .Include(t => t.PeriodEntries)
+            .Where(t => t.WorkDate >= periodStart && t.WorkDate <= periodEnd)
+            .ToListAsync();
+
+        var summaries = cards
+            .GroupBy(c => c.EmployeeId)
+            .Select(g =>
+            {
+                var cardList = g.OrderBy(c => c.WorkDate).ThenBy(c => c.CampusId).ToList();
+                var emp = cardList[0].Employee;
+                var staff = emp?.Staff;
+                var entries = cardList.SelectMany(c => c.PeriodEntries).ToList();
+
+                var stopSixPeriods = cardList
+                    .Where(c => c.CampusId == AppConstants.Campus.StopSixPowerSchoolId)
+                    .Sum(c => c.TotalPeriodsWorked);
+                var mcCartPeriods = cardList
+                    .Where(c => c.CampusId == AppConstants.Campus.McCartPowerSchoolId)
+                    .Sum(c => c.TotalPeriodsWorked);
+                var dayPeriods = entries
+                    .Count(e => string.Equals(e.SessionType, "DAY", StringComparison.OrdinalIgnoreCase));
+                var nightPeriods = entries
+                    .Count(e => string.Equals(e.SessionType, "NIGHT", StringComparison.OrdinalIgnoreCase));
+
+                var fullName = staff?.FullName
+                             ?? emp?.Email
+                             ?? $"Employee {g.Key}";
+
+                return new SubstitutePayrollSummary
+                {
+                    EmployeeId = g.Key,
+                    EmployeeName = fullName,
+                    FirstName = staff?.FirstName ?? "",
+                    LastName = staff?.LastName ?? "",
+                    AscenderEmployeeId = emp?.AscenderEmployeeId,
+                    Email = emp?.Email,
+                    StopSixPeriods = stopSixPeriods,
+                    McCartPeriods = mcCartPeriods,
+                    DayPeriods = dayPeriods,
+                    NightPeriods = nightPeriods,
+                    TotalPeriods = cardList.Sum(c => c.TotalPeriodsWorked),
+                    CardCount = cardList.Count,
+                    PendingCount = cardList.Count(c => c.ApprovalStatus == ApprovalStatus.Pending),
+                    ApprovedCount = cardList.Count(c => c.ApprovalStatus == ApprovalStatus.Approved),
+                    RejectedCount = cardList.Count(c => c.ApprovalStatus == ApprovalStatus.Rejected),
+                    LockedCount = cardList.Count(c => c.ApprovalStatus == ApprovalStatus.Locked),
+                    AllSupervisorApproved = cardList.Count > 0
+                        && cardList.All(c => c.ApprovalStatus == ApprovalStatus.Approved),
+                    HRApproved = cardList.Count > 0
+                        && cardList.All(c => c.ApprovalStatus == ApprovalStatus.Locked),
+                    LastDecidedDate = cardList
+                        .Where(c => c.ApprovedDate.HasValue)
+                        .OrderByDescending(c => c.ApprovedDate)
+                        .FirstOrDefault()?.ApprovedDate,
+                    Cards = cardList
+                };
+            })
+            .OrderBy(s => s.LastName)
+            .ThenBy(s => s.FirstName)
+            .ToList();
+
+        return summaries;
+    }
+
+    public async Task ApproveForPayrollAsync(
+        int employeeId, DateOnly periodStart, DateOnly periodEnd, string approverEmail)
+    {
+        if (string.IsNullOrWhiteSpace(approverEmail))
+            throw new ArgumentException("approverEmail is required.", nameof(approverEmail));
+        if (periodEnd < periodStart)
+            throw new ArgumentException("periodEnd must be on or after periodStart.", nameof(periodEnd));
+
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var cards = await context.TcSubstituteTimecards
+            .Where(t => t.EmployeeId == employeeId
+                     && t.WorkDate >= periodStart
+                     && t.WorkDate <= periodEnd)
+            .ToListAsync();
+
+        if (cards.Count == 0)
+            throw new InvalidOperationException(
+                $"No sub timecards found for employee {employeeId} in {periodStart:yyyy-MM-dd} – {periodEnd:yyyy-MM-dd}.");
+
+        var nonApprovable = cards
+            .Where(c => c.ApprovalStatus != ApprovalStatus.Approved)
+            .ToList();
+        if (nonApprovable.Count > 0)
+        {
+            var pending = nonApprovable.Count(c => c.ApprovalStatus == ApprovalStatus.Pending);
+            var rejected = nonApprovable.Count(c => c.ApprovalStatus == ApprovalStatus.Rejected);
+            var locked = nonApprovable.Count(c => c.ApprovalStatus == ApprovalStatus.Locked);
+            var bits = new List<string>();
+            if (pending > 0) bits.Add($"{pending} pending");
+            if (rejected > 0) bits.Add($"{rejected} rejected");
+            if (locked > 0) bits.Add($"{locked} already locked");
+            throw new InvalidOperationException(
+                $"Cannot HR-approve payroll: {string.Join(", ", bits)} card(s) must be resolved first.");
+        }
+
+        var totalPeriods = cards.Sum(c => c.TotalPeriodsWorked);
+        var campusIds = cards.Select(c => c.CampusId).Distinct().OrderBy(id => id).ToList();
+        var cardIds = cards.Select(c => c.SubTimecardId).OrderBy(id => id).ToList();
+
+        foreach (var c in cards)
+        {
+            c.ApprovalStatus = ApprovalStatus.Locked;
+            c.ModifiedDate = DateTime.Now;
+        }
+
+        await context.SaveChangesAsync();
+
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.SubTimecard.PayrollApproved,
+            entityType: AuditEntityTypes.SubTimecard,
+            entityId: $"{employeeId}:payroll:{periodStart:yyyyMMdd}-{periodEnd:yyyyMMdd}",
+            newValues: new
+            {
+                EmployeeId = employeeId,
+                PeriodStart = periodStart.ToString("yyyy-MM-dd"),
+                PeriodEnd = periodEnd.ToString("yyyy-MM-dd"),
+                CardCount = cards.Count,
+                TotalPeriods = totalPeriods,
+                CampusIds = campusIds,
+                CardIds = cardIds,
+                HRApprovedBy = approverEmail,
+                LockedAt = DateTime.Now
+            },
+            deltaSummary: $"HR locked sub payroll for employee {employeeId} "
+                        + $"({cards.Count} card{(cards.Count == 1 ? "" : "s")}, "
+                        + $"{totalPeriods} period{(totalPeriods == 1 ? "" : "s")}) "
+                        + $"by {approverEmail}",
+            source: AuditSource.AdminUi,
+            employeeId: employeeId);
+    }
+
+    public async Task<byte[]> ExportSubstitutePayrollCsvAsync(
+        DateOnly periodStart, DateOnly periodEnd, string exportedByEmail)
+    {
+        if (string.IsNullOrWhiteSpace(exportedByEmail))
+            throw new ArgumentException("exportedByEmail is required.", nameof(exportedByEmail));
+
+        var summaries = await GetPayrollSummariesAsync(periodStart, periodEnd);
+        var included = summaries.Where(s => s.HRApproved).ToList();
+
+        var csv = new StringBuilder();
+        csv.Append("EmpNbr,LastName,FirstName,PayPeriodStart,PayPeriodEnd,")
+           .AppendLine("DayPeriods,NightPeriods,TotalPeriods,StopSixPeriods,McCartPeriods");
+
+        foreach (var s in included)
+        {
+            csv.Append(CsvEscape(s.AscenderEmployeeId ?? "")).Append(',')
+               .Append(CsvEscape(s.LastName)).Append(',')
+               .Append(CsvEscape(s.FirstName)).Append(',')
+               .Append(periodStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append(',')
+               .Append(periodEnd.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append(',')
+               .Append(s.DayPeriods).Append(',')
+               .Append(s.NightPeriods).Append(',')
+               .Append(s.TotalPeriods).Append(',')
+               .Append(s.StopSixPeriods).Append(',')
+               .Append(s.McCartPeriods)
+               .AppendLine();
+        }
+
+        var bytes = Encoding.UTF8.GetBytes(csv.ToString());
+
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.SubTimecard.PayrollExported,
+            entityType: AuditEntityTypes.PayPeriod,
+            entityId: $"SUB_PAYROLL_EXPORT:{periodStart:yyyyMMdd}-{periodEnd:yyyyMMdd}:{DateTime.Now:yyyyMMddHHmmss}",
+            newValues: new
+            {
+                PeriodStart = periodStart.ToString("yyyy-MM-dd"),
+                PeriodEnd = periodEnd.ToString("yyyy-MM-dd"),
+                SubCount = included.Count,
+                TotalPeriods = included.Sum(s => s.TotalPeriods),
+                DayPeriods = included.Sum(s => s.DayPeriods),
+                NightPeriods = included.Sum(s => s.NightPeriods),
+                StopSixPeriods = included.Sum(s => s.StopSixPeriods),
+                McCartPeriods = included.Sum(s => s.McCartPeriods),
+                FileSizeBytes = bytes.Length,
+                ExportedBy = exportedByEmail,
+                SkippedSubs = summaries.Count - included.Count
+            },
+            deltaSummary: $"Exported sub payroll CSV for {periodStart:MMM d}–{periodEnd:MMM d yyyy} "
+                        + $"({included.Count} sub{(included.Count == 1 ? "" : "s")}, "
+                        + $"{included.Sum(s => s.TotalPeriods)} period{(included.Sum(s => s.TotalPeriods) == 1 ? "" : "s")}) "
+                        + $"by {exportedByEmail}",
+            source: AuditSource.AdminUi);
+
+        return bytes;
+    }
+
+    private static string CsvEscape(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        var needsQuote = value.Contains(',')
+                      || value.Contains('"')
+                      || value.Contains('\n')
+                      || value.Contains('\r');
+        if (!needsQuote) return value;
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 }
