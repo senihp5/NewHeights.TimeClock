@@ -78,6 +78,9 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.MiddleName).HasMaxLength(100);
             entity.Property(e => e.Grade).HasMaxLength(10);
             entity.Property(e => e.SchoolName).HasMaxLength(100);
+            // Phase 8: Email column on the existing Students table — used to map
+            // a Google OAuth login (@newheightshs.com) to a Student row.
+            entity.Property(e => e.Email).HasMaxLength(200);
             entity.Ignore(e => e.FullName);
         });
 

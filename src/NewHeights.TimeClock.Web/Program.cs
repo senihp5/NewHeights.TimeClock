@@ -22,6 +22,32 @@ builder.Host.UseSerilog();
 builder.Services.AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
     .AddMicrosoftIdentityWebApp(builder.Configuration.GetSection("AzureAd"));
 
+// Phase 8: Google Workspace auth for student self check-in. Registered as a
+// separate AddAuthentication() call because AddMicrosoftIdentityWebApp returns
+// a specialized builder that doesn't expose AddGoogle. Only registers when
+// Google:Enabled + ClientId + ClientSecret are all present — lets the app ship
+// safely before/without the Google Cloud OAuth client being provisioned.
+var googleEnabled = builder.Configuration.GetValue<bool>("Google:Enabled");
+var googleClientId = builder.Configuration["Google:ClientId"];
+var googleClientSecret = builder.Configuration["Google:ClientSecret"];
+if (googleEnabled
+    && !string.IsNullOrWhiteSpace(googleClientId)
+    && !string.IsNullOrWhiteSpace(googleClientSecret))
+{
+    builder.Services.AddAuthentication().AddGoogle(googleOptions =>
+    {
+        googleOptions.ClientId = googleClientId;
+        googleOptions.ClientSecret = googleClientSecret;
+        // Default callback path is /signin-google — matches what's configured in
+        // Google Cloud Console per Step 8a.3. Google's AddGoogle implementation
+        // already maps the "email" user-info field to ClaimTypes.Email, so the
+        // RequireStudent policy's User.FindFirst(ClaimTypes.Email) works without
+        // an explicit ClaimActions.MapJsonKey call.
+        googleOptions.Scope.Add("email");
+        googleOptions.Scope.Add("profile");
+    });
+}
+
 // Request profile scope so optional claims (department, officeLocation)
 // arrive in the ID token per the manifest configuration
 builder.Services.Configure<OpenIdConnectOptions>(OpenIdConnectDefaults.AuthenticationScheme, options =>
@@ -109,6 +135,21 @@ builder.Services.AddAuthorization(options =>
     // Admin only
     options.AddPolicy("RequireAdmin", policy =>
         policy.RequireRole("TimeClock.Admin"));
+
+    // Phase 8: Students authenticated via Google Workspace. Policy checks the
+    // email claim is @newheightshs.com (students) rather than @newheightsed.com
+    // (staff Entra). Only auth'd users who pass the domain check are admitted.
+    options.AddPolicy("RequireStudent", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(ctx =>
+        {
+            var email = ctx.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value
+                     ?? ctx.User.FindFirst("email")?.Value
+                     ?? "";
+            return email.EndsWith("@newheightshs.com", StringComparison.OrdinalIgnoreCase);
+        });
+    });
 });
 
 // Add Blazor services - circuit retention and hub timeouts for Azure App Service
@@ -164,6 +205,9 @@ builder.Services.AddScoped<ISmsService, AzureSmsService>();
 
 // Substitute outreach service — absence-request sub assignment + accept/decline (Phase 5)
 builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
+
+// Stale outreach token expiry job — runs every 4 hours (Phase 7a)
+builder.Services.AddHostedService<StaleTokenExpiryService>();
 
 // Email Service
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));

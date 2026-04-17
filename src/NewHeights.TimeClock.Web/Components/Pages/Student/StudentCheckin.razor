@@ -1,0 +1,299 @@
+@page "/student/checkin"
+@layout KioskLayout
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using System.Security.Claims
+@attribute [AllowAnonymous]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject ILogger<StudentCheckin> Logger
+
+<PageTitle>Student Check-In - @AppConstants.Branding.ShortName</PageTitle>
+
+<style>
+    #stu-checkin-root { min-height: 100vh; padding: 2rem 1rem; font-family: Arial, "Segoe UI", sans-serif; display: flex; justify-content: center; align-items: flex-start; }
+    #stu-checkin-root * { box-sizing: border-box; }
+    #stu-checkin-root .stu-card { max-width: 480px; width: 100%; background: #fff !important; border-radius: 8px !important; box-shadow: 0 4px 20px rgba(0,0,0,0.15); overflow: hidden; }
+    #stu-checkin-root .stu-header { background: #2D2D6D !important; color: #fff !important; padding: 1.25rem 1.5rem !important; text-align: center; }
+    #stu-checkin-root .stu-header h1 { margin: 0 !important; font-size: 1.35rem !important; color: #fff !important; font-weight: 700 !important; letter-spacing: 0.03em; }
+    #stu-checkin-root .stu-header .stu-sub { margin: 0.2rem 0 0 !important; color: #F7C72C !important; font-size: 0.9rem !important; }
+    #stu-checkin-root .stu-body { padding: 1.5rem !important; color: #1f2937 !important; }
+    #stu-checkin-root .greeting { font-size: 1.25rem !important; margin: 0 0 0.25rem 0 !important; color: #111827 !important; font-weight: 600; }
+    #stu-checkin-root .meta-row { color: #4b5563 !important; font-size: 0.9rem !important; margin: 0.1rem 0 !important; }
+    #stu-checkin-root .btn-checkin { display: block; width: 100%; background: #059669 !important; color: #fff !important; border: none !important; padding: 1rem !important; border-radius: 6px !important; font-size: 1.15rem !important; font-weight: 600 !important; cursor: pointer; margin-top: 1.25rem; }
+    #stu-checkin-root .btn-checkin:hover:not(:disabled) { background: #047857 !important; }
+    #stu-checkin-root .btn-checkin:disabled { opacity: 0.6; cursor: not-allowed; }
+    #stu-checkin-root .btn-google { display: block; width: 100%; background: #fff !important; color: #1f2937 !important; border: 1px solid #d1d5db !important; padding: 0.85rem !important; border-radius: 6px !important; font-size: 1rem !important; font-weight: 500 !important; text-decoration: none; text-align: center; margin-top: 1rem; cursor: pointer; }
+    #stu-checkin-root .btn-google:hover { background: #f3f4f6 !important; }
+    #stu-checkin-root .status-success { background: #d1fae5; border-left: 4px solid #10b981; padding: 0.85rem 1rem; border-radius: 4px; color: #065f46; margin-top: 1rem; }
+    #stu-checkin-root .status-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 0.85rem 1rem; border-radius: 4px; margin-top: 1rem; }
+    #stu-checkin-root .status-warn { background: #fef3c7; border: 1px solid #fde68a; color: #92400e; padding: 0.85rem 1rem; border-radius: 4px; margin-top: 1rem; }
+    #stu-checkin-root .campus-picker { margin-top: 0.85rem; }
+    #stu-checkin-root .campus-picker label { display: block; margin-bottom: 0.3rem; font-weight: 600; color: #374151 !important; font-size: 0.85rem !important; }
+    #stu-checkin-root .campus-picker select { width: 100%; padding: 0.55rem 0.6rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 0.95rem; background: #fff; }
+    #stu-checkin-root .signed-as { color: #6b7280 !important; font-size: 0.8rem !important; margin-top: 1rem !important; text-align: center; }
+    #stu-checkin-root .signed-as a { color: #1d4ed8 !important; text-decoration: underline; }
+    #stu-checkin-root .loading { text-align: center; color: #6b7280; padding: 1rem; }
+    #stu-checkin-root .help-text { color: #6b7280 !important; font-size: 0.85rem !important; margin: 0.75rem 0 0 !important; text-align: center; line-height: 1.4; }
+</style>
+
+<div id="stu-checkin-root">
+    <div class="stu-card">
+        <header class="stu-header">
+            <h1>NEW HEIGHTS</h1>
+            <p class="stu-sub">Student Check-In</p>
+        </header>
+
+        <div class="stu-body">
+
+            @if (isLoading)
+            {
+                <div class="loading">Loading…</div>
+            }
+            else if (!isAuthenticated)
+            {
+                <p style="margin:0 0 0.75rem 0; color:#374151;">
+                    Sign in with your <strong>@@newheightshs.com</strong> school Google account to check in.
+                </p>
+                <a class="btn-google" href="/student/sign-in?returnUrl=/student/checkin">
+                    Sign in with Google
+                </a>
+                <p class="help-text">
+                    Use your school-issued Google account. Having trouble? Ask the front receptionist.
+                </p>
+            }
+            else if (!isStudentDomain)
+            {
+                <div class="status-warn">
+                    <strong>Wrong account.</strong> You're signed in as
+                    <em>@signedInEmail</em> but this page is only for students with a
+                    <strong>@@newheightshs.com</strong> Google account.
+                    <div style="margin-top:0.5rem">
+                        <a href="/student/sign-out">Sign out and try again</a>
+                    </div>
+                </div>
+            }
+            else if (student == null)
+            {
+                <div class="status-error">
+                    We couldn't find a student record for
+                    <em>@signedInEmail</em>. Please see the front receptionist to
+                    verify your account.
+                    <div style="margin-top:0.5rem">
+                        <a href="/student/sign-out">Sign out</a>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <p class="greeting">Hi @student.FirstName!</p>
+                <p class="meta-row">Student #: @student.StudentNumber</p>
+                @if (!string.IsNullOrWhiteSpace(student.Grade))
+                {
+                    <p class="meta-row">Grade: @student.Grade</p>
+                }
+
+                @if (campusList.Count > 1)
+                {
+                    <div class="campus-picker">
+                        <label for="campus-select">Campus:</label>
+                        <select id="campus-select" @bind="selectedCampusId">
+                            @foreach (var kv in campusList)
+                            {
+                                <option value="@kv.Key">@kv.Value</option>
+                            }
+                        </select>
+                    </div>
+                }
+
+                @if (checkInSuccess)
+                {
+                    <div class="status-success">
+                        <strong>@(checkInAction == "CAMPUS_IN" ? "You're checked in!" : "You're checked out.")</strong>
+                        <div>@(checkInAction == "CAMPUS_IN" ? "Have a great day." : "See you tomorrow.")</div>
+                    </div>
+                }
+                else if (!string.IsNullOrEmpty(checkInError))
+                {
+                    <div class="status-error">@checkInError</div>
+                }
+                else
+                {
+                    <button type="button" class="btn-checkin"
+                            @onclick="CheckInAsync"
+                            disabled="@isProcessing">
+                        @(isProcessing ? "Processing…" : (willCheckOut ? "Check Out" : "Check In"))
+                    </button>
+                    @if (willCheckOut)
+                    {
+                        <p class="help-text">You're already checked in. Tap above to check out.</p>
+                    }
+                }
+
+                <p class="signed-as">
+                    Signed in as @signedInEmail ·
+                    <a href="/student/sign-out">Sign out</a>
+                </p>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private bool isLoading = true;
+    private bool isAuthenticated = false;
+    private bool isStudentDomain = false;
+    private string signedInEmail = "";
+
+    private Student? student;
+    private Dictionary<int, string> campusList = new();
+    private int selectedCampusId = 0;
+
+    private bool isProcessing = false;
+    private bool checkInSuccess = false;
+    private string checkInAction = "CAMPUS_IN";
+    private string checkInError = "";
+    private bool willCheckOut = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+
+        isAuthenticated = user.Identity?.IsAuthenticated ?? false;
+        signedInEmail = user.FindFirst(ClaimTypes.Email)?.Value
+                     ?? user.FindFirst("email")?.Value
+                     ?? user.FindFirst("preferred_username")?.Value
+                     ?? "";
+
+        isStudentDomain = isAuthenticated
+                      && !string.IsNullOrWhiteSpace(signedInEmail)
+                      && signedInEmail.EndsWith("@newheightshs.com", StringComparison.OrdinalIgnoreCase);
+
+        if (isStudentDomain)
+        {
+            await LoadStudentAsync();
+        }
+
+        isLoading = false;
+    }
+
+    private async Task LoadStudentAsync()
+    {
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            student = await ctx.Students
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.Email == signedInEmail && s.IsActive);
+
+            campusList = await ctx.Campuses
+                .AsNoTracking()
+                .OrderBy(c => c.CampusName)
+                .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
+
+            if (campusList.Count > 0)
+            {
+                // Prefer the PS-linked StopSix id if set, else first campus.
+                selectedCampusId = campusList.ContainsKey(AppConstants.Campus.StopSixPowerSchoolId)
+                    ? AppConstants.Campus.StopSixPowerSchoolId
+                    : campusList.Keys.First();
+            }
+
+            if (student != null)
+            {
+                await DetermineNextActionAsync(ctx);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "StudentCheckin: LoadStudent failed for {Email}. Is the Email column present on the Students table?",
+                signedInEmail);
+            checkInError = "We couldn't reach the student roster. Please try again in a moment.";
+        }
+    }
+
+    private async Task DetermineNextActionAsync(TimeClockDbContext ctx)
+    {
+        if (student == null) return;
+
+        var today = DateTime.Today;
+        var tomorrow = today.AddDays(1);
+        var idNumber = student.StudentNumber ?? "";
+        var lastTx = await ctx.AttendanceTransactions
+            .AsNoTracking()
+            .Where(t => t.IdNumber == idNumber
+                     && t.ScanDateTime >= today
+                     && t.ScanDateTime < tomorrow)
+            .OrderByDescending(t => t.ScanDateTime)
+            .FirstOrDefaultAsync();
+
+        willCheckOut = lastTx != null
+                    && string.Equals(lastTx.ScanType, "CAMPUS_IN", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task CheckInAsync()
+    {
+        if (student == null || isProcessing) return;
+        if (selectedCampusId <= 0)
+        {
+            checkInError = "Please pick a campus first.";
+            return;
+        }
+
+        isProcessing = true;
+        checkInError = "";
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            var scanType = willCheckOut ? "CAMPUS_OUT" : "CAMPUS_IN";
+
+            var tx = new AttendanceTransaction
+            {
+                TransactionType = "STUDENT",
+                IdNumber = student.StudentNumber ?? "",
+                FirstName = student.FirstName ?? "",
+                LastName = student.LastName ?? "",
+                CampusId = selectedCampusId,
+                LocationId = 1,
+                ScanDateTime = DateTime.Now,
+                ScanType = scanType,
+                ScanMethod = "WEB",
+                TerminalId = 0,
+                DataSource = "LOCAL",
+                ValidationStatus = "VALID",
+                PunchSubType = null,
+                CreatedDate = DateTime.Now
+            };
+            ctx.AttendanceTransactions.Add(tx);
+            await ctx.SaveChangesAsync();
+
+            checkInAction = scanType;
+            checkInSuccess = true;
+
+            Logger.LogInformation(
+                "StudentCheckin: {ScanType} recorded for student {IdNumber} at campus {CampusId}",
+                scanType, student.StudentNumber, selectedCampusId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "StudentCheckin: failed to record attendance for student {IdNumber}",
+                student.StudentNumber);
+            checkInError = "Something went wrong saving your check-in. Please try again.";
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+}

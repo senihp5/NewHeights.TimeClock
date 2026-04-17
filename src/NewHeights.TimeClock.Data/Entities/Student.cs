@@ -16,5 +16,13 @@ public class Student
     public bool IsActive { get; set; }
     public DateTime LastModified { get; set; }
 
+    /// <summary>
+    /// Student's @newheightshs.com Google Workspace email. Used by Phase 8 self
+    /// check-in (/student/checkin) to map a Google OAuth login to the Student row.
+    /// Read-only like the rest of this entity — source of truth is the IDSuite3
+    /// Students table.
+    /// </summary>
+    public string? Email { get; set; }
+
     public string FullName => $"{FirstName} {LastName}".Trim();
 }
