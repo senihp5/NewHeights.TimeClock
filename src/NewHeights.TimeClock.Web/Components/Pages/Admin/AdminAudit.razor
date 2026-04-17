@@ -1,0 +1,377 @@
+@page "/admin/audit"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@using System.Text
+@attribute [Authorize(Policy = "RequireAdmin")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService AuditService
+@inject IJSRuntime JS
+@inject ILogger<AdminAudit> Logger
+
+<PageTitle>Audit Log - @AppConstants.Branding.ShortName</PageTitle>
+
+<style>
+    #admin-audit-root { padding: 1.25rem 1.5rem; max-width: 1400px; margin: 0 auto; font-family: "Segoe UI", Arial, sans-serif; color: #1f2937; }
+    #admin-audit-root h1 { margin: 0 0 0.25rem 0 !important; font-size: 1.5rem !important; color: #111827 !important; }
+    #admin-audit-root .page-sub { margin: 0 0 1rem 0 !important; color: #6b7280; font-size: 0.9rem; }
+    #admin-audit-root .filter-bar { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.9rem 1rem; margin-bottom: 1rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.85rem; }
+    #admin-audit-root .filter-item { display: flex; flex-direction: column; gap: 0.3rem; }
+    #admin-audit-root .filter-item label { font-weight: 600; color: #4b5563; font-size: 0.82rem; }
+    #admin-audit-root .filter-item input, #admin-audit-root .filter-item select { padding: 0.38rem 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 0.9rem; background: #fff; color: #111827; font-family: inherit; }
+    #admin-audit-root .filter-item select[multiple] { min-height: 5.5rem; }
+    #admin-audit-root .filter-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    #admin-audit-root .btn-apply { background: #2563eb; color: #fff; border: 1px solid #2563eb; padding: 0.45rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 0.9rem; }
+    #admin-audit-root .btn-apply:hover:not(:disabled) { background: #1d4ed8; }
+    #admin-audit-root .btn-reset { background: #fff; color: #374151; border: 1px solid #d1d5db; padding: 0.45rem 0.9rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+    #admin-audit-root .btn-reset:hover { background: #f3f4f6; }
+    #admin-audit-root .btn-export { background: #059669; color: #fff; border: 1px solid #059669; padding: 0.45rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 0.9rem; margin-left: auto; }
+    #admin-audit-root .btn-export:hover:not(:disabled) { background: #047857; }
+    #admin-audit-root .btn-export:disabled { background: #9ca3af; border-color: #9ca3af; cursor: not-allowed; }
+    #admin-audit-root .result-stats { color: #4b5563; font-size: 0.9rem; padding: 0.5rem 0.2rem; }
+    #admin-audit-root .result-stats strong { color: #111827; }
+    #admin-audit-root .audit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }
+    #admin-audit-root .audit-table thead th { background: #f9fafb; padding: 0.5rem 0.6rem; text-align: left; color: #4b5563; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; border-bottom: 1px solid #e5e7eb; }
+    #admin-audit-root .audit-table tbody tr { border-bottom: 1px solid #f3f4f6; cursor: pointer; }
+    #admin-audit-root .audit-table tbody tr:hover { background: #f9fafb; }
+    #admin-audit-root .audit-table tbody tr.expanded { background: #eef2ff; }
+    #admin-audit-root .audit-table td { padding: 0.4rem 0.6rem; vertical-align: middle; }
+    #admin-audit-root .expand-cell { width: 1.2rem; color: #6b7280; font-size: 0.8rem; }
+    #admin-audit-root .when-cell { white-space: nowrap; font-variant-numeric: tabular-nums; color: #374151; min-width: 10rem; }
+    #admin-audit-root .action-chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; background: #eef2ff; color: #3730a3; white-space: nowrap; }
+    #admin-audit-root .source-cell { color: #6b7280; font-size: 0.75rem; text-transform: uppercase; }
+    #admin-audit-root .user-cell { color: #374151; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #admin-audit-root .entity-cell { color: #4b5563; font-family: Consolas, Monaco, monospace; font-size: 0.8rem; max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #admin-audit-root .summary-cell { color: #4b5563; max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #admin-audit-root .detail-row td { background: #f8fafc; padding: 0.75rem 1rem; border-bottom: 1px solid #e5e7eb; }
+    #admin-audit-root .detail-grid { display: grid; grid-template-columns: 5rem 1fr; gap: 0.35rem 0.85rem; font-size: 0.85rem; }
+    #admin-audit-root .detail-grid .lbl { font-weight: 600; color: #374151; }
+    #admin-audit-root .detail-grid .val { color: #111827; word-break: break-word; }
+    #admin-audit-root .detail-grid .reason { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 0.35rem 0.5rem; border-radius: 4px; grid-column: 2; }
+    #admin-audit-root .json-block { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 4px; padding: 0.5rem 0.7rem; margin: 0.2rem 0; font-size: 0.78rem; font-family: Consolas, Monaco, monospace; color: #1f2937; white-space: pre-wrap; word-break: break-word; max-height: 14rem; overflow-y: auto; grid-column: 1 / -1; }
+    #admin-audit-root .loading, #admin-audit-root .empty-state { padding: 1.25rem; background: #fafafa; border: 1px dashed #d1d5db; border-radius: 6px; text-align: center; color: #6b7280; }
+    #admin-audit-root .cap-warning { background: #fef3c7; border: 1px solid #fde68a; color: #92400e; padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.85rem; margin-bottom: 0.75rem; }
+</style>
+
+<div id="admin-audit-root">
+    <h1>Audit Log</h1>
+    <p class="page-sub">Filterable history of all audited actions across the system. Click a row for full detail.</p>
+
+    <div class="filter-bar">
+        <div class="filter-item">
+            <label for="f-from">From</label>
+            <input id="f-from" type="date" @bind="filterFrom" />
+        </div>
+        <div class="filter-item">
+            <label for="f-to">To</label>
+            <input id="f-to" type="date" @bind="filterTo" />
+        </div>
+        <div class="filter-item">
+            <label for="f-actions">Action Codes (Ctrl/Cmd-click for multi)</label>
+            <select id="f-actions" multiple @bind="selectedActionCodes" size="4">
+                @foreach (var ac in availableActionCodes)
+                {
+                    <option value="@ac">@ac</option>
+                }
+            </select>
+        </div>
+        <div class="filter-item">
+            <label for="f-entities">Entity Types</label>
+            <select id="f-entities" multiple @bind="selectedEntityTypes" size="4">
+                @foreach (var t in availableEntityTypes)
+                {
+                    <option value="@t">@t</option>
+                }
+            </select>
+        </div>
+        <div class="filter-item">
+            <label for="f-user">User / Email Contains</label>
+            <input id="f-user" type="text" @bind="filterUser" placeholder="e.g. estela@@newheightsed.com" />
+        </div>
+        <div class="filter-item">
+            <label for="f-max">Max Rows</label>
+            <input id="f-max" type="number" min="50" max="5000" step="50" @bind="filterMaxRows" />
+        </div>
+    </div>
+
+    <div class="filter-actions">
+        <button type="button" class="btn-apply" @onclick="ApplyFiltersAsync" disabled="@isLoading">
+            @(isLoading ? "Loading…" : "Apply Filters")
+        </button>
+        <button type="button" class="btn-reset" @onclick="ResetFilters" disabled="@isLoading">Reset</button>
+        <button type="button" class="btn-export" @onclick="ExportCsvAsync"
+                disabled="@(isLoading || isExporting || rows.Count == 0)">
+            @(isExporting ? "Exporting…" : "Export CSV")
+        </button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="cap-warning" role="alert">@errorMessage</div>
+    }
+
+    @if (rows.Count > 0 && rows.Count >= filterMaxRows)
+    {
+        <div class="cap-warning">
+            Showing the first <strong>@rows.Count</strong> rows (cap hit).
+            Tighten the date range or narrow filters to see older data.
+        </div>
+    }
+
+    <div class="result-stats">
+        @if (!isLoading)
+        {
+            <span><strong>@rows.Count</strong> row@(rows.Count == 1 ? "" : "s")</span>
+            <span> · </span>
+            <span><strong>@rows.Select(r => r.ActionCode).Distinct().Count()</strong> distinct action@(rows.Select(r => r.ActionCode).Distinct().Count() == 1 ? "" : "s")</span>
+            @if (rows.Count > 0)
+            {
+                <span> · newest @rows.First().CreatedDate.ToString("MMM d h:mm tt")</span>
+                <span> · oldest @rows.Last().CreatedDate.ToString("MMM d h:mm tt")</span>
+            }
+        }
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading audit rows…</div>
+    }
+    else if (rows.Count == 0)
+    {
+        <div class="empty-state">No audit rows match these filters.</div>
+    }
+    else
+    {
+        <table class="audit-table">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th>When</th>
+                    <th>Action</th>
+                    <th>Source</th>
+                    <th>User</th>
+                    <th>Entity</th>
+                    <th>Summary</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in rows)
+                {
+                    var isExpanded = expandedIds.Contains(row.AuditId);
+                    <tr class="@(isExpanded ? "expanded" : "")" @onclick="() => ToggleExpand(row.AuditId)">
+                        <td class="expand-cell">@(isExpanded ? "▼" : "▶")</td>
+                        <td class="when-cell">@row.CreatedDate.ToString("MMM d yyyy h:mm:ss tt")</td>
+                        <td><span class="action-chip">@row.ActionCode</span></td>
+                        <td class="source-cell">@row.Source</td>
+                        <td class="user-cell">@(row.UserName ?? "system")</td>
+                        <td class="entity-cell">@row.EntityType #@row.EntityId</td>
+                        <td class="summary-cell">@(row.DeltaSummary ?? "")</td>
+                    </tr>
+                    @if (isExpanded)
+                    {
+                        <tr class="detail-row">
+                            <td colspan="7">
+                                <div class="detail-grid">
+                                    <span class="lbl">Entity:</span>
+                                    <span class="val">@row.EntityType #@row.EntityId</span>
+
+                                    <span class="lbl">User:</span>
+                                    <span class="val">@(row.UserName ?? "(system)")@(string.IsNullOrEmpty(row.UserEmail) ? "" : $" <{row.UserEmail}>")@(string.IsNullOrEmpty(row.UserRole) ? "" : $" [{row.UserRole}]")</span>
+
+                                    <span class="lbl">Source:</span>
+                                    <span class="val">@row.Source @(string.IsNullOrEmpty(row.IPAddress) ? "" : $"· IP {row.IPAddress}")</span>
+
+                                    @if (row.EmployeeId.HasValue || row.CampusId.HasValue || row.PunchId.HasValue || row.CorrectionId.HasValue)
+                                    {
+                                        <span class="lbl">FKs:</span>
+                                        <span class="val">
+                                            @if (row.EmployeeId.HasValue)    { <text>EmpId=@row.EmployeeId </text> }
+                                            @if (row.CampusId.HasValue)      { <text>CampusId=@row.CampusId </text> }
+                                            @if (row.PunchId.HasValue)       { <text>PunchId=@row.PunchId </text> }
+                                            @if (row.CorrectionId.HasValue)  { <text>CorrectionId=@row.CorrectionId</text> }
+                                        </span>
+                                    }
+
+                                    @if (!string.IsNullOrEmpty(row.Reason))
+                                    {
+                                        <span class="lbl">Reason:</span>
+                                        <span class="val reason">@row.Reason</span>
+                                    }
+
+                                    @if (!string.IsNullOrEmpty(row.OldValuesJson))
+                                    {
+                                        <pre class="json-block"><strong>Before:</strong> @row.OldValuesJson</pre>
+                                    }
+                                    @if (!string.IsNullOrEmpty(row.NewValuesJson))
+                                    {
+                                        <pre class="json-block"><strong>After:</strong> @row.NewValuesJson</pre>
+                                    }
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@code {
+    // Filter state
+    private DateTime filterFrom = DateTime.Today.AddDays(-7);
+    private DateTime filterTo = DateTime.Today;
+    private string[] selectedActionCodes = Array.Empty<string>();
+    private string[] selectedEntityTypes = Array.Empty<string>();
+    private string filterUser = "";
+    private int filterMaxRows = 500;
+
+    // Dropdown contents — populated from distinct DB values on init
+    private List<string> availableActionCodes = new();
+    private List<string> availableEntityTypes = new();
+
+    // Results
+    private List<TcAuditLog> rows = new();
+    private HashSet<long> expandedIds = new();
+
+    private bool isLoading = true;
+    private bool isExporting = false;
+    private string errorMessage = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadFilterOptionsAsync();
+        await ApplyFiltersAsync();
+    }
+
+    private async Task LoadFilterOptionsAsync()
+    {
+        try
+        {
+            using var db = await DbFactory.CreateDbContextAsync();
+            availableActionCodes = await db.TcAuditLogs
+                .AsNoTracking()
+                .Select(a => a.ActionCode)
+                .Distinct()
+                .OrderBy(c => c)
+                .ToListAsync();
+            availableEntityTypes = await db.TcAuditLogs
+                .AsNoTracking()
+                .Select(a => a.EntityType)
+                .Distinct()
+                .OrderBy(t => t)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading audit filter dropdown options");
+            availableActionCodes = new();
+            availableEntityTypes = new();
+        }
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        isLoading = true;
+        errorMessage = "";
+        expandedIds.Clear();
+        try
+        {
+            var fromDt = filterFrom.Date;
+            var toDt = filterTo.Date.AddDays(1).AddTicks(-1);  // inclusive end-of-day
+            if (toDt < fromDt) { errorMessage = "'To' date must be on or after 'From'."; rows = new(); return; }
+
+            rows = await AuditService.GetFilteredHistoryAsync(
+                from: fromDt,
+                to: toDt,
+                actionCodes: selectedActionCodes.Length > 0 ? selectedActionCodes : null,
+                entityTypes: selectedEntityTypes.Length > 0 ? selectedEntityTypes : null,
+                userQuery: string.IsNullOrWhiteSpace(filterUser) ? null : filterUser.Trim(),
+                maxRows: filterMaxRows);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error running audit filter query");
+            errorMessage = "Query failed. Check the logs.";
+            rows = new();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void ResetFilters()
+    {
+        filterFrom = DateTime.Today.AddDays(-7);
+        filterTo = DateTime.Today;
+        selectedActionCodes = Array.Empty<string>();
+        selectedEntityTypes = Array.Empty<string>();
+        filterUser = "";
+        filterMaxRows = 500;
+    }
+
+    private void ToggleExpand(long auditId)
+    {
+        if (!expandedIds.Add(auditId))
+            expandedIds.Remove(auditId);
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        if (rows.Count == 0 || isExporting) return;
+        isExporting = true;
+        try
+        {
+            var csv = new StringBuilder();
+            csv.AppendLine("AuditId,CreatedDate,ActionCode,Source,UserName,UserEmail,UserRole,EntityType,EntityId,EmployeeId,CampusId,PunchId,CorrectionId,Reason,DeltaSummary,IPAddress,SessionId,OldValuesJson,NewValuesJson");
+            foreach (var r in rows)
+            {
+                csv.Append(r.AuditId).Append(',')
+                   .Append(r.CreatedDate.ToString("o")).Append(',')
+                   .Append(Esc(r.ActionCode)).Append(',')
+                   .Append(Esc(r.Source)).Append(',')
+                   .Append(Esc(r.UserName)).Append(',')
+                   .Append(Esc(r.UserEmail)).Append(',')
+                   .Append(Esc(r.UserRole)).Append(',')
+                   .Append(Esc(r.EntityType)).Append(',')
+                   .Append(Esc(r.EntityId)).Append(',')
+                   .Append(r.EmployeeId?.ToString() ?? "").Append(',')
+                   .Append(r.CampusId?.ToString() ?? "").Append(',')
+                   .Append(r.PunchId?.ToString() ?? "").Append(',')
+                   .Append(r.CorrectionId?.ToString() ?? "").Append(',')
+                   .Append(Esc(r.Reason)).Append(',')
+                   .Append(Esc(r.DeltaSummary)).Append(',')
+                   .Append(Esc(r.IPAddress)).Append(',')
+                   .Append(Esc(r.SessionId)).Append(',')
+                   .Append(Esc(r.OldValuesJson)).Append(',')
+                   .Append(Esc(r.NewValuesJson))
+                   .AppendLine();
+            }
+
+            var bytes = Encoding.UTF8.GetBytes(csv.ToString());
+            var fileName = $"audit_export_{filterFrom:yyyyMMdd}_{filterTo:yyyyMMdd}.csv";
+            await JS.InvokeVoidAsync("downloadFile", fileName, Convert.ToBase64String(bytes));
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Audit CSV export failed");
+            errorMessage = "Export failed. Check the logs.";
+        }
+        finally
+        {
+            isExporting = false;
+        }
+    }
+
+    private static string Esc(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        var needsQuote = value.Contains(',') || value.Contains('"') || value.Contains('\n') || value.Contains('\r');
+        if (!needsQuote) return value;
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
+    }
+}

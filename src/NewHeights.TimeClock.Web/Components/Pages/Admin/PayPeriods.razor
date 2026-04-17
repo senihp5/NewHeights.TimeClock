@@ -21,6 +21,9 @@
             <h1>Pay Period Management</h1>
             <p class="admin-subtitle">Upload the annual pay schedule Excel file to set pay periods for the year.</p>
         </div>
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <button type="button" class="btn-secondary" @onclick="() => showPayPeriodHistory = true">View History</button>
+        </div>
     </div>
 
     @if (!string.IsNullOrEmpty(successMessage))
@@ -176,6 +179,14 @@
         </div>
     </div>
 </div>
+
+<EntityHistoryPanel Visible="@showPayPeriodHistory"
+                    Title="Pay Period History"
+                    EntityTypes="@(new[] { AuditEntityTypes.PayPeriod })"
+                    FromDate="@DateOnly.FromDateTime(DateTime.Today.AddMonths(-12))"
+                    ToDate="@DateOnly.FromDateTime(DateTime.Today)"
+                    OnClose="() => showPayPeriodHistory = false" />
+
 @if (showDeleteConfirm)
 {
     <div class="modal-overlay" @onclick="() => showDeleteConfirm = false">
@@ -204,6 +215,9 @@
     private bool isParsing = false;
     private bool isSaving = false;
     private string successMessage = "";
+
+    // Phase 7b: entity history panel visibility.
+    private bool showPayPeriodHistory = false;
     private string errorMessage = "";
 
     private List<TcPayPeriod> parsedPeriods = new();

@@ -144,7 +144,19 @@
                         <td class="action-cell" @onclick:stopPropagation="true">
                             @if (s.HRApproved)
                             {
-                                <span class="muted">Locked</span>
+                                @if (unlockingEmployeeId == s.EmployeeId)
+                                {
+                                    <span class="reject-inline-label">Unlocking — reason below</span>
+                                }
+                                else
+                                {
+                                    <button type="button" class="btn-unlock-hr"
+                                            @onclick="() => BeginUnlock(s.EmployeeId)"
+                                            disabled="@(isUnlocking || approvingEmployeeId != null)"
+                                            title="Revert HR approval so supervisors can re-review. Requires reason.">
+                                        Unlock
+                                    </button>
+                                }
                             }
                             else
                             {
@@ -157,6 +169,33 @@
                             }
                         </td>
                     </tr>
+
+                    @if (unlockingEmployeeId == s.EmployeeId)
+                    {
+                        <tr class="detail-row">
+                            <td colspan="11">
+                                <div class="unlock-panel">
+                                    <label for="unlock-reason-@s.EmployeeId">Unlock reason (required):</label>
+                                    <textarea id="unlock-reason-@s.EmployeeId"
+                                              @bind="unlockReason"
+                                              rows="2"
+                                              maxlength="500"
+                                              placeholder="e.g. 'Sub reported a missing period after HR closed the pay period'"
+                                              disabled="@isUnlocking"></textarea>
+                                    <div class="unlock-buttons">
+                                        <button type="button" class="btn-confirm-unlock"
+                                                @onclick="() => ConfirmUnlockAsync(s)"
+                                                disabled="@(isUnlocking || string.IsNullOrWhiteSpace(unlockReason))">
+                                            @(isUnlocking ? "Unlocking…" : "Confirm Unlock")
+                                        </button>
+                                        <button type="button" class="btn-cancel-unlock"
+                                                @onclick="CancelUnlock"
+                                                disabled="@isUnlocking">Cancel</button>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>
+                    }
 
                     @if (isExpanded)
                     {
@@ -226,6 +265,11 @@
     private bool isExporting = false;
     private bool isLoading = true;
     private string errorMessage = "";
+
+    // Unlock flow state (Phase 7b)
+    private int? unlockingEmployeeId = null;
+    private string unlockReason = "";
+    private bool isUnlocking = false;
 
     private DateOnly _lastStart;
     private DateOnly _lastEnd;
@@ -346,6 +390,68 @@
         finally
         {
             isExporting = false;
+        }
+    }
+
+    // ── Unlock handlers (Phase 7b) ────────────────────────────────────────
+
+    private void BeginUnlock(int employeeId)
+    {
+        errorMessage = "";
+        unlockingEmployeeId = employeeId;
+        unlockReason = "";
+    }
+
+    private void CancelUnlock()
+    {
+        unlockingEmployeeId = null;
+        unlockReason = "";
+    }
+
+    private async Task ConfirmUnlockAsync(SubstitutePayrollSummary s)
+    {
+        if (isUnlocking) return;
+        if (string.IsNullOrWhiteSpace(unlockReason))
+        {
+            errorMessage = "Unlock reason is required.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(CurrentUserEmail))
+        {
+            errorMessage = "Your session lost its user context — refresh and try again.";
+            return;
+        }
+
+        isUnlocking = true;
+        errorMessage = "";
+        try
+        {
+            await SubTimesheetService.UnlockCardsAsync(
+                s.EmployeeId, _lastStart, _lastEnd, CurrentUserEmail, unlockReason);
+
+            unlockingEmployeeId = null;
+            unlockReason = "";
+            await LoadSummariesAsync();
+            await OnStateChanged.InvokeAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "UnlockCardsAsync refused for employee {EmployeeId}", s.EmployeeId);
+            errorMessage = ex.Message;
+        }
+        catch (ArgumentException ex)
+        {
+            Logger.LogWarning(ex, "UnlockCardsAsync argument error for employee {EmployeeId}", s.EmployeeId);
+            errorMessage = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error unlocking payroll for employee {EmployeeId}", s.EmployeeId);
+            errorMessage = "Could not unlock this sub's payroll.";
+        }
+        finally
+        {
+            isUnlocking = false;
         }
     }
 }

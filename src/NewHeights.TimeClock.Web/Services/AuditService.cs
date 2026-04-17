@@ -54,6 +54,27 @@ public interface IAuditService
     /// </summary>
     Task<List<TcAuditLog>> GetEmployeeHistoryAsync(
         int employeeId, DateTime? from = null, DateTime? to = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Filtered audit query for the /admin/audit page + inline entity panels (Phase 7b).
+    /// All filters optional. Results are capped at <paramref name="maxRows"/> to protect
+    /// the UI from pathological queries; the caller should tighten the date range or
+    /// narrow filters if the cap is hit.
+    /// </summary>
+    /// <param name="from">Inclusive lower bound on CreatedDate. Null = unbounded.</param>
+    /// <param name="to">Inclusive upper bound on CreatedDate. Null = unbounded.</param>
+    /// <param name="actionCodes">If non-empty, only rows with ActionCode IN this set are returned.</param>
+    /// <param name="entityTypes">If non-empty, only rows with EntityType IN this set are returned.</param>
+    /// <param name="userQuery">Optional substring match against UserName / UserEmail (case-insensitive).</param>
+    /// <param name="maxRows">Hard cap on returned rows. Default 500. Ordered CreatedDate DESC so newest come first.</param>
+    Task<List<TcAuditLog>> GetFilteredHistoryAsync(
+        DateTime? from = null,
+        DateTime? to = null,
+        IReadOnlyList<string>? actionCodes = null,
+        IReadOnlyList<string>? entityTypes = null,
+        string? userQuery = null,
+        int maxRows = 500,
+        CancellationToken ct = default);
 }
 
 public class AuditService : IAuditService
@@ -157,6 +178,50 @@ public class AuditService : IAuditService
         if (to.HasValue)   q = q.Where(a => a.CreatedDate <= to.Value);
 
         return await q.OrderByDescending(a => a.CreatedDate).ToListAsync(ct);
+    }
+
+    public async Task<List<TcAuditLog>> GetFilteredHistoryAsync(
+        DateTime? from = null,
+        DateTime? to = null,
+        IReadOnlyList<string>? actionCodes = null,
+        IReadOnlyList<string>? entityTypes = null,
+        string? userQuery = null,
+        int maxRows = 500,
+        CancellationToken ct = default)
+    {
+        if (maxRows <= 0) maxRows = 500;
+        if (maxRows > 5000) maxRows = 5000; // hard ceiling
+
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var q = db.TcAuditLogs.AsNoTracking().AsQueryable();
+
+        if (from.HasValue) q = q.Where(a => a.CreatedDate >= from.Value);
+        if (to.HasValue)   q = q.Where(a => a.CreatedDate <= to.Value);
+
+        if (actionCodes != null && actionCodes.Count > 0)
+        {
+            // Materialize to avoid IN-clause translation quirks with IReadOnlyList.
+            var codes = actionCodes.ToArray();
+            q = q.Where(a => codes.Contains(a.ActionCode));
+        }
+
+        if (entityTypes != null && entityTypes.Count > 0)
+        {
+            var types = entityTypes.ToArray();
+            q = q.Where(a => types.Contains(a.EntityType));
+        }
+
+        if (!string.IsNullOrWhiteSpace(userQuery))
+        {
+            var needle = userQuery.Trim();
+            q = q.Where(a => EF.Functions.Like(a.UserName, $"%{needle}%")
+                          || (a.UserEmail != null && EF.Functions.Like(a.UserEmail, $"%{needle}%")));
+        }
+
+        return await q
+            .OrderByDescending(a => a.CreatedDate)
+            .Take(maxRows)
+            .ToListAsync(ct);
     }
 
     // Maps AuditEntry DTO -> TcAuditLog row, filling user + IP from context if missing.

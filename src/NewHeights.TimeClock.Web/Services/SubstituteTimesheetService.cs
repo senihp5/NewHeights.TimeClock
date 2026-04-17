@@ -77,12 +77,23 @@ public interface ISubstituteTimesheetService
     Task UpdatePeriodNotesAsync(long entryId, string? newNotes, int employeeId);
 
     /// <summary>
-    /// Phase 5 hook — will populate entries from accepted TcSubRequest records.
-    /// No-op until the outreach / acceptance flow lands with migration 035
-    /// (SubstituteTimesheetSpec.md section 15). Left on the interface so the
-    /// page can call it unconditionally once Phase 5 lights it up.
+    /// Populate a card with PRE_ASSIGNED TcSubstitutePeriodEntry rows from a
+    /// matching SubConfirmed TcSubRequest (matched on EmployeeId + CampusId +
+    /// WorkDate between request StartDate/EndDate). Idempotent: skips if the
+    /// card already has PRE_ASSIGNED entries for those periods. Safe to call
+    /// for walk-in subs with no matching request — returns quietly. Fires one
+    /// SUB_PERIOD_ADDED audit per entry created with source=SYSTEM.
     /// </summary>
     Task AutoPopulatePreAssignedAsync(long subTimecardId);
+
+    /// <summary>
+    /// Day-of kiosk auto-flow (Phase 7). Called from TimePunchService when a
+    /// Substitute employee clocks In. Creates today's TcSubstituteTimecard for
+    /// the given campus if it doesn't exist (linking the check-in punch), then
+    /// auto-populates PRE_ASSIGNED entries from any matching SubConfirmed
+    /// TcSubRequest. Walk-in subs (no matching request) just get an empty card.
+    /// </summary>
+    Task OnKioskCheckInAsync(int employeeId, int campusId, long? checkInPunchId);
 
     // ── Supervisor-facing (Phase 3) ───────────────────────────────────────
 
@@ -141,6 +152,18 @@ public interface ISubstituteTimesheetService
     /// </summary>
     Task<byte[]> ExportSubstitutePayrollCsvAsync(
         DateOnly periodStart, DateOnly periodEnd, string exportedByEmail);
+
+    /// <summary>
+    /// Reverse a prior HR approval for a (sub, pay-period). Flips every Locked
+    /// card for that employee in the date range back to Approved so edits can
+    /// resume (sub can still edit because Phase 2's guard lets Approved cards
+    /// stay read-only to subs, but HR can now re-open for supervisor re-review).
+    /// Requires a non-empty reason stored in TcAuditLog.Reason. Fires one
+    /// SUB_TIMECARD_UNLOCKED per card. Throws if no Locked cards found.
+    /// </summary>
+    Task UnlockCardsAsync(
+        int employeeId, DateOnly periodStart, DateOnly periodEnd,
+        string unlockedByEmail, string reason);
 }
 
 /// <summary>
@@ -188,17 +211,23 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
     private readonly IDbContextFactory<TimeClockDbContext> _contextFactory;
     private readonly IAuditService _audit;
     private readonly IMasterScheduleLookupService _scheduleLookup;
+    private readonly IEmailService _emailService;
+    private readonly ISmsService _smsService;
     private readonly ILogger<SubstituteTimesheetService> _logger;
 
     public SubstituteTimesheetService(
         IDbContextFactory<TimeClockDbContext> contextFactory,
         IAuditService audit,
         IMasterScheduleLookupService scheduleLookup,
+        IEmailService emailService,
+        ISmsService smsService,
         ILogger<SubstituteTimesheetService> logger)
     {
         _contextFactory = contextFactory;
         _audit = audit;
         _scheduleLookup = scheduleLookup;
+        _emailService = emailService;
+        _smsService = smsService;
         _logger = logger;
     }
 
@@ -510,12 +539,267 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
             campusId: entry.SubTimecard.CampusId);
     }
 
-    public Task AutoPopulatePreAssignedAsync(long subTimecardId)
+    public async Task AutoPopulatePreAssignedAsync(long subTimecardId)
     {
-        _logger.LogDebug(
-            "AutoPopulatePreAssignedAsync is a Phase 5 no-op. Card {SubTimecardId} skipped until the outreach-accept flow lands with migration 035.",
-            subTimecardId);
-        return Task.CompletedTask;
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var card = await context.TcSubstituteTimecards
+            .Include(t => t.PeriodEntries)
+            .FirstOrDefaultAsync(t => t.SubTimecardId == subTimecardId);
+        if (card == null)
+        {
+            _logger.LogDebug(
+                "AutoPopulatePreAssignedAsync: card {SubTimecardId} not found — skipped.",
+                subTimecardId);
+            return;
+        }
+
+        if (card.ApprovalStatus == ApprovalStatus.Approved
+         || card.ApprovalStatus == ApprovalStatus.Locked)
+        {
+            _logger.LogDebug(
+                "AutoPopulatePreAssignedAsync: card {SubTimecardId} is {Status} — skipped.",
+                subTimecardId, card.ApprovalStatus);
+            return;
+        }
+
+        // Find a SubConfirmed request matching this sub + this campus + this work date.
+        var request = await context.TcSubRequests
+            .AsNoTracking()
+            .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+            .FirstOrDefaultAsync(r => r.AssignedSubEmployeeId == card.EmployeeId
+                                   && r.CampusId == card.CampusId
+                                   && r.Status == SubRequestStatus.SubConfirmed
+                                   && r.StartDate <= card.WorkDate
+                                   && r.EndDate >= card.WorkDate);
+        if (request == null)
+        {
+            _logger.LogDebug(
+                "AutoPopulatePreAssignedAsync: no confirmed SubRequest matches card {SubTimecardId} (employee {EmployeeId}, campus {CampusId}, date {Date}). Walk-in — nothing to pre-assign.",
+                subTimecardId, card.EmployeeId, card.CampusId, card.WorkDate);
+            return;
+        }
+
+        // Parse PeriodsNeeded like "P1,P2,P3,P4" or "P1, P3, P5".
+        var wantedPeriodNumbers = ParsePeriodsNeeded(request.PeriodsNeeded);
+        if (wantedPeriodNumbers.Count == 0)
+        {
+            _logger.LogWarning(
+                "AutoPopulatePreAssignedAsync: request {SubRequestId} has no parseable PeriodsNeeded ({Raw}). Nothing populated.",
+                request.SubRequestId, request.PeriodsNeeded ?? "(null)");
+            return;
+        }
+
+        // Determine session from the request. "BOTH" populates from DAY schedule only by
+        // default — if a campus has separate evening classes, adjust the request to DAY
+        // or NIGHT explicitly. This avoids double-populating when the sub is only
+        // covering one half of the day.
+        var sessionType = string.IsNullOrWhiteSpace(request.SessionType)
+            ? "DAY"
+            : request.SessionType.Trim().ToUpperInvariant() switch
+            {
+                "NIGHT" => "NIGHT",
+                "EVENING" => "NIGHT",
+                _ => "DAY"
+            };
+
+        // Load the campus bell schedule (matching session) for period times + names.
+        var schedule = await context.TcBellSchedules
+            .AsNoTracking()
+            .Include(s => s.Periods)
+            .Where(s => s.CampusId == card.CampusId
+                     && s.SessionType == sessionType
+                     && s.IsActive)
+            .OrderByDescending(s => s.IsDefault)
+            .ThenByDescending(s => s.CreatedDate)
+            .FirstOrDefaultAsync();
+        if (schedule == null)
+        {
+            _logger.LogWarning(
+                "AutoPopulatePreAssignedAsync: no active {Session} bell schedule for campus {CampusId}. Request {SubRequestId} not auto-populated.",
+                sessionType, card.CampusId, request.SubRequestId);
+            return;
+        }
+
+        var bellPeriodsByNumber = schedule.Periods
+            .Where(p => p.IsActive && p.PeriodType == "CLASS")
+            .ToDictionary(p => p.PeriodNumber, p => p);
+
+        // Idempotency: skip periods already present on the card (any source, any session).
+        var existingNumbers = card.PeriodEntries
+            .Select(e => e.PeriodNumber)
+            .ToHashSet();
+
+        var createdEntries = new List<TcSubstitutePeriodEntry>();
+
+        foreach (var periodNumber in wantedPeriodNumbers)
+        {
+            if (existingNumbers.Contains(periodNumber))
+                continue;
+            if (!bellPeriodsByNumber.TryGetValue(periodNumber, out var bellPeriod))
+            {
+                _logger.LogWarning(
+                    "AutoPopulatePreAssignedAsync: period P{Period} not found in {Session} schedule for campus {CampusId} — skipping.",
+                    periodNumber, sessionType, card.CampusId);
+                continue;
+            }
+
+            // Master-schedule snapshot (teacher / course / room / content).
+            int? masterScheduleId = null;
+            string? teacherName = null;
+            string? courseName = null;
+            string? contentArea = null;
+            string? room = null;
+            try
+            {
+                var slots = await _scheduleLookup.GetTeachersForPeriodAsync(
+                    card.CampusId, card.WorkDate, periodNumber, sessionType);
+                // Prefer the teacher being replaced (the requester) if found in the slots.
+                var matched = slots.FirstOrDefault(s =>
+                    string.Equals(s.TeacherName, request.RequestingEmployee?.Staff?.FullName,
+                                  StringComparison.OrdinalIgnoreCase))
+                            ?? slots.FirstOrDefault();
+                if (matched != null)
+                {
+                    masterScheduleId = matched.MasterScheduleId;
+                    teacherName = matched.TeacherName;
+                    courseName = matched.CourseName ?? matched.ContentArea;
+                    contentArea = matched.ContentArea;
+                    room = matched.Room;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "AutoPopulatePreAssignedAsync: master-schedule lookup failed for campus {CampusId} P{Period} {Session}. Entry created without snapshot.",
+                    card.CampusId, periodNumber, sessionType);
+            }
+
+            var entry = new TcSubstitutePeriodEntry
+            {
+                SubTimecardId = card.SubTimecardId,
+                BellPeriodId = bellPeriod.PeriodId,
+                MasterScheduleId = masterScheduleId,
+                SubRequestId = request.SubRequestId,
+                PeriodNumber = bellPeriod.PeriodNumber,
+                PeriodName = bellPeriod.PeriodName,
+                StartTime = bellPeriod.StartTime,
+                EndTime = bellPeriod.EndTime,
+                TeacherReplaced = teacherName
+                                 ?? request.RequestingEmployee?.Staff?.FullName,
+                CourseName = courseName,
+                ContentArea = contentArea ?? request.SubjectArea,
+                Room = room,
+                SessionType = sessionType,
+                EntrySource = "PRE_ASSIGNED",
+                IsVerified = false,
+                Notes = null,
+                CreatedDate = DateTime.Now
+            };
+
+            context.TcSubstitutePeriodEntries.Add(entry);
+            createdEntries.Add(entry);
+            existingNumbers.Add(periodNumber);
+        }
+
+        if (createdEntries.Count == 0)
+        {
+            _logger.LogDebug(
+                "AutoPopulatePreAssignedAsync: card {SubTimecardId} already had all requested periods — no new entries.",
+                subTimecardId);
+            return;
+        }
+
+        card.TotalPeriodsWorked += createdEntries.Count;
+        card.ModifiedDate = DateTime.Now;
+
+        await context.SaveChangesAsync();
+
+        // One SUB_PERIOD_ADDED audit per entry — same code path subs would generate
+        // manually, so the audit catalog stays consistent. Source=SYSTEM distinguishes
+        // auto vs manual.
+        foreach (var entry in createdEntries)
+        {
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.SubTimecard.PeriodAdded,
+                entityType: AuditEntityTypes.SubPeriodEntry,
+                entityId: entry.EntryId.ToString(),
+                newValues: new
+                {
+                    entry.SubTimecardId,
+                    entry.SubRequestId,
+                    entry.PeriodNumber,
+                    entry.PeriodName,
+                    entry.SessionType,
+                    entry.TeacherReplaced,
+                    entry.CourseName,
+                    entry.ContentArea,
+                    entry.Room,
+                    entry.MasterScheduleId,
+                    entry.EntrySource
+                },
+                deltaSummary: $"Auto-populated P{entry.PeriodNumber} ({entry.SessionType}) from sub request #{request.SubRequestId}",
+                source: AuditSource.System,
+                employeeId: card.EmployeeId,
+                campusId: card.CampusId);
+        }
+    }
+
+    public async Task OnKioskCheckInAsync(int employeeId, int campusId, long? checkInPunchId)
+    {
+        // Step 1: ensure today's card exists. GetOrCreateTodayCardAsync handles the
+        // SUB_TIMECARD_CREATED audit on create and links the check-in punch if one
+        // exists in the DB already. For the new punch that just landed (passed in
+        // explicitly), we update the link post-create to be safe.
+        var card = await GetOrCreateTodayCardAsync(employeeId, campusId);
+
+        if (checkInPunchId.HasValue && card.CheckInPunchId != checkInPunchId.Value)
+        {
+            using var context = await _contextFactory.CreateDbContextAsync();
+            var tracked = await context.TcSubstituteTimecards
+                .FirstOrDefaultAsync(t => t.SubTimecardId == card.SubTimecardId);
+            if (tracked != null && tracked.CheckInPunchId != checkInPunchId.Value)
+            {
+                tracked.CheckInPunchId = checkInPunchId.Value;
+                tracked.ModifiedDate = DateTime.Now;
+                await context.SaveChangesAsync();
+            }
+        }
+
+        // Step 2: auto-populate PRE_ASSIGNED entries from any matching SubConfirmed request.
+        // Idempotent — safe even if the sub swipes in multiple times in a day.
+        try
+        {
+            await AutoPopulatePreAssignedAsync(card.SubTimecardId);
+        }
+        catch (Exception ex)
+        {
+            // Day-of automation failure should never break the punch flow.
+            _logger.LogError(ex,
+                "OnKioskCheckInAsync: auto-populate failed for card {SubTimecardId} (employee {EmployeeId}, campus {CampusId}). Punch already saved.",
+                card.SubTimecardId, employeeId, campusId);
+        }
+    }
+
+    /// <summary>
+    /// Parse a PeriodsNeeded string like "P1,P2,P4" or "P1, P3" into a list of
+    /// integers. Tolerates whitespace and mixed case. Non-parseable tokens are
+    /// skipped silently.
+    /// </summary>
+    private static List<int> ParsePeriodsNeeded(string? raw)
+    {
+        var result = new List<int>();
+        if (string.IsNullOrWhiteSpace(raw))
+            return result;
+        foreach (var chunk in raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = chunk.Trim();
+            if (trimmed.StartsWith("P", StringComparison.OrdinalIgnoreCase))
+                trimmed = trimmed.Substring(1);
+            if (int.TryParse(trimmed, out var n) && n > 0 && n <= 20)
+                result.Add(n);
+        }
+        return result.Distinct().OrderBy(n => n).ToList();
     }
 
     // ── Supervisor-facing implementations (Phase 3) ───────────────────────
@@ -592,6 +876,10 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
             source: AuditSource.AdminUi,
             employeeId: card.EmployeeId,
             campusId: card.CampusId);
+
+        // Phase 7a: notify the sub (SMS + email). Fire-and-forget — failure to notify
+        // must not roll back the approval.
+        await TryNotifySubApprovalAsync(card, approverEmail, isApproval: true, reason: null);
     }
 
     public async Task RejectCardAsync(long subTimecardId, string approverEmail, string reason)
@@ -651,6 +939,99 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
             source: AuditSource.AdminUi,
             employeeId: card.EmployeeId,
             campusId: card.CampusId);
+
+        // Phase 7a: notify the sub of the rejection with the reason.
+        await TryNotifySubApprovalAsync(card, approverEmail, isApproval: false, reason: trimmedReason);
+    }
+
+    // ── Sub notifications on approve/reject (Phase 7a) ────────────────────
+
+    /// <summary>
+    /// Send SMS + email to the sub whose card was just approved or rejected. Reuses
+    /// the Phase 6 SMS+email parallel pattern — email always fires, SMS fires when
+    /// ACS is enabled + the sub has a phone + SmsOptedOut is false. Never throws —
+    /// notification failure must not roll back the approval/rejection.
+    /// </summary>
+    private async Task TryNotifySubApprovalAsync(
+        TcSubstituteTimecard card, string decidedByEmail, bool isApproval, string? reason)
+    {
+        try
+        {
+            using var context = await _contextFactory.CreateDbContextAsync();
+            var sub = await context.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .FirstOrDefaultAsync(e => e.EmployeeId == card.EmployeeId);
+            if (sub == null)
+            {
+                _logger.LogWarning(
+                    "TryNotifySubApprovalAsync: sub {EmployeeId} not found. No notification sent for card {CardId}.",
+                    card.EmployeeId, card.SubTimecardId);
+                return;
+            }
+
+            var campusName = await context.Campuses
+                .AsNoTracking()
+                .Where(c => c.CampusId == card.CampusId)
+                .Select(c => c.CampusName)
+                .FirstOrDefaultAsync()
+                ?? $"Campus {card.CampusId}";
+
+            var subName = sub.Staff?.FirstName ?? sub.Staff?.FullName ?? "Substitute";
+            var workDate = card.WorkDate.ToString("ddd, MMM d, yyyy");
+            var verb = isApproval ? "approved" : "rejected";
+
+            // SMS
+            if (_smsService.IsEnabled && !sub.SmsOptedOut && !string.IsNullOrWhiteSpace(sub.Phone))
+            {
+                var smsBody = isApproval
+                    ? $"New Heights: Your sub timecard for {campusName} on {workDate} was approved by {decidedByEmail}. Reply STOP to opt out."
+                    : $"New Heights: Your sub timecard for {campusName} on {workDate} was rejected by {decidedByEmail}. Reason: {Truncate(reason, 80)}. Reply STOP to opt out.";
+                if (smsBody.Length > 320) smsBody = smsBody.Substring(0, 320);
+                await _smsService.SendAsync(sub.Phone!, smsBody);
+            }
+
+            // Email — always attempt if sub has an email.
+            if (!string.IsNullOrWhiteSpace(sub.Email))
+            {
+                var subject = isApproval
+                    ? $"Sub timecard approved — {campusName} {workDate}"
+                    : $"Sub timecard rejected — {campusName} {workDate}";
+
+                var color = isApproval ? "#059669" : "#b91c1c";
+                var headline = isApproval ? "Your timecard was approved" : "Your timecard was rejected";
+                var reasonBlock = !isApproval && !string.IsNullOrWhiteSpace(reason)
+                    ? $"<p><strong>Reason:</strong> {System.Net.WebUtility.HtmlEncode(reason)}</p>"
+                    : "";
+                var nextSteps = isApproval
+                    ? "<p>Your timecard will be forwarded to HR for payroll processing.</p>"
+                    : "<p>Please contact your campus manager to discuss next steps.</p>";
+
+                var html = $@"
+<div style='font-family: Segoe UI, Arial, sans-serif; max-width: 600px; color: #1f2937;'>
+  <h2 style='color: {color};'>{headline}</h2>
+  <p>Hi {System.Net.WebUtility.HtmlEncode(subName)},</p>
+  <p>Your substitute timecard for <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> on <strong>{workDate}</strong> ({card.TotalPeriodsWorked} period{(card.TotalPeriodsWorked == 1 ? "" : "s")}) was {verb} by {System.Net.WebUtility.HtmlEncode(decidedByEmail)}.</p>
+  {reasonBlock}
+  {nextSteps}
+  <p style='color:#6b7280;font-size:0.85rem;'>Questions? Contact your campus manager.</p>
+</div>";
+
+                await _emailService.SendEmailAsync(sub.Email!, subject, html);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "TryNotifySubApprovalAsync: notification send failed for card {CardId} (employee {EmployeeId}). Approval already recorded.",
+                card.SubTimecardId, card.EmployeeId);
+        }
+    }
+
+    private static string Truncate(string? value, int maxLen)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        return value.Length <= maxLen ? value : value.Substring(0, maxLen - 1) + "…";
     }
 
     // ── HR-facing implementations (Phase 4) ───────────────────────────────
@@ -866,5 +1247,64 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
                       || value.Contains('\r');
         if (!needsQuote) return value;
         return "\"" + value.Replace("\"", "\"\"") + "\"";
+    }
+
+    public async Task UnlockCardsAsync(
+        int employeeId, DateOnly periodStart, DateOnly periodEnd,
+        string unlockedByEmail, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(unlockedByEmail))
+            throw new ArgumentException("unlockedByEmail is required.", nameof(unlockedByEmail));
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("A reason is required to unlock payroll.", nameof(reason));
+        if (periodEnd < periodStart)
+            throw new ArgumentException("periodEnd must be on or after periodStart.", nameof(periodEnd));
+
+        var trimmedReason = reason.Trim();
+        if (trimmedReason.Length > 500)
+            trimmedReason = trimmedReason.Substring(0, 500);
+
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var locked = await context.TcSubstituteTimecards
+            .Where(t => t.EmployeeId == employeeId
+                     && t.WorkDate >= periodStart
+                     && t.WorkDate <= periodEnd
+                     && t.ApprovalStatus == ApprovalStatus.Locked)
+            .ToListAsync();
+
+        if (locked.Count == 0)
+            throw new InvalidOperationException(
+                $"No locked cards to unlock for employee {employeeId} in {periodStart:yyyy-MM-dd} – {periodEnd:yyyy-MM-dd}.");
+
+        foreach (var card in locked)
+        {
+            card.ApprovalStatus = ApprovalStatus.Approved;
+            card.ModifiedDate = DateTime.Now;
+        }
+
+        await context.SaveChangesAsync();
+
+        // One SUB_TIMECARD_UNLOCKED audit per card, with the reason on each row so a
+        // future read doesn't have to cross-reference a batch header.
+        foreach (var card in locked)
+        {
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.SubTimecard.Unlocked,
+                entityType: AuditEntityTypes.SubTimecard,
+                entityId: card.SubTimecardId.ToString(),
+                oldValues: new { ApprovalStatus = ApprovalStatus.Locked.ToString() },
+                newValues: new
+                {
+                    ApprovalStatus = card.ApprovalStatus.ToString(),
+                    UnlockedBy = unlockedByEmail,
+                    UnlockedAt = card.ModifiedDate
+                },
+                deltaSummary: $"HR unlocked sub card for {card.WorkDate:yyyy-MM-dd} (was Locked) by {unlockedByEmail}",
+                reason: trimmedReason,
+                source: AuditSource.AdminUi,
+                employeeId: card.EmployeeId,
+                campusId: card.CampusId);
+        }
     }
 }

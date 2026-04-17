@@ -28,6 +28,7 @@
             <label class="btn-import" for="pdfUpload">Import PDF</label>
             <InputFile id="pdfUpload" OnChange="OnPdfSelected" accept=".pdf" style="display:none" />
             <button class="btn-primary" @onclick="OpenAddModal">+ Add Holiday</button>
+            <button type="button" class="btn-import" @onclick="() => showHolidayHistory = true">View History</button>
         </div>
     </div>
 
@@ -156,6 +157,13 @@
         }
     </div>
 </div>
+
+<EntityHistoryPanel Visible="@showHolidayHistory"
+                    Title="Holiday Schedule History"
+                    EntityTypes="@(new[] { AuditEntityTypes.Holiday })"
+                    FromDate="@DateOnly.FromDateTime(DateTime.Today.AddMonths(-12))"
+                    ToDate="@DateOnly.FromDateTime(DateTime.Today)"
+                    OnClose="() => showHolidayHistory = false" />
 
 @if (showAddModal)
 {
@@ -427,6 +435,9 @@
     private bool showAddModal = false;
     private bool isAdding = false;
     private string addErrorMessage = "";
+
+    // Phase 7b: entity history panel visibility.
+    private bool showHolidayHistory = false;
     private string addHolidayName = "";
     private DateOnly addHolidayDate = DateOnly.FromDateTime(DateTime.Today);
     private decimal addHoursCredited = 8.0m;

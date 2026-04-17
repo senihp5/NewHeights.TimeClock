@@ -1,0 +1,268 @@
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@inject IAuditService AuditService
+@inject ILogger<EntityHistoryPanel> Logger
+
+@* ─────────────────────────────────────────────────────────────────────
+   EntityHistoryPanel
+   Companion to AuditHistoryPanel (which filters by EmployeeId). This
+   variant filters by one or more EntityType values — used for pages that
+   audit non-employee entities (HOLIDAY, PAY_PERIOD, MASTER_SCHEDULE, etc.).
+   ───────────────────────────────────────────────────────────────────── *@
+
+@if (Visible)
+{
+    <div class="entity-modal-backdrop" @onclick="HandleCloseAsync">
+        <div class="entity-modal-panel" @onclick:stopPropagation="true" role="dialog" aria-modal="true">
+
+            <div class="entity-modal-header">
+                <div>
+                    <h3>@(string.IsNullOrWhiteSpace(Title) ? "History" : Title)</h3>
+                    <p class="history-window">
+                        @FromDate.ToString("MMM d") – @ToDate.ToString("MMM d, yyyy")
+                        @if (EntityTypes != null && EntityTypes.Count > 0)
+                        {
+                            <text> · @string.Join(", ", EntityTypes)</text>
+                        }
+                    </p>
+                </div>
+                <button class="btn-close" @onclick="HandleCloseAsync" title="Close" aria-label="Close">×</button>
+            </div>
+
+            <div class="entity-modal-body">
+                @if (isLoading)
+                {
+                    <div class="history-loading">Loading history…</div>
+                }
+                else if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="history-error">@errorMessage</div>
+                }
+                else if (rows.Count == 0)
+                {
+                    <div class="history-empty">
+                        No audit events match this filter for the selected period.
+                    </div>
+                }
+                else
+                {
+                    <div class="history-summary">
+                        @rows.Count event@(rows.Count == 1 ? "" : "s") ·
+                        @rows.Select(r => r.ActionCode).Distinct().Count() distinct action@(rows.Select(r => r.ActionCode).Distinct().Count() == 1 ? "" : "s")
+                    </div>
+
+                    <table class="entity-history-table">
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th>When</th>
+                                <th>Action</th>
+                                <th>Source</th>
+                                <th>By</th>
+                                <th>Entity</th>
+                                <th>Summary</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in rows)
+                            {
+                                var isExpanded = expandedRowIds.Contains(row.AuditId);
+                                <tr class="entity-history-row @(isExpanded ? "expanded" : "")"
+                                    @onclick="() => ToggleRow(row.AuditId)">
+                                    <td class="expand-cell">@(isExpanded ? "▼" : "▶")</td>
+                                    <td class="when-cell">@row.CreatedDate.ToString("MMM d yyyy h:mm tt")</td>
+                                    <td class="action-cell">
+                                        <span class="action-code">@row.ActionCode</span>
+                                    </td>
+                                    <td class="source-cell">@row.Source</td>
+                                    <td class="by-cell">@(row.UserName ?? "system")</td>
+                                    <td class="entity-cell">#@row.EntityId</td>
+                                    <td class="summary-cell">@(row.DeltaSummary ?? "")</td>
+                                </tr>
+                                @if (isExpanded)
+                                {
+                                    <tr class="entity-history-detail-row">
+                                        <td colspan="7">
+                                            <div class="entity-history-detail">
+                                                <div class="detail-row">
+                                                    <span class="detail-label">Entity:</span>
+                                                    <span class="detail-value">@row.EntityType #@row.EntityId</span>
+                                                </div>
+                                                @if (!string.IsNullOrEmpty(row.Reason))
+                                                {
+                                                    <div class="detail-row reason">
+                                                        <span class="detail-label">Reason:</span>
+                                                        <span class="detail-value">@row.Reason</span>
+                                                    </div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(row.OldValuesJson))
+                                                {
+                                                    <div class="detail-block">
+                                                        <span class="detail-label">Before:</span>
+                                                        <pre class="json-block">@row.OldValuesJson</pre>
+                                                    </div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(row.NewValuesJson))
+                                                {
+                                                    <div class="detail-block">
+                                                        <span class="detail-label">After:</span>
+                                                        <pre class="json-block">@row.NewValuesJson</pre>
+                                                    </div>
+                                                }
+                                                @if (!string.IsNullOrEmpty(row.IPAddress))
+                                                {
+                                                    <div class="detail-row subtle">
+                                                        <span class="detail-label">IP:</span>
+                                                        <span class="detail-value">@row.IPAddress</span>
+                                                    </div>
+                                                }
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+
+            <div class="entity-modal-footer">
+                <button class="btn-secondary" @onclick="HandleCloseAsync">Close</button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .entity-modal-backdrop { position: fixed; inset: 0; background: rgba(17, 24, 39, 0.55); display: flex; align-items: flex-start; justify-content: center; padding-top: 3rem; z-index: 1050; }
+    .entity-modal-panel { background: #fff; width: 100%; max-width: 1000px; border-radius: 8px; box-shadow: 0 20px 40px rgba(0,0,0,0.25); overflow: hidden; display: flex; flex-direction: column; max-height: calc(100vh - 5rem); }
+    .entity-modal-header { display: flex; justify-content: space-between; align-items: center; padding: 0.85rem 1.25rem; border-bottom: 1px solid #e5e7eb; background: #f9fafb; }
+    .entity-modal-header h3 { margin: 0 !important; font-size: 1.1rem !important; color: #111827 !important; }
+    .entity-modal-header .history-window { margin: 0.15rem 0 0 !important; color: #6b7280; font-size: 0.8rem; }
+    .entity-modal-header .btn-close { background: transparent; border: none; font-size: 1.5rem; line-height: 1; cursor: pointer; color: #6b7280; padding: 0 0.25rem; }
+    .entity-modal-header .btn-close:hover { color: #111827; }
+    .entity-modal-body { padding: 0.75rem 1.25rem 1rem; overflow-y: auto; }
+    .history-loading, .history-empty, .history-error { padding: 1rem; border-radius: 6px; margin: 0.5rem 0; text-align: center; font-size: 0.9rem; }
+    .history-loading { background: #f3f4f6; color: #4b5563; }
+    .history-empty { background: #fafafa; border: 1px dashed #d1d5db; color: #6b7280; }
+    .history-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .history-summary { color: #6b7280; font-size: 0.8rem; margin-bottom: 0.5rem; padding: 0 0.25rem; }
+    .entity-history-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .entity-history-table thead th { text-align: left; padding: 0.45rem 0.55rem; background: #f9fafb; font-weight: 600; color: #4b5563; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; }
+    .entity-history-row { cursor: pointer; border-bottom: 1px solid #f3f4f6; }
+    .entity-history-row:hover { background: #f9fafb; }
+    .entity-history-row.expanded { background: #eef2ff; }
+    .entity-history-row td { padding: 0.4rem 0.55rem; }
+    .expand-cell { width: 1rem; color: #6b7280; font-size: 0.75rem; }
+    .when-cell { white-space: nowrap; color: #374151; font-variant-numeric: tabular-nums; min-width: 10rem; }
+    .action-code { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; background: #eef2ff; color: #3730a3; white-space: nowrap; }
+    .source-cell { color: #6b7280; font-size: 0.75rem; text-transform: uppercase; }
+    .by-cell { color: #374151; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .entity-cell { color: #6b7280; font-family: Consolas, Monaco, monospace; font-size: 0.8rem; }
+    .summary-cell { color: #4b5563; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .entity-history-detail-row td { background: #f8fafc; padding: 0.75rem 1.25rem 1rem; border-bottom: 1px solid #e5e7eb; }
+    .entity-history-detail { display: flex; flex-direction: column; gap: 0.4rem; }
+    .detail-row { display: flex; gap: 0.5rem; align-items: baseline; }
+    .detail-row.subtle { color: #6b7280; font-size: 0.8rem; }
+    .detail-row.reason { background: #fef2f2; border: 1px solid #fecaca; padding: 0.45rem 0.6rem; border-radius: 4px; color: #991b1b; }
+    .detail-label { font-weight: 600; color: #374151; font-size: 0.8rem; min-width: 4rem; }
+    .detail-value { color: #111827; font-size: 0.85rem; word-break: break-word; }
+    .detail-block { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.25rem; }
+    .json-block { background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 4px; padding: 0.5rem 0.7rem; margin: 0; font-size: 0.8rem; font-family: Consolas, Monaco, monospace; color: #1f2937; white-space: pre-wrap; word-break: break-word; max-height: 12rem; overflow-y: auto; }
+    .entity-modal-footer { display: flex; justify-content: flex-end; padding: 0.75rem 1.25rem; border-top: 1px solid #e5e7eb; background: #f9fafb; }
+    .entity-modal-footer .btn-secondary { background: #fff; color: #374151; border: 1px solid #d1d5db; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 0.9rem; }
+    .entity-modal-footer .btn-secondary:hover { background: #f3f4f6; }
+</style>
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public string? Title { get; set; }
+    [Parameter, EditorRequired] public IReadOnlyList<string> EntityTypes { get; set; } = Array.Empty<string>();
+    [Parameter, EditorRequired] public DateOnly FromDate { get; set; }
+    [Parameter, EditorRequired] public DateOnly ToDate { get; set; }
+    [Parameter] public int MaxRows { get; set; } = 300;
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private List<TcAuditLog> rows = new();
+    private HashSet<long> expandedRowIds = new();
+    private bool isLoading = false;
+    private string errorMessage = "";
+
+    // Detect param changes
+    private bool _loadedForThisOpen = false;
+    private DateOnly _lastFrom;
+    private DateOnly _lastTo;
+    private string _lastTypesKey = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!Visible)
+        {
+            _loadedForThisOpen = false;
+            return;
+        }
+
+        var typesKey = string.Join("|", EntityTypes ?? Array.Empty<string>());
+        var inputsChanged = _lastFrom != FromDate
+                         || _lastTo != ToDate
+                         || _lastTypesKey != typesKey;
+
+        if (!_loadedForThisOpen || inputsChanged)
+        {
+            _loadedForThisOpen = true;
+            _lastFrom = FromDate;
+            _lastTo = ToDate;
+            _lastTypesKey = typesKey;
+            expandedRowIds = new();
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        if (EntityTypes == null || EntityTypes.Count == 0)
+        {
+            errorMessage = "No entity types specified.";
+            rows = new();
+            return;
+        }
+
+        isLoading = true;
+        errorMessage = "";
+        try
+        {
+            var fromDt = FromDate.ToDateTime(TimeOnly.MinValue);
+            var toDt = ToDate.ToDateTime(TimeOnly.MaxValue);
+            rows = await AuditService.GetFilteredHistoryAsync(
+                from: fromDt,
+                to: toDt,
+                actionCodes: null,
+                entityTypes: EntityTypes,
+                userQuery: null,
+                maxRows: MaxRows);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "EntityHistoryPanel.LoadAsync failed for entityTypes={Types} range {From}–{To}",
+                string.Join(",", EntityTypes), FromDate, ToDate);
+            errorMessage = "Could not load history. Close and try again.";
+            rows = new();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void ToggleRow(long auditId)
+    {
+        if (!expandedRowIds.Add(auditId))
+            expandedRowIds.Remove(auditId);
+    }
+
+    private async Task HandleCloseAsync()
+    {
+        await OnClose.InvokeAsync();
+    }
+}

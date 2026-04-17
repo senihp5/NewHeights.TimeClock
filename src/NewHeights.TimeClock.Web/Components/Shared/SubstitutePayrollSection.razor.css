@@ -245,6 +245,104 @@ td.num.total {
     font-size: 0.82rem;
 }
 
+.btn-unlock-hr {
+    background: #fff;
+    color: #9a3412;
+    border: 1px solid #fdba74;
+    padding: 0.3rem 0.75rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    font-weight: 500;
+}
+
+.btn-unlock-hr:hover:not(:disabled) {
+    background: #fff7ed;
+}
+
+.btn-unlock-hr:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.reject-inline-label {
+    color: #9a3412;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-style: italic;
+}
+
+.unlock-panel {
+    background: #fff7ed;
+    border: 1px solid #fdba74;
+    border-radius: 6px;
+    padding: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.unlock-panel label {
+    font-weight: 600;
+    color: #9a3412;
+    font-size: 0.85rem;
+}
+
+.unlock-panel textarea {
+    width: 100%;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid #fdba74;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    color: #111827;
+    background: #fff;
+    resize: vertical;
+    min-height: 3rem;
+}
+
+.unlock-buttons {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+.btn-confirm-unlock {
+    background: #ea580c;
+    color: #fff;
+    border: 1px solid #ea580c;
+    padding: 0.4rem 0.9rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.btn-confirm-unlock:hover:not(:disabled) {
+    background: #c2410c;
+}
+
+.btn-cancel-unlock {
+    background: #fff;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    padding: 0.4rem 0.9rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.btn-cancel-unlock:hover {
+    background: #f3f4f6;
+}
+
+.btn-confirm-unlock:disabled,
+.btn-cancel-unlock:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
 .detail-row td {
     background: #f8fafc;
     padding: 0.6rem 1rem 0.9rem;
