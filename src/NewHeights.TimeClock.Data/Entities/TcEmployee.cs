@@ -30,6 +30,14 @@ public class TcEmployee
     public string? Phone { get; set; }
     public bool IsActive { get; set; } = true;
     public string? EntraObjectId { get; set; }
+
+    /// <summary>
+    /// When true, the outreach service will NOT send SMS to this employee
+    /// (compliance for STOP / unsubscribe flows). Email is always allowed.
+    /// Added by migration 035c for Phase 5/6.
+    /// </summary>
+    public bool SmsOptedOut { get; set; } = false;
+
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime ModifiedDate { get; set; } = DateTime.Now;
 

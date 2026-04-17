@@ -1,0 +1,397 @@
+@page "/employee/absence-request"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@using System.Security.Claims
+@attribute [Authorize(Policy = "RequireAnyStaff")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject ILogger<AbsenceRequest> Logger
+
+<PageTitle>Request Time Off - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="absence-request-page">
+
+    <header class="absence-request-header">
+        <h1>Request Time Off</h1>
+        <p class="header-subtitle">
+            Submit an absence request. Your campus manager will review it and assign a substitute.
+        </p>
+    </header>
+
+    @if (submittedRequestId.HasValue)
+    {
+        <div class="success-panel" role="status">
+            <h2>Request Submitted</h2>
+            <p>
+                Your request (#@submittedRequestId) for
+                <strong>@form.StartDate.ToString("MMM d")@(form.StartDate != form.EndDate ? $" – {form.EndDate:MMM d, yyyy}" : $", {form.StartDate.Year}")</strong>
+                has been sent to your campus manager for approval.
+            </p>
+            <p>You'll hear back by email once it's been reviewed.</p>
+            <div class="success-actions">
+                <button type="button" class="btn-secondary" @onclick="ResetForm">Submit Another</button>
+                <a class="btn-primary" href="/">Back to Home</a>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="employee-info-bar">
+            <div class="info-item">
+                <span class="info-label">Name:</span>
+                <span class="info-value">@employeeName</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Campus:</span>
+                <span class="info-value">@campusDisplay</span>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(loadError))
+        {
+            <div class="error-panel" role="alert">@loadError</div>
+        }
+        else if (isLoading)
+        {
+            <div class="loading">Loading…</div>
+        }
+        else
+        {
+            <form class="absence-form" @onsubmit="SubmitAsync" @onsubmit:preventDefault="true">
+
+                <div class="form-row">
+                    <label for="absence-type">Absence Type</label>
+                    <select id="absence-type" @bind="form.AbsenceType" required>
+                        <option value="@AbsenceType.PTO">PTO</option>
+                        <option value="@AbsenceType.Sick">Sick</option>
+                        <option value="@AbsenceType.ProfessionalDev">Professional Development</option>
+                        <option value="@AbsenceType.Personal">Personal</option>
+                        <option value="@AbsenceType.Vacation">Vacation</option>
+                        <option value="@AbsenceType.Other">Other</option>
+                    </select>
+                </div>
+
+                <div class="form-row two-col">
+                    <div>
+                        <label for="start-date">Start Date</label>
+                        <input id="start-date" type="date"
+                               @bind="form.StartDate"
+                               @bind:after="OnStartDateChanged"
+                               required />
+                    </div>
+                    <div>
+                        <label for="end-date">End Date</label>
+                        <input id="end-date" type="date"
+                               @bind="form.EndDate"
+                               min="@form.StartDate.ToString("yyyy-MM-dd")"
+                               required />
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <label>Session</label>
+                    <div class="radio-group" role="radiogroup">
+                        <label class="radio-option">
+                            <input type="radio" name="session" value="DAY"
+                                   checked="@(form.SessionType == "DAY")"
+                                   @onchange='() => form.SessionType = "DAY"' />
+                            Day
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="session" value="EVENING"
+                                   checked="@(form.SessionType == "EVENING")"
+                                   @onchange='() => form.SessionType = "EVENING"' />
+                            Evening
+                        </label>
+                        <label class="radio-option">
+                            <input type="radio" name="session" value="BOTH"
+                                   checked="@(form.SessionType == "BOTH")"
+                                   @onchange='() => form.SessionType = "BOTH"' />
+                            Both
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <label>Periods Needing Coverage</label>
+                    <div class="period-checks">
+                        @for (int p = 1; p <= 6; p++)
+                        {
+                            var periodNum = p;
+                            <label class="period-check">
+                                <input type="checkbox"
+                                       checked="@form.Periods.Contains(periodNum)"
+                                       @onchange="(e) => TogglePeriod(periodNum, (bool?)e.Value == true)" />
+                                P@(periodNum)
+                            </label>
+                        }
+                        <button type="button" class="btn-inline" @onclick="SelectAllDay">Select All Day</button>
+                        <button type="button" class="btn-inline" @onclick="ClearPeriods">Clear</button>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <label for="subject-area">Subject Area</label>
+                    <select id="subject-area" @bind="form.SubjectArea">
+                        <option value="">— (optional) —</option>
+                        <option value="ELAR">ELAR</option>
+                        <option value="MATH">MATH</option>
+                        <option value="SCI">Science</option>
+                        <option value="SS">Social Studies</option>
+                        <option value="CTE">CTE</option>
+                        <option value="Advising">Advising</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+
+                <div class="form-row">
+                    <label for="special-instructions">Special Instructions (optional)</label>
+                    <textarea id="special-instructions"
+                              @bind="form.SpecialInstructions"
+                              rows="3"
+                              maxlength="1000"
+                              placeholder="e.g. 'STAAR testing week — lesson plans on desk'"></textarea>
+                </div>
+
+                <div class="form-row">
+                    <label for="reason">Reason (optional)</label>
+                    <input id="reason" type="text"
+                           @bind="form.AbsenceReason"
+                           maxlength="500"
+                           placeholder="e.g. 'Doctor appointment'" />
+                </div>
+
+                @if (!string.IsNullOrEmpty(submitError))
+                {
+                    <div class="error-panel" role="alert">@submitError</div>
+                }
+
+                <div class="form-actions">
+                    <a class="btn-secondary" href="/">Cancel</a>
+                    <button type="submit" class="btn-primary" disabled="@(isSubmitting || !CanSubmit())">
+                        @(isSubmitting ? "Submitting…" : "Submit Request")
+                    </button>
+                </div>
+            </form>
+        }
+    }
+
+</div>
+
+@code {
+    private AbsenceForm form = new();
+
+    private int employeeId;
+    private string employeeName = "";
+    private string currentUserEmail = "";
+    private int campusId;
+    private string campusDisplay = "";
+
+    private bool isLoading = true;
+    private bool isSubmitting = false;
+    private string loadError = "";
+    private string submitError = "";
+
+    private long? submittedRequestId = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
+                        ?? authState.User.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "";
+
+        await LoadEmployeeAsync();
+    }
+
+    private async Task LoadEmployeeAsync()
+    {
+        isLoading = true;
+        loadError = "";
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var employee = await context.TcEmployees
+                .Include(e => e.Staff)
+                .Include(e => e.HomeCampus)
+                .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
+
+            if (employee == null)
+            {
+                loadError = "Your employee record was not found. Contact your supervisor.";
+                return;
+            }
+
+            employeeId = employee.EmployeeId;
+            employeeName = employee.Staff?.FullName ?? employee.Email ?? "—";
+            campusId = employee.HomeCampusId;
+            campusDisplay = employee.HomeCampus?.CampusName ?? $"Campus {employee.HomeCampusId}";
+
+            // Default both dates to today and session to Day.
+            var today = DateOnly.FromDateTime(DateTime.Today);
+            form.StartDate = today;
+            form.EndDate = today;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading employee for absence request: {Email}", currentUserEmail);
+            loadError = "Unable to load your employee record. Please refresh and try again.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void OnStartDateChanged()
+    {
+        if (form.EndDate < form.StartDate)
+            form.EndDate = form.StartDate;
+    }
+
+    private void TogglePeriod(int periodNumber, bool checkedState)
+    {
+        if (checkedState)
+        {
+            if (!form.Periods.Contains(periodNumber))
+                form.Periods.Add(periodNumber);
+        }
+        else
+        {
+            form.Periods.Remove(periodNumber);
+        }
+    }
+
+    private void SelectAllDay()
+    {
+        form.Periods = new List<int> { 1, 2, 3, 4, 5, 6 };
+    }
+
+    private void ClearPeriods()
+    {
+        form.Periods = new();
+    }
+
+    private bool CanSubmit()
+    {
+        if (form.EndDate < form.StartDate) return false;
+        if (form.Periods.Count == 0) return false;
+        return true;
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (isSubmitting || !CanSubmit()) return;
+        submitError = "";
+
+        if (form.Periods.Count == 0)
+        {
+            submitError = "Select at least one period needing coverage (or click 'Select All Day').";
+            return;
+        }
+        if (form.EndDate < form.StartDate)
+        {
+            submitError = "End date must be on or after the start date.";
+            return;
+        }
+
+        isSubmitting = true;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var request = new TcSubRequest
+            {
+                RequestingEmployeeId = employeeId,
+                CampusId = campusId,
+                StartDate = form.StartDate,
+                EndDate = form.EndDate,
+                AbsenceType = form.AbsenceType,
+                AbsenceReason = string.IsNullOrWhiteSpace(form.AbsenceReason) ? null : form.AbsenceReason.Trim(),
+                PeriodsNeeded = string.Join(",", form.Periods.OrderBy(p => p).Select(p => $"P{p}")),
+                SessionType = form.SessionType,
+                SubjectArea = string.IsNullOrWhiteSpace(form.SubjectArea) ? null : form.SubjectArea,
+                SpecialInstructions = string.IsNullOrWhiteSpace(form.SpecialInstructions) ? null : form.SpecialInstructions.Trim(),
+                Status = SubRequestStatus.Submitted,
+                CreatedDate = DateTime.Now,
+                ModifiedDate = DateTime.Now
+            };
+
+            context.TcSubRequests.Add(request);
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Absence.Submitted,
+                entityType: AuditEntityTypes.SubRequest,
+                entityId: request.SubRequestId.ToString(),
+                newValues: new
+                {
+                    request.SubRequestId,
+                    request.RequestingEmployeeId,
+                    request.CampusId,
+                    StartDate = request.StartDate.ToString("yyyy-MM-dd"),
+                    EndDate = request.EndDate.ToString("yyyy-MM-dd"),
+                    AbsenceType = request.AbsenceType.ToString(),
+                    request.SessionType,
+                    request.PeriodsNeeded,
+                    request.SubjectArea,
+                    HasSpecialInstructions = !string.IsNullOrWhiteSpace(request.SpecialInstructions),
+                    Status = request.Status.ToString()
+                },
+                deltaSummary: $"Absence request #{request.SubRequestId} submitted for "
+                            + $"{request.StartDate:MMM d}–{request.EndDate:MMM d} "
+                            + $"({request.AbsenceType}, {request.PeriodsNeeded})",
+                source: AuditSource.AdminUi,
+                employeeId: employeeId,
+                campusId: campusId);
+
+            submittedRequestId = request.SubRequestId;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "Error submitting absence request for employee {EmployeeId}", employeeId);
+            submitError = "Could not submit your request. Please try again.";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private void ResetForm()
+    {
+        form = new AbsenceForm
+        {
+            StartDate = DateOnly.FromDateTime(DateTime.Today),
+            EndDate = DateOnly.FromDateTime(DateTime.Today),
+            SessionType = "DAY",
+            AbsenceType = AbsenceType.PTO
+        };
+        submittedRequestId = null;
+        submitError = "";
+    }
+
+    private class AbsenceForm
+    {
+        public AbsenceType AbsenceType { get; set; } = AbsenceType.PTO;
+        public DateOnly StartDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+        public DateOnly EndDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+        public string SessionType { get; set; } = "DAY";
+        public List<int> Periods { get; set; } = new();
+        public string? SubjectArea { get; set; }
+        public string? AbsenceReason { get; set; }
+        public string? SpecialInstructions { get; set; }
+    }
+}

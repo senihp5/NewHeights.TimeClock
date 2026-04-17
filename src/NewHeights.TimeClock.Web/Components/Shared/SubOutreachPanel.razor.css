@@ -1,0 +1,289 @@
+.outreach-panel {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 0.75rem;
+    margin-top: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.panel-section {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 0.6rem 0.75rem;
+}
+
+.section-title {
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 0.55rem;
+}
+
+.panel-loading,
+.panel-empty {
+    color: #6b7280;
+    font-size: 0.9rem;
+    padding: 0.75rem;
+    text-align: center;
+    background: #fff;
+    border: 1px dashed #d1d5db;
+    border-radius: 4px;
+}
+
+.panel-error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+    padding: 0.55rem 0.7rem;
+    border-radius: 4px;
+    margin: 0.4rem 0;
+    font-size: 0.88rem;
+}
+
+.mode-toggle {
+    display: flex;
+    gap: 1.25rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.mode-toggle label {
+    color: #374151;
+    font-size: 0.9rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.candidates-table,
+.history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.candidates-table thead th,
+.history-table thead th {
+    background: #f9fafb;
+    padding: 0.4rem 0.5rem;
+    text-align: left;
+    color: #4b5563;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.candidates-table tbody tr {
+    border-bottom: 1px solid #f3f4f6;
+}
+
+.candidates-table tbody tr:hover {
+    background: #fafafa;
+}
+
+.candidates-table tbody tr.selected {
+    background: #eef2ff;
+}
+
+.candidates-table td,
+.history-table td {
+    padding: 0.4rem 0.5rem;
+    vertical-align: middle;
+}
+
+.select-col {
+    width: 1.5rem;
+}
+
+.order-col {
+    width: 3rem;
+    text-align: center;
+}
+
+.order-num {
+    display: inline-block;
+    width: 1.5rem;
+    height: 1.5rem;
+    line-height: 1.5rem;
+    text-align: center;
+    background: #4338ca;
+    color: #fff;
+    border-radius: 9999px;
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+.name-cell strong {
+    color: #111827;
+}
+
+.email-cell,
+.phone-cell {
+    color: #374151;
+    font-size: 0.85rem;
+}
+
+.conflicts-cell {
+    font-size: 0.85rem;
+}
+
+.conflict-clean {
+    color: #059669;
+}
+
+.conflict-note {
+    color: #b91c1c;
+    font-weight: 500;
+}
+
+.muted {
+    color: #9ca3af;
+    font-style: italic;
+    font-size: 0.85rem;
+}
+
+.sms-opt-out {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.4rem;
+    background: #fef3c7;
+    color: #92400e;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.cascade-actions {
+    white-space: nowrap;
+}
+
+.btn-tiny {
+    background: #fff;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    border-radius: 3px;
+    padding: 0.15rem 0.45rem;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+
+.btn-tiny:hover:not(:disabled) {
+    background: #f3f4f6;
+}
+
+.btn-tiny:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.send-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #f3f4f6;
+    flex-wrap: wrap;
+}
+
+.send-summary {
+    color: #374151;
+    font-size: 0.9rem;
+}
+
+.send-summary strong {
+    color: #111827;
+}
+
+.btn-send-outreach {
+    background: #2563eb;
+    color: #fff;
+    border: 1px solid #2563eb;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.btn-send-outreach:hover:not(:disabled) {
+    background: #1d4ed8;
+}
+
+.btn-send-outreach:disabled {
+    background: #9ca3af;
+    border-color: #9ca3af;
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.history-row td {
+    color: #374151;
+}
+
+.history-row.status-accepted {
+    background: #f0fdf4;
+}
+
+.history-row.status-declined {
+    background: #fef2f2;
+}
+
+.history-row.status-expired {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
+.chip {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.chip.status-awaiting {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.chip.status-accepted {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.chip.status-declined {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.chip.status-expired {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.chip.status-no_response {
+    background: #e5e7eb;
+    color: #6b7280;
+}
+
+td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.sent-by {
+    color: #4b5563;
+    font-size: 0.82rem;
+}

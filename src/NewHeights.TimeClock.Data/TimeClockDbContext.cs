@@ -43,6 +43,9 @@ public class TimeClockDbContext : DbContext
     public DbSet<TcSubstituteTimecard> TcSubstituteTimecards { get; set; } = null!;
     public DbSet<TcSubstitutePeriodEntry> TcSubstitutePeriodEntries { get; set; } = null!;
 
+    // Added in migration 035 (SubstituteTimesheetSpec Phase 5).
+    public DbSet<TcSubOutreach> TcSubOutreach { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -262,12 +265,50 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.SupervisorApprovedBy).HasMaxLength(100);
             entity.Property(e => e.CalendarEventId).HasMaxLength(200);
 
+            // Phase 5 scheduling columns (migration 035a).
+            entity.Property(e => e.SessionType).HasMaxLength(10);
+
             entity.HasOne(e => e.RequestingEmployee).WithMany(emp => emp.SubRequests).HasForeignKey(e => e.RequestingEmployeeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.AssignedSub).WithMany(s => s.Assignments).HasForeignKey(e => e.AssignedSubPoolId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(e => e.AssignedSubEmployee)
+                  .WithMany()
+                  .HasForeignKey(e => e.AssignedSubEmployeeId)
+                  .OnDelete(DeleteBehavior.Restrict);
 
             entity.HasIndex(e => new { e.StartDate, e.EndDate });
             entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.AssignedSubEmployeeId);
+        });
+
+        modelBuilder.Entity<TcSubOutreach>(entity =>
+        {
+            entity.ToTable("TC_SubOutreach");
+            entity.HasKey(e => e.OutreachId);
+
+            entity.Property(e => e.OutreachMethod).HasMaxLength(10).IsRequired();
+            entity.Property(e => e.PhoneNumber).HasMaxLength(20);
+            entity.Property(e => e.EmailAddress).HasMaxLength(200);
+            entity.Property(e => e.ResponseToken).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.MessageId).HasMaxLength(100);
+            entity.Property(e => e.DeliveryStatus).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.ResponseStatus).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.SentBy).HasMaxLength(200);
+            entity.Property(e => e.Notes).HasMaxLength(500);
+
+            entity.HasOne(e => e.SubRequest)
+                  .WithMany(r => r.Outreach)
+                  .HasForeignKey(e => e.SubRequestId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.SubEmployee)
+                  .WithMany()
+                  .HasForeignKey(e => e.SubEmployeeId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(e => e.ResponseToken).IsUnique();
+            entity.HasIndex(e => e.SubRequestId);
+            entity.HasIndex(e => e.ResponseStatus);
+            entity.HasIndex(e => e.TokenExpiresAt);
         });
 
         modelBuilder.Entity<TcCalendarEvent>(entity =>

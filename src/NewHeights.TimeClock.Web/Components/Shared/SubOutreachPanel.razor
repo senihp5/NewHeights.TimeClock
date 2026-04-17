@@ -1,0 +1,442 @@
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ISubOutreachService OutreachService
+@inject ILogger<SubOutreachPanel> Logger
+
+@* ─────────────────────────────────────────────────────────────────────
+   SubOutreachPanel
+   Mounted below AbsenceApproved/SubAssigned cards on /supervisor/sub-requests.
+   Lists substitute candidates for the request's campus + date range with
+   basic conflict detection, lets supervisor pick manual vs auto-cascade mode,
+   sends outreach via ISubOutreachService.SendOutreachAsync, and shows
+   outreach history for the request.
+   ───────────────────────────────────────────────────────────────────── *@
+
+<div class="outreach-panel">
+
+    @if (isLoading)
+    {
+        <div class="panel-loading">Loading candidates…</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="panel-error" role="alert">@loadError</div>
+    }
+    else
+    {
+        <div class="panel-section">
+            <div class="section-title">Available Substitutes</div>
+
+            @if (candidates.Count == 0)
+            {
+                <div class="panel-empty">
+                    No active substitutes found. Check the Entra "Substitute Teachers" group
+                    and confirm the EmployeeSync has run.
+                </div>
+            }
+            else
+            {
+                <div class="mode-toggle">
+                    <label>
+                        <input type="radio" name="mode-@Request.SubRequestId" value="manual"
+                               checked="@(mode == OutreachMode.Manual)"
+                               @onchange="() => SetMode(OutreachMode.Manual)" />
+                        Manual — pick one sub to contact
+                    </label>
+                    <label>
+                        <input type="radio" name="mode-@Request.SubRequestId" value="cascade"
+                               checked="@(mode == OutreachMode.AutoCascade)"
+                               @onchange="() => SetMode(OutreachMode.AutoCascade)" />
+                        Auto-cascade — pick ordered list; system advances on decline/expiry
+                    </label>
+                </div>
+
+                <table class="candidates-table">
+                    <thead>
+                        <tr>
+                            <th class="select-col"></th>
+                            @if (mode == OutreachMode.AutoCascade)
+                            {
+                                <th class="order-col">Order</th>
+                            }
+                            <th>Name</th>
+                            <th>Email</th>
+                            <th>Phone</th>
+                            <th>Conflicts</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var c in candidates)
+                        {
+                            var manualSelected = mode == OutreachMode.Manual && manualSelectedId == c.EmployeeId;
+                            var cascadeIndex = cascadeOrderedIds.IndexOf(c.EmployeeId);
+                            var cascadeSelected = cascadeIndex >= 0;
+                            var cascadePosition = cascadeSelected ? cascadeIndex + 1 : 0;
+                            <tr class="@(manualSelected || cascadeSelected ? "selected" : "")">
+                                <td class="select-col">
+                                    @if (mode == OutreachMode.Manual)
+                                    {
+                                        <input type="radio" name="sub-pick-@Request.SubRequestId"
+                                               checked="@manualSelected"
+                                               @onchange="() => SetManualSelection(c.EmployeeId)" />
+                                    }
+                                    else
+                                    {
+                                        <input type="checkbox"
+                                               checked="@cascadeSelected"
+                                               @onchange="(e) => ToggleCascade(c.EmployeeId, (bool?)e.Value == true)" />
+                                    }
+                                </td>
+                                @if (mode == OutreachMode.AutoCascade)
+                                {
+                                    <td class="order-col">
+                                        @if (cascadeSelected)
+                                        {
+                                            <span class="order-num">@cascadePosition</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="muted">—</span>
+                                        }
+                                    </td>
+                                }
+                                <td class="name-cell">
+                                    <strong>@c.FullName</strong>
+                                    @if (c.SmsOptedOut)
+                                    {
+                                        <span class="sms-opt-out" title="This sub has opted out of SMS. Email still works.">no SMS</span>
+                                    }
+                                </td>
+                                <td class="email-cell">
+                                    @if (string.IsNullOrWhiteSpace(c.Email))
+                                    {
+                                        <span class="muted">no email</span>
+                                    }
+                                    else
+                                    {
+                                        @c.Email
+                                    }
+                                </td>
+                                <td class="phone-cell">
+                                    @if (string.IsNullOrWhiteSpace(c.Phone))
+                                    {
+                                        <span class="muted">—</span>
+                                    }
+                                    else
+                                    {
+                                        @c.Phone
+                                    }
+                                </td>
+                                <td class="conflicts-cell">
+                                    @if (c.Conflicts.Count == 0)
+                                    {
+                                        <span class="conflict-clean">None</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="conflict-note" title="@string.Join("; ", c.Conflicts)">
+                                            Booked: @string.Join(", ", c.Conflicts)
+                                        </span>
+                                    }
+                                </td>
+                                <td class="cascade-actions">
+                                    @if (mode == OutreachMode.AutoCascade && cascadeSelected)
+                                    {
+                                        <button type="button" class="btn-tiny"
+                                                @onclick="() => MoveCascadeUp(c.EmployeeId)"
+                                                disabled="@(cascadeIndex == 0)"
+                                                title="Move up in queue">↑</button>
+                                        <button type="button" class="btn-tiny"
+                                                @onclick="() => MoveCascadeDown(c.EmployeeId)"
+                                                disabled="@(cascadeIndex == cascadeOrderedIds.Count - 1)"
+                                                title="Move down in queue">↓</button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+
+                @if (!string.IsNullOrEmpty(sendError))
+                {
+                    <div class="panel-error" role="alert">@sendError</div>
+                }
+
+                <div class="send-row">
+                    <div class="send-summary">
+                        @if (mode == OutreachMode.Manual)
+                        {
+                            @if (manualSelectedId.HasValue)
+                            {
+                                var picked = candidates.FirstOrDefault(x => x.EmployeeId == manualSelectedId.Value);
+                                <span>Will send email to <strong>@(picked?.FullName ?? "—")</strong></span>
+                            }
+                            else
+                            {
+                                <span class="muted">Pick a sub above.</span>
+                            }
+                        }
+                        else
+                        {
+                            @if (cascadeOrderedIds.Count == 0)
+                            {
+                                <span class="muted">Select subs above; the first in the queue will be emailed.</span>
+                            }
+                            else
+                            {
+                                <span>
+                                    Queue: @string.Join(" → ",
+                                        cascadeOrderedIds.Select((id, i) =>
+                                            candidates.FirstOrDefault(x => x.EmployeeId == id)?.FullName ?? $"#{id}"))
+                                </span>
+                            }
+                        }
+                    </div>
+                    <button type="button" class="btn-send-outreach"
+                            @onclick="SendOutreachAsync"
+                            disabled="@(!CanSend() || isSending)">
+                        @(isSending ? "Sending…" : "Send Outreach")
+                    </button>
+                </div>
+            }
+        </div>
+
+        @if (history.Count > 0)
+        {
+            <div class="panel-section">
+                <div class="section-title">Outreach History</div>
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Seq</th>
+                            <th>Sub</th>
+                            <th>Method</th>
+                            <th>Sent</th>
+                            <th>Status</th>
+                            <th>Responded</th>
+                            <th>Sent By</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var h in history)
+                        {
+                            <tr class="history-row status-@h.ResponseStatus.ToLower()">
+                                <td class="num">@h.SequenceOrder</td>
+                                <td>@(h.SubEmployee?.Staff?.FullName ?? h.SubEmployee?.Email ?? $"Employee {h.SubEmployeeId}")</td>
+                                <td>@h.OutreachMethod</td>
+                                <td>@(h.MessageSentAt.HasValue ? h.MessageSentAt.Value.ToString("MMM d h:mm tt") : "queued")</td>
+                                <td>
+                                    <span class="chip status-@h.ResponseStatus.ToLower()">@h.ResponseStatus</span>
+                                </td>
+                                <td>@(h.RespondedAt.HasValue ? h.RespondedAt.Value.ToString("MMM d h:mm tt") : "—")</td>
+                                <td class="sent-by">@(h.SentBy ?? "—")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public TcSubRequest Request { get; set; } = null!;
+    [Parameter, EditorRequired] public string CurrentUserEmail { get; set; } = "";
+    [Parameter] public EventCallback OnOutreachSent { get; set; }
+
+    private List<SubCandidate> candidates = new();
+    private List<TcSubOutreach> history = new();
+    private OutreachMode mode = OutreachMode.Manual;
+    private int? manualSelectedId = null;
+    private List<int> cascadeOrderedIds = new();
+
+    private bool isLoading = true;
+    private string loadError = "";
+    private bool isSending = false;
+    private string sendError = "";
+
+    private long _lastRequestId = 0;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Request == null) return;
+        if (_lastRequestId == Request.SubRequestId && !isLoading) return;
+        _lastRequestId = Request.SubRequestId;
+        mode = OutreachMode.Manual;
+        manualSelectedId = null;
+        cascadeOrderedIds = new();
+        sendError = "";
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        loadError = "";
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            // Candidates: active substitutes at the request's campus.
+            var subs = await context.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .Where(e => e.EmployeeType == EmployeeType.Substitute
+                         && e.IsActive
+                         && (e.HomeCampusId == Request.CampusId
+                             || e.EmployeeType == EmployeeType.Substitute))
+                .OrderBy(e => e.Staff!.LastName)
+                .ThenBy(e => e.Staff!.FirstName)
+                .ToListAsync();
+
+            // Conflicts: SubConfirmed SubRequests with overlapping date range.
+            var subIds = subs.Select(s => s.EmployeeId).ToList();
+            var conflictingAssignments = await context.TcSubRequests
+                .AsNoTracking()
+                .Where(r => r.AssignedSubEmployeeId != null
+                         && subIds.Contains(r.AssignedSubEmployeeId.Value)
+                         && r.Status == SubRequestStatus.SubConfirmed
+                         && r.SubRequestId != Request.SubRequestId
+                         && r.StartDate <= Request.EndDate
+                         && r.EndDate >= Request.StartDate)
+                .ToListAsync();
+
+            candidates = subs
+                .Select(s => new SubCandidate
+                {
+                    EmployeeId = s.EmployeeId,
+                    FullName = s.Staff?.FullName ?? s.Email ?? $"Employee {s.EmployeeId}",
+                    Email = s.Email,
+                    Phone = s.Phone,
+                    SmsOptedOut = s.SmsOptedOut,
+                    Conflicts = conflictingAssignments
+                        .Where(c => c.AssignedSubEmployeeId == s.EmployeeId)
+                        .Select(c => c.StartDate == c.EndDate
+                            ? c.StartDate.ToString("MMM d")
+                            : $"{c.StartDate:MMM d}–{c.EndDate:MMM d}")
+                        .Distinct()
+                        .ToList()
+                })
+                .ToList();
+
+            history = await OutreachService.GetOutreachForRequestAsync(Request.SubRequestId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading outreach panel for request {Id}", Request?.SubRequestId);
+            loadError = "Could not load available substitutes.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void SetMode(OutreachMode newMode)
+    {
+        if (mode == newMode) return;
+        mode = newMode;
+        // Reset selection on mode switch.
+        manualSelectedId = null;
+        cascadeOrderedIds = new();
+    }
+
+    private void SetManualSelection(int employeeId)
+    {
+        manualSelectedId = employeeId;
+    }
+
+    private void ToggleCascade(int employeeId, bool add)
+    {
+        if (add)
+        {
+            if (!cascadeOrderedIds.Contains(employeeId))
+                cascadeOrderedIds.Add(employeeId);
+        }
+        else
+        {
+            cascadeOrderedIds.Remove(employeeId);
+        }
+    }
+
+    private void MoveCascadeUp(int employeeId)
+    {
+        var idx = cascadeOrderedIds.IndexOf(employeeId);
+        if (idx <= 0) return;
+        (cascadeOrderedIds[idx - 1], cascadeOrderedIds[idx]) = (cascadeOrderedIds[idx], cascadeOrderedIds[idx - 1]);
+    }
+
+    private void MoveCascadeDown(int employeeId)
+    {
+        var idx = cascadeOrderedIds.IndexOf(employeeId);
+        if (idx < 0 || idx >= cascadeOrderedIds.Count - 1) return;
+        (cascadeOrderedIds[idx + 1], cascadeOrderedIds[idx]) = (cascadeOrderedIds[idx], cascadeOrderedIds[idx + 1]);
+    }
+
+    private bool CanSend()
+    {
+        if (string.IsNullOrWhiteSpace(CurrentUserEmail)) return false;
+        return mode switch
+        {
+            OutreachMode.Manual => manualSelectedId.HasValue,
+            OutreachMode.AutoCascade => cascadeOrderedIds.Count > 0,
+            _ => false
+        };
+    }
+
+    private async Task SendOutreachAsync()
+    {
+        if (!CanSend() || isSending) return;
+        sendError = "";
+
+        IList<int> toSend = mode == OutreachMode.Manual
+            ? new List<int> { manualSelectedId!.Value }
+            : new List<int>(cascadeOrderedIds);
+
+        isSending = true;
+        try
+        {
+            await OutreachService.SendOutreachAsync(
+                Request.SubRequestId, toSend, mode, CurrentUserEmail);
+
+            manualSelectedId = null;
+            cascadeOrderedIds = new();
+            await LoadAsync();
+            await OnOutreachSent.InvokeAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "SendOutreachAsync refused for request {Id}", Request.SubRequestId);
+            sendError = ex.Message;
+        }
+        catch (ArgumentException ex)
+        {
+            Logger.LogWarning(ex, "SendOutreachAsync argument error for request {Id}", Request.SubRequestId);
+            sendError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error sending outreach for request {Id}", Request.SubRequestId);
+            sendError = "Could not send outreach. Please try again.";
+        }
+        finally
+        {
+            isSending = false;
+        }
+    }
+
+    private class SubCandidate
+    {
+        public int EmployeeId { get; set; }
+        public string FullName { get; set; } = "";
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
+        public bool SmsOptedOut { get; set; }
+        public List<string> Conflicts { get; set; } = new();
+    }
+}

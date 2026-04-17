@@ -1,0 +1,494 @@
+@page "/supervisor/sub-requests"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject IUserContextService UserContextSvc
+@inject NavigationManager Navigation
+@inject ILogger<SupervisorSubRequests> Logger
+
+<PageTitle>Sub Requests - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="sub-requests-page">
+
+    <header class="sub-requests-header">
+        <h1>Sub Requests</h1>
+        <p class="header-subtitle">Review absence requests, approve or deny, and assign substitutes.</p>
+    </header>
+
+    <div class="filter-bar">
+        <div class="info-item">
+            <span class="info-label">Campus:</span>
+            @if (isAdmin)
+            {
+                <select @bind="selectedCampusFilter" @bind:after="LoadDataAsync">
+                    <option value="0">All Campuses</option>
+                    @foreach (var kv in campusNameById.OrderBy(k => k.Value))
+                    {
+                        <option value="@kv.Key">@kv.Value</option>
+                    }
+                </select>
+            }
+            else
+            {
+                <span class="info-value">@scopedCampusDisplay</span>
+            }
+        </div>
+        <div class="info-item">
+            <span class="info-label">Show:</span>
+            <select @bind="filterStatus" @bind:after="LoadDataAsync">
+                <option value="open">Open (needs attention)</option>
+                <option value="all">All</option>
+                <option value="submitted">Submitted</option>
+                <option value="approved">Absence Approved</option>
+                <option value="assigned">Sub Assigned</option>
+                <option value="confirmed">Sub Confirmed</option>
+                <option value="denied">Denied</option>
+                <option value="cancelled">Cancelled</option>
+            </select>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(actionError))
+    {
+        <div class="error-panel" role="alert">@actionError</div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading sub requests…</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="error-panel">@loadError</div>
+    }
+    else if (requests.Count == 0)
+    {
+        <div class="empty-state">
+            <h3>No requests match this filter.</h3>
+            <p>Try changing the filter above, or check back after employees submit absence requests.</p>
+        </div>
+    }
+    else
+    {
+        <div class="summary-stats">
+            <div class="stat-card">
+                <span class="stat-value">@requests.Count</span>
+                <span class="stat-label">Matching</span>
+            </div>
+            <div class="stat-card pending">
+                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.Submitted)</span>
+                <span class="stat-label">Awaiting Approval</span>
+            </div>
+            <div class="stat-card info">
+                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.AbsenceApproved || r.Status == SubRequestStatus.SubAssigned)</span>
+                <span class="stat-label">Needs Sub</span>
+            </div>
+            <div class="stat-card success">
+                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.SubConfirmed)</span>
+                <span class="stat-label">Confirmed</span>
+            </div>
+        </div>
+
+        @foreach (var req in requests)
+        {
+            var statusClass = "status-" + req.Status.ToString().ToLower();
+            var isDenyingThis = denyingRequestId == req.SubRequestId;
+            <div class="request-card @statusClass">
+
+                <div class="request-header">
+                    <div class="request-who">
+                        <strong>@(req.RequestingEmployee?.Staff?.FullName ?? req.RequestingEmployee?.Email ?? "—")</strong>
+                        <span class="request-dates">
+                            @(req.StartDate == req.EndDate
+                                ? req.StartDate.ToString("ddd, MMM d, yyyy")
+                                : $"{req.StartDate:ddd MMM d} – {req.EndDate:ddd MMM d, yyyy}")
+                        </span>
+                    </div>
+                    <div class="request-badges">
+                        <span class="chip @statusClass">@FormatStatus(req.Status)</span>
+                        @if (!string.IsNullOrWhiteSpace(req.Campus?.CampusName))
+                        {
+                            <span class="chip campus">@req.Campus.CampusName</span>
+                        }
+                    </div>
+                </div>
+
+                <div class="request-meta">
+                    <div><span class="meta-label">Absence:</span> @req.AbsenceType</div>
+                    <div><span class="meta-label">Periods:</span> @(string.IsNullOrWhiteSpace(req.PeriodsNeeded) ? "—" : req.PeriodsNeeded)</div>
+                    <div><span class="meta-label">Session:</span> @(string.IsNullOrWhiteSpace(req.SessionType) ? "DAY" : req.SessionType)</div>
+                    <div><span class="meta-label">Subject:</span> @(string.IsNullOrWhiteSpace(req.SubjectArea) ? "—" : req.SubjectArea)</div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(req.AbsenceReason))
+                {
+                    <div class="request-note"><strong>Reason:</strong> @req.AbsenceReason</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(req.SpecialInstructions))
+                {
+                    <div class="request-note"><strong>Instructions:</strong> @req.SpecialInstructions</div>
+                }
+
+                @* ── Action area ──────────────────────────────────────────── *@
+                @if (req.Status == SubRequestStatus.Submitted)
+                {
+                    @if (isDenyingThis)
+                    {
+                        <div class="deny-panel">
+                            <label for="deny-reason-@req.SubRequestId">Deny reason (required):</label>
+                            <textarea id="deny-reason-@req.SubRequestId"
+                                      @bind="denyReason"
+                                      rows="2"
+                                      maxlength="500"
+                                      placeholder="e.g. 'Not enough notice' or 'Conflicting commitment'"
+                                      disabled="@isDenying"></textarea>
+                            <div class="deny-buttons">
+                                <button type="button" class="btn-confirm-deny"
+                                        @onclick="() => ConfirmDenyAsync(req)"
+                                        disabled="@(isDenying || string.IsNullOrWhiteSpace(denyReason))">
+                                    @(isDenying ? "Denying…" : "Confirm Deny")
+                                </button>
+                                <button type="button" class="btn-cancel-deny"
+                                        @onclick="CancelDeny"
+                                        disabled="@isDenying">Cancel</button>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="action-row">
+                            <button type="button" class="btn-approve"
+                                    @onclick="() => ApproveAbsenceAsync(req)"
+                                    disabled="@IsActionBusy(req.SubRequestId)">
+                                @(approvingRequestId == req.SubRequestId ? "Approving…" : "Approve Absence")
+                            </button>
+                            <button type="button" class="btn-deny"
+                                    @onclick="() => BeginDeny(req.SubRequestId)"
+                                    disabled="@IsActionBusy(req.SubRequestId)">
+                                Deny
+                            </button>
+                        </div>
+                    }
+                }
+                else if (req.Status == SubRequestStatus.AbsenceApproved
+                      || req.Status == SubRequestStatus.SubAssigned)
+                {
+                    <SubOutreachPanel Request="@req"
+                                      CurrentUserEmail="@currentUserEmail"
+                                      OnOutreachSent="LoadDataAsync" />
+                }
+                else if (req.Status == SubRequestStatus.SubConfirmed)
+                {
+                    <div class="confirmed-panel">
+                        <strong>Confirmed sub:</strong>
+                        @(req.AssignedSubEmployee?.Staff?.FullName ?? req.AssignedSubEmployee?.Email ?? $"Employee {req.AssignedSubEmployeeId}")
+                        @if (req.AssignedDate.HasValue)
+                        {
+                            <span class="confirmed-when"> · accepted @req.AssignedDate.Value.ToString("MMM d h:mm tt")</span>
+                        }
+                        @if (req.ConfirmationSentAt.HasValue)
+                        {
+                            <span class="confirmed-email"> · confirmation email sent ✓</span>
+                        }
+                    </div>
+                }
+                else if (req.Status == SubRequestStatus.Denied)
+                {
+                    <div class="denied-panel">
+                        Denied.
+                        @if (!string.IsNullOrWhiteSpace(req.AbsenceReason))
+                        {
+                            <span class="denied-reason"> — (see reason above)</span>
+                        }
+                    </div>
+                }
+                else if (req.Status == SubRequestStatus.Cancelled)
+                {
+                    <div class="cancelled-panel">Cancelled by the requester.</div>
+                }
+            </div>
+        }
+    }
+
+</div>
+
+@code {
+    private List<TcSubRequest> requests = new();
+    private bool isLoading = true;
+    private string loadError = "";
+    private string actionError = "";
+
+    private UserContext? userCtx;
+    private bool isAdmin = false;
+    private int? scopedCampusId = null;
+    private string scopedCampusDisplay = "";
+    private int selectedCampusFilter = 0;
+
+    private string filterStatus = "open";
+
+    private Dictionary<int, string> campusNameById = new();
+
+    // Approve state
+    private string currentUserEmail = "";
+    private long? approvingRequestId = null;
+
+    // Deny state
+    private long? denyingRequestId = null;
+    private string denyReason = "";
+    private bool isDenying = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        userCtx = await UserContextSvc.GetCurrentUserAsync();
+        isAdmin = userCtx.IsAdmin;
+        currentUserEmail = userCtx.Email ?? "";
+
+        if (!isAdmin)
+        {
+            if (!userCtx.CampusId.HasValue)
+            {
+                loadError = "Your account isn't assigned to a campus. Contact an administrator.";
+                isLoading = false;
+                return;
+            }
+            scopedCampusId = userCtx.CampusId;
+            scopedCampusDisplay = userCtx.CampusDisplayName;
+        }
+
+        await LoadDataAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        isLoading = true;
+        loadError = "";
+        actionError = "";
+        denyingRequestId = null;
+        denyReason = "";
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            campusNameById = await context.Campuses
+                .AsNoTracking()
+                .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
+
+            int? filterCampusId = isAdmin
+                ? (selectedCampusFilter > 0 ? (int?)selectedCampusFilter : null)
+                : scopedCampusId;
+
+            var query = context.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
+                .Include(r => r.Campus)
+                .AsQueryable();
+
+            if (filterCampusId.HasValue)
+                query = query.Where(r => r.CampusId == filterCampusId.Value);
+
+            query = filterStatus switch
+            {
+                "open" => query.Where(r => r.Status == SubRequestStatus.Submitted
+                                        || r.Status == SubRequestStatus.AbsenceApproved
+                                        || r.Status == SubRequestStatus.SubAssigned),
+                "all" => query,
+                "submitted" => query.Where(r => r.Status == SubRequestStatus.Submitted),
+                "approved" => query.Where(r => r.Status == SubRequestStatus.AbsenceApproved),
+                "assigned" => query.Where(r => r.Status == SubRequestStatus.SubAssigned),
+                "confirmed" => query.Where(r => r.Status == SubRequestStatus.SubConfirmed),
+                "denied" => query.Where(r => r.Status == SubRequestStatus.Denied),
+                "cancelled" => query.Where(r => r.Status == SubRequestStatus.Cancelled),
+                _ => query
+            };
+
+            requests = await query
+                .OrderBy(r => r.StartDate)
+                .ThenBy(r => r.SubRequestId)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading sub requests for campus={Campus}", scopedCampusId);
+            loadError = "Unable to load sub requests. Please refresh and try again.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private bool IsActionBusy(long requestId)
+        => approvingRequestId != null
+        || (denyingRequestId != null && denyingRequestId != requestId)
+        || isDenying;
+
+    private async Task ApproveAbsenceAsync(TcSubRequest req)
+    {
+        if (approvingRequestId != null || isDenying) return;
+        if (string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            actionError = "Your session lost its user context — refresh and try again.";
+            return;
+        }
+
+        approvingRequestId = req.SubRequestId;
+        actionError = "";
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var tracked = await context.TcSubRequests
+                .FirstOrDefaultAsync(r => r.SubRequestId == req.SubRequestId);
+            if (tracked == null)
+                throw new InvalidOperationException("Request no longer exists.");
+            if (tracked.Status != SubRequestStatus.Submitted)
+                throw new InvalidOperationException(
+                    $"Cannot approve — request is {tracked.Status}.");
+
+            var oldStatus = tracked.Status;
+            tracked.Status = SubRequestStatus.AbsenceApproved;
+            tracked.SupervisorApprovedBy = currentUserEmail;
+            tracked.SupervisorApprovedDate = DateTime.Now;
+            tracked.ModifiedDate = DateTime.Now;
+
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Absence.Approved,
+                entityType: AuditEntityTypes.SubRequest,
+                entityId: tracked.SubRequestId.ToString(),
+                oldValues: new { Status = oldStatus.ToString() },
+                newValues: new
+                {
+                    Status = tracked.Status.ToString(),
+                    ApprovedBy = tracked.SupervisorApprovedBy,
+                    ApprovedDate = tracked.SupervisorApprovedDate
+                },
+                deltaSummary: $"Absence approved for request #{tracked.SubRequestId} by {currentUserEmail}",
+                source: AuditSource.AdminUi,
+                employeeId: tracked.RequestingEmployeeId,
+                campusId: tracked.CampusId);
+
+            await LoadDataAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "ApproveAbsence refused for request {Id}", req.SubRequestId);
+            actionError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error approving absence {Id}", req.SubRequestId);
+            actionError = "Could not approve the absence. Please try again.";
+        }
+        finally
+        {
+            approvingRequestId = null;
+        }
+    }
+
+    private void BeginDeny(long requestId)
+    {
+        actionError = "";
+        denyingRequestId = requestId;
+        denyReason = "";
+    }
+
+    private void CancelDeny()
+    {
+        denyingRequestId = null;
+        denyReason = "";
+    }
+
+    private async Task ConfirmDenyAsync(TcSubRequest req)
+    {
+        if (isDenying) return;
+        if (string.IsNullOrWhiteSpace(denyReason))
+        {
+            actionError = "Deny reason is required.";
+            return;
+        }
+
+        isDenying = true;
+        actionError = "";
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var tracked = await context.TcSubRequests
+                .FirstOrDefaultAsync(r => r.SubRequestId == req.SubRequestId);
+            if (tracked == null)
+                throw new InvalidOperationException("Request no longer exists.");
+            if (tracked.Status != SubRequestStatus.Submitted)
+                throw new InvalidOperationException(
+                    $"Cannot deny — request is {tracked.Status}.");
+
+            var trimmedReason = denyReason.Trim();
+            if (trimmedReason.Length > 500) trimmedReason = trimmedReason.Substring(0, 500);
+
+            var oldStatus = tracked.Status;
+            tracked.Status = SubRequestStatus.Denied;
+            tracked.SupervisorApprovedBy = currentUserEmail;
+            tracked.SupervisorApprovedDate = DateTime.Now;
+            tracked.ModifiedDate = DateTime.Now;
+
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Absence.Denied,
+                entityType: AuditEntityTypes.SubRequest,
+                entityId: tracked.SubRequestId.ToString(),
+                oldValues: new { Status = oldStatus.ToString() },
+                newValues: new
+                {
+                    Status = tracked.Status.ToString(),
+                    DeniedBy = tracked.SupervisorApprovedBy,
+                    DeniedDate = tracked.SupervisorApprovedDate
+                },
+                deltaSummary: $"Absence denied for request #{tracked.SubRequestId} by {currentUserEmail}",
+                reason: trimmedReason,
+                source: AuditSource.AdminUi,
+                employeeId: tracked.RequestingEmployeeId,
+                campusId: tracked.CampusId);
+
+            denyingRequestId = null;
+            denyReason = "";
+            await LoadDataAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "ConfirmDeny refused for request {Id}", req.SubRequestId);
+            actionError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error denying request {Id}", req.SubRequestId);
+            actionError = "Could not deny the request. Please try again.";
+        }
+        finally
+        {
+            isDenying = false;
+        }
+    }
+
+    private static string FormatStatus(SubRequestStatus s) => s switch
+    {
+        SubRequestStatus.Submitted => "Submitted",
+        SubRequestStatus.AbsenceApproved => "Absence Approved",
+        SubRequestStatus.SubAssigned => "Sub Assigned",
+        SubRequestStatus.SubConfirmed => "Sub Confirmed",
+        SubRequestStatus.Denied => "Denied",
+        SubRequestStatus.Cancelled => "Cancelled",
+        _ => s.ToString()
+    };
+}

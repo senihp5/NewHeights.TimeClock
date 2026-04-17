@@ -1,0 +1,294 @@
+@page "/sub/respond/{Token}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@attribute [AllowAnonymous]
+@rendermode InteractiveServer
+@inject ISubOutreachService OutreachService
+@inject ILogger<SubRespond> Logger
+
+<PageTitle>Sub Assignment - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="sub-respond-page">
+    <div class="respond-card">
+
+        <header class="respond-header">
+            <h1>New Heights Substitute Assignment</h1>
+        </header>
+
+        @if (isLoading)
+        {
+            <div class="loading">Loading…</div>
+        }
+        else if (isInvalid)
+        {
+            <div class="error-panel">
+                <h2>Invalid Link</h2>
+                <p>This link isn't valid. It may have been typed incorrectly or already used.</p>
+                <p class="subtle">If you think this is a mistake, contact your campus manager.</p>
+            </div>
+        }
+        else if (isExpired)
+        {
+            <div class="error-panel expired">
+                <h2>Link Expired</h2>
+                <p>
+                    This sub assignment link has expired. Please contact your campus manager
+                    if you'd still like to accept.
+                </p>
+            </div>
+        }
+        else if (alreadyResponded)
+        {
+            <div class="info-panel">
+                <h2>Already Responded</h2>
+                <p>
+                    This assignment link was already @(priorResponse?.ToLower() ?? "handled").
+                    If this is unexpected, contact your campus manager.
+                </p>
+            </div>
+        }
+        else if (accepted)
+        {
+            <div class="success-panel">
+                <h2>You're Confirmed!</h2>
+                <p>
+                    Thanks @(subFirstName)! You're scheduled at
+                    <strong>@(campusName)</strong> for <strong>@(dateRangeDisplay)</strong>.
+                </p>
+                <p>A confirmation email has been sent to you with the full details.</p>
+                <p class="subtle">Please check in with the front receptionist on arrival.</p>
+            </div>
+        }
+        else if (declined)
+        {
+            <div class="info-panel">
+                <h2>Response Recorded</h2>
+                <p>
+                    Thanks for letting us know, @(subFirstName). We'll offer the assignment to another substitute.
+                </p>
+                <p class="subtle">If your availability changes, contact your campus manager.</p>
+            </div>
+        }
+        else
+        {
+            <div class="assignment-details">
+                <p class="greeting">Hi @(subFirstName),</p>
+                <p>You've been requested to substitute at:</p>
+
+                <div class="detail-grid">
+                    <div><span class="detail-label">Campus:</span> <strong>@(campusName)</strong></div>
+                    <div><span class="detail-label">Dates:</span> @(dateRangeDisplay)</div>
+                    <div><span class="detail-label">Session:</span> @(sessionDisplay)</div>
+                    <div><span class="detail-label">Periods:</span> @(periodsDisplay)</div>
+                    @if (!string.IsNullOrWhiteSpace(subjectAreaDisplay))
+                    {
+                        <div><span class="detail-label">Subject:</span> @(subjectAreaDisplay)</div>
+                    }
+                    <div><span class="detail-label">Covering:</span> @(teacherName)</div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(specialInstructions))
+                {
+                    <div class="instructions-box">
+                        <span class="instructions-label">Special Instructions:</span>
+                        <p>@specialInstructions</p>
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(actionError))
+                {
+                    <div class="error-inline" role="alert">@actionError</div>
+                }
+
+                <div class="respond-actions">
+                    <button type="button" class="btn-accept"
+                            @onclick="AcceptAsync"
+                            disabled="@isSubmitting">
+                        @(isSubmitting && activeAction == "accept" ? "Confirming…" : "Accept Assignment")
+                    </button>
+                    <button type="button" class="btn-decline"
+                            @onclick="DeclineAsync"
+                            disabled="@isSubmitting">
+                        @(isSubmitting && activeAction == "decline" ? "Submitting…" : "Decline")
+                    </button>
+                </div>
+
+                <p class="expiry-note">
+                    This link expires on @(tokenExpiresAt?.ToString("dddd, MMM d") ?? "—")
+                    at @(tokenExpiresAt?.ToString("h:mm tt") ?? "—").
+                </p>
+            </div>
+        }
+
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Token { get; set; } = "";
+
+    private bool isLoading = true;
+    private bool isInvalid = false;
+    private bool isExpired = false;
+    private bool alreadyResponded = false;
+    private string? priorResponse = null;
+
+    private bool accepted = false;
+    private bool declined = false;
+
+    private bool isSubmitting = false;
+    private string activeAction = "";
+    private string actionError = "";
+
+    // Data for display.
+    private string campusName = "";
+    private string subFirstName = "";
+    private string dateRangeDisplay = "";
+    private string sessionDisplay = "";
+    private string periodsDisplay = "";
+    private string subjectAreaDisplay = "";
+    private string teacherName = "";
+    private string specialInstructions = "";
+    private DateTime? tokenExpiresAt;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadOutreachAsync();
+    }
+
+    private async Task LoadOutreachAsync()
+    {
+        isLoading = true;
+        isInvalid = false;
+        isExpired = false;
+        alreadyResponded = false;
+        accepted = false;
+        declined = false;
+        actionError = "";
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(Token))
+            {
+                isInvalid = true;
+                return;
+            }
+
+            var outreach = await OutreachService.GetOutreachByTokenAsync(Token);
+            if (outreach == null)
+            {
+                isInvalid = true;
+                return;
+            }
+
+            tokenExpiresAt = outreach.TokenExpiresAt;
+
+            if (outreach.ResponseStatus != "AWAITING")
+            {
+                alreadyResponded = true;
+                priorResponse = outreach.ResponseStatus;
+                PopulateDetails(outreach);
+                return;
+            }
+
+            if (outreach.TokenExpiresAt < DateTime.Now)
+            {
+                isExpired = true;
+                PopulateDetails(outreach);
+                return;
+            }
+
+            PopulateDetails(outreach);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading outreach for token {Token}", Token);
+            isInvalid = true;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void PopulateDetails(TcSubOutreach outreach)
+    {
+        var sub = outreach.SubEmployee;
+        var request = outreach.SubRequest;
+        var teacher = request?.RequestingEmployee;
+
+        subFirstName = sub?.Staff?.FirstName ?? sub?.Staff?.FullName ?? "there";
+        campusName = request?.Campus?.CampusName ?? "New Heights";
+        teacherName = teacher?.Staff?.FullName ?? teacher?.Email ?? "—";
+        sessionDisplay = request?.SessionType ?? "Day";
+        periodsDisplay = string.IsNullOrWhiteSpace(request?.PeriodsNeeded) ? "—" : request!.PeriodsNeeded!;
+        subjectAreaDisplay = request?.SubjectArea ?? "";
+        specialInstructions = request?.SpecialInstructions ?? "";
+
+        if (request != null)
+        {
+            dateRangeDisplay = request.StartDate == request.EndDate
+                ? request.StartDate.ToString("dddd, MMM d, yyyy")
+                : $"{request.StartDate:ddd MMM d} – {request.EndDate:ddd MMM d, yyyy}";
+        }
+    }
+
+    private async Task AcceptAsync()
+    {
+        if (isSubmitting) return;
+        isSubmitting = true;
+        activeAction = "accept";
+        actionError = "";
+        try
+        {
+            await OutreachService.ProcessAcceptAsync(Token);
+            accepted = true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "ProcessAcceptAsync refused for token");
+            actionError = ex.Message;
+            await LoadOutreachAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error accepting outreach");
+            actionError = "Could not record your acceptance. Please try again or contact your campus manager.";
+        }
+        finally
+        {
+            isSubmitting = false;
+            activeAction = "";
+        }
+    }
+
+    private async Task DeclineAsync()
+    {
+        if (isSubmitting) return;
+        isSubmitting = true;
+        activeAction = "decline";
+        actionError = "";
+        try
+        {
+            await OutreachService.ProcessDeclineAsync(Token);
+            declined = true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "ProcessDeclineAsync refused for token");
+            actionError = ex.Message;
+            await LoadOutreachAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error declining outreach");
+            actionError = "Could not record your decline. Please try again or contact your campus manager.";
+        }
+        finally
+        {
+            isSubmitting = false;
+            activeAction = "";
+        }
+    }
+}

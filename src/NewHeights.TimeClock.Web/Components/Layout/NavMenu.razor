@@ -24,6 +24,9 @@
             <div class="nav-item px-2">
                 <NavLink class="nav-link" href="mobile/checkin">Campus Check-In</NavLink>
             </div>
+            <div class="nav-item px-2">
+                <NavLink class="nav-link" href="employee/absence-request">Request Time Off</NavLink>
+            </div>
         </AuthorizeView>
 
         <AuthorizeView Policy="RequireHourly" Context="hourlyCtx">
@@ -49,6 +52,12 @@
             <div class="nav-section">Supervisor</div>
             <div class="nav-item px-2">
                 <NavLink class="nav-link" href="supervisor/timesheets">Team Timesheets</NavLink>
+            </div>
+            <div class="nav-item px-2">
+                <NavLink class="nav-link" href="supervisor/sub-timesheets">Sub Timesheets</NavLink>
+            </div>
+            <div class="nav-item px-2">
+                <NavLink class="nav-link" href="supervisor/sub-requests">Sub Requests</NavLink>
             </div>
         </AuthorizeView>
 

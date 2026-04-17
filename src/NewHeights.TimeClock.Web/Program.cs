@@ -158,6 +158,9 @@ builder.Services.AddScoped<IMasterScheduleLookupService, MasterScheduleLookupSer
 // Substitute timecard service — sub-facing CRUD for period entries (Phase 2)
 builder.Services.AddScoped<ISubstituteTimesheetService, SubstituteTimesheetService>();
 
+// Substitute outreach service — absence-request sub assignment + accept/decline (Phase 5)
+builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
+
 // Email Service
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailService, EmailService>();

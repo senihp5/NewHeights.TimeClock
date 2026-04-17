@@ -25,7 +25,21 @@ public class TcSubRequest
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime ModifiedDate { get; set; } = DateTime.Now;
 
+    // Phase 5 scheduling columns (migration 035a).
+    /// <summary>DAY | EVENING | BOTH. Determines which bell schedule applies.</summary>
+    public string? SessionType { get; set; }
+
+    /// <summary>Populated when a sub accepts the outreach. FK → TcEmployee.</summary>
+    public int? AssignedSubEmployeeId { get; set; }
+
+    /// <summary>Stamped when the accept-confirmation email fires.</summary>
+    public DateTime? ConfirmationSentAt { get; set; }
+
     public TcEmployee RequestingEmployee { get; set; } = null!;
     public Campus Campus { get; set; } = null!;
     public TcSubPool? AssignedSub { get; set; }
+
+    // Phase 5 navigation.
+    public TcEmployee? AssignedSubEmployee { get; set; }
+    public ICollection<TcSubOutreach> Outreach { get; set; } = new List<TcSubOutreach>();
 }
