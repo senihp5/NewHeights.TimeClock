@@ -152,7 +152,7 @@
             <div class="hs-summary">
                 <span>@filteredRows.Count(r => r.IsActive) active holidays</span>
                 <span>•</span>
-                <span>@filteredRows.Where(r => r.IsActive).Sum(r => r.HoursCredited).ToString("F1") total hours</span>
+                <span>@filteredRows.Where(r => r.IsActive).Sum(r => r.HoursCredited).ToString("F2") total hours</span>
             </div>
         }
     </div>
@@ -342,7 +342,7 @@
                                 <td>@h.Name</td>
                                 <td>@h.Date.ToString("MMM d, yyyy")</td>
                                 <td>@h.Date.DayOfWeek.ToString().Substring(0, 3)</td>
-                                <td>@h.HoursCredited.ToString("F1")</td>
+                                <td>@h.HoursCredited.ToString("F2")</td>
                                 <td>
                                     @if (isDuplicate)
                                     {

@@ -143,11 +143,16 @@ public class SubOutreachService : ISubOutreachService
         if (request == null)
             throw new InvalidOperationException($"Sub request {subRequestId} not found.");
 
-        if (request.Status != SubRequestStatus.AbsenceApproved
+        // Phase 9a (2026-04-20): teacher-driven flow allows AwaitingSub here too.
+        // Lifecycle: AwaitingSub -> SubAssigned (outreach in flight) -> SubConfirmed (sub accepted)
+        //         -> AbsenceApproved (admin final approval). Legacy "AbsenceApproved-as-intermediate"
+        //         is still accepted so any in-flight pre-9a requests continue working.
+        if (request.Status != SubRequestStatus.AwaitingSub
+            && request.Status != SubRequestStatus.AbsenceApproved
             && request.Status != SubRequestStatus.SubAssigned)
         {
             throw new InvalidOperationException(
-                $"Cannot send outreach — request is {request.Status}. Must be AbsenceApproved or SubAssigned.");
+                $"Cannot send outreach — request is {request.Status}. Must be AwaitingSub, AbsenceApproved, or SubAssigned.");
         }
 
         // Load the candidate subs; keep caller's ordering to preserve the queue.
@@ -208,8 +213,10 @@ public class SubOutreachService : ISubOutreachService
             outreachRows.Add(row);
         }
 
-        // First outreach for this request bumps status from AbsenceApproved → SubAssigned.
-        if (request.Status == SubRequestStatus.AbsenceApproved)
+        // First outreach for this request bumps status to SubAssigned.
+        // From either AwaitingSub (Phase 9a teacher-driven) or AbsenceApproved (legacy supervisor-driven).
+        if (request.Status == SubRequestStatus.AwaitingSub
+            || request.Status == SubRequestStatus.AbsenceApproved)
         {
             request.Status = SubRequestStatus.SubAssigned;
             request.ModifiedDate = DateTime.Now;
@@ -300,6 +307,9 @@ public class SubOutreachService : ISubOutreachService
                 employeeId: outreach.SubEmployeeId);
         }
 
+        // Phase 7d: notify supervisor + requesting employee of the acceptance.
+        await TryNotifyStakeholdersAsync(outreach, request, "ACCEPTED");
+
         return outreach;
     }
 
@@ -345,6 +355,9 @@ public class SubOutreachService : ISubOutreachService
             deltaSummary: $"Sub employee {outreach.SubEmployeeId} declined sub request {outreach.SubRequestId} (seq {outreach.SequenceOrder})",
             source: AuditSource.PublicLink,
             employeeId: outreach.SubEmployeeId);
+
+        // Phase 7d: notify supervisor + requesting employee of the decline.
+        await TryNotifyStakeholdersAsync(outreach, outreach.SubRequest!, "DECLINED");
 
         await AdvanceQueueOrRevertAsync(context, outreach.SubRequest!, outreach.SubRequestId, outreach.SequenceOrder);
 
@@ -437,10 +450,13 @@ public class SubOutreachService : ISubOutreachService
 
         if (nextQueued == null)
         {
-            // Revert request so supervisor can pick another sub.
+            // Phase 9a: revert to AwaitingSub so the teacher (or admin via override)
+            // can dispatch another round of outreach. Was AbsenceApproved pre-9a;
+            // changed because in the new flow AbsenceApproved is the terminal/final
+            // admin-approved state and shouldn't be reused as an intermediate.
             if (request.Status == SubRequestStatus.SubAssigned)
             {
-                request.Status = SubRequestStatus.AbsenceApproved;
+                request.Status = SubRequestStatus.AwaitingSub;
                 request.ModifiedDate = DateTime.Now;
                 await context.SaveChangesAsync();
             }
@@ -807,6 +823,163 @@ public class SubOutreachService : ISubOutreachService
 </div>";
 
         return (subject, html);
+    }
+
+    // ── Stakeholder notifications (Phase 7d) ─────────────────────────────
+
+    /// <summary>
+    /// Fire-and-forget notifier: when a sub accepts or declines a request, send
+    /// SMS (if enabled + recipient has phone + not SmsOptedOut) + email to:
+    ///   (a) the supervisor who approved the absence (TcSubRequest.SupervisorApprovedBy)
+    ///   (b) the requesting employee (TcSubRequest.RequestingEmployee)
+    /// Reuses Phase 6 SMS+email parallel pattern. Never throws — notification
+    /// failure must not roll back the accept/decline flow.
+    /// </summary>
+    private async Task TryNotifyStakeholdersAsync(TcSubOutreach outreach, TcSubRequest request, string eventKind)
+    {
+        try
+        {
+            using var context = await _dbFactory.CreateDbContextAsync();
+
+            var sub = outreach.SubEmployee;
+            var subName = sub?.Staff?.FullName ?? sub?.Email ?? "The substitute";
+            var teacher = request.RequestingEmployee;
+            var teacherName = teacher?.Staff?.FullName ?? teacher?.Email ?? "the teacher";
+            var campusName = request.Campus?.CampusName ?? "New Heights";
+            var dates = request.StartDate == request.EndDate
+                ? request.StartDate.ToString("MMM d")
+                : $"{request.StartDate:MMM d}-{request.EndDate:MMM d}";
+
+            // Resolve supervisor's employee record (for phone + opt-out).
+            TcEmployee? supervisorEmp = null;
+            if (!string.IsNullOrWhiteSpace(request.SupervisorApprovedBy))
+            {
+                var supervisorEmail = request.SupervisorApprovedBy.Trim();
+                supervisorEmp = await context.TcEmployees
+                    .AsNoTracking()
+                    .Include(e => e.Staff)
+                    .FirstOrDefaultAsync(e => e.Email == supervisorEmail && e.IsActive);
+            }
+
+            var isAccept = string.Equals(eventKind, "ACCEPTED", StringComparison.OrdinalIgnoreCase);
+
+            // Supervisor notification
+            if (supervisorEmp != null)
+            {
+                var (smsBody, subject, html) = BuildStakeholderContent(
+                    eventKind, isSupervisor: true,
+                    subName, teacherName, campusName, dates, request);
+
+                await TrySendOneStakeholderAsync(supervisorEmp, smsBody, subject, html);
+            }
+
+            // Requesting employee notification
+            if (teacher != null && teacher.EmployeeId != outreach.SubEmployeeId)
+            {
+                var (smsBody, subject, html) = BuildStakeholderContent(
+                    eventKind, isSupervisor: false,
+                    subName, teacherName, campusName, dates, request);
+
+                await TrySendOneStakeholderAsync(teacher, smsBody, subject, html);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "TryNotifyStakeholdersAsync: failed to notify stakeholders for request {SubRequestId} event {Event}. Accept/decline already recorded.",
+                request.SubRequestId, eventKind);
+        }
+    }
+
+    private async Task TrySendOneStakeholderAsync(TcEmployee recipient, string smsBody, string subject, string html)
+    {
+        if (_smsService.IsEnabled
+         && !recipient.SmsOptedOut
+         && !string.IsNullOrWhiteSpace(recipient.Phone))
+        {
+            try
+            {
+                await _smsService.SendAsync(recipient.Phone!, smsBody);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Stakeholder SMS send failed for {EmployeeId}", recipient.EmployeeId);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(recipient.Email))
+        {
+            try
+            {
+                await _emailService.SendEmailAsync(recipient.Email!, subject, html);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Stakeholder email send failed for {EmployeeId}", recipient.EmployeeId);
+            }
+        }
+    }
+
+    private static (string smsBody, string subject, string html) BuildStakeholderContent(
+        string eventKind, bool isSupervisor,
+        string subName, string teacherName, string campusName, string dates,
+        TcSubRequest request)
+    {
+        var isAccept = string.Equals(eventKind, "ACCEPTED", StringComparison.OrdinalIgnoreCase);
+
+        string smsBody, subject, color, headline, body;
+
+        if (isAccept && isSupervisor)
+        {
+            smsBody  = $"New Heights: {subName} accepted the sub request for {teacherName} at {campusName} on {dates}.";
+            subject  = $"Sub confirmed — {subName} for {teacherName} ({dates})";
+            color    = "#059669";
+            headline = "Substitute Confirmed";
+            body     = $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> accepted the sub request for <strong>{System.Net.WebUtility.HtmlEncode(teacherName)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> on <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong>.</p>";
+        }
+        else if (isAccept && !isSupervisor)
+        {
+            smsBody  = $"New Heights: Good news — {subName} is confirmed as your sub for {dates} at {campusName}.";
+            subject  = $"Your sub is confirmed — {subName} ({dates})";
+            color    = "#059669";
+            headline = "Your Substitute is Confirmed";
+            body     = $"<p>Good news! <strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> has accepted your sub request for <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong>.</p>";
+        }
+        else if (!isAccept && isSupervisor)
+        {
+            smsBody  = $"New Heights: {subName} declined the sub request for {teacherName} on {dates}. The system will try the next sub in the queue if auto-cascade is enabled.";
+            subject  = $"Sub declined — {subName} for {teacherName} ({dates})";
+            color    = "#b45309";
+            headline = "Substitute Declined";
+            body     = $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> declined the sub request for <strong>{System.Net.WebUtility.HtmlEncode(teacherName)}</strong> on <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong>.</p><p>If auto-cascade is enabled, the next queued sub has been contacted automatically. Otherwise, open Sub Requests to pick another sub.</p>";
+        }
+        else
+        {
+            smsBody  = $"New Heights: {subName} declined your sub request. We are looking for another sub for {dates}.";
+            subject  = $"Sub request update — {subName} declined ({dates})";
+            color    = "#b45309";
+            headline = "Still Looking for a Sub";
+            body     = $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> declined your sub request. We are contacting another substitute for <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong>.</p><p>You will receive another update when a sub confirms.</p>";
+        }
+
+        // Keep SMS under ~320 chars (2 segments).
+        if (smsBody.Length > 320) smsBody = smsBody.Substring(0, 320);
+
+        var html = $@"
+<div style='font-family: Segoe UI, Arial, sans-serif; max-width: 600px; color: #1f2937;'>
+  <h2 style='color: {color};'>{headline}</h2>
+  {body}
+  <table style='border-collapse: collapse; margin: 0.5rem 0;'>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Campus:</td><td>{System.Net.WebUtility.HtmlEncode(campusName)}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Dates:</td><td>{System.Net.WebUtility.HtmlEncode(dates)}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{System.Net.WebUtility.HtmlEncode(request.PeriodsNeeded ?? "—")}</td></tr>
+  </table>
+  <p style='color:#6b7280;font-size:0.85rem;'>You received this because you are listed as the {(isSupervisor ? "campus manager" : "requesting employee")} for this sub request.</p>
+</div>";
+
+        return (smsBody, subject, html);
     }
 
     // ── Token ────────────────────────────────────────────────────────────

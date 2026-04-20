@@ -361,7 +361,11 @@ public class TimesheetService : ITimesheetService
         foreach (var member in teamMembers)
         {
             var timesheet = await GetPayPeriodTimesheetAsync(member.EmployeeId, periodStart, periodEnd);
-            
+
+            // Only show employees with time recorded in the current pay period.
+            // Supervisors don't need to see employees who haven't punched at all.
+            if (timesheet.TotalHours <= 0) continue;
+
             summaries.Add(new TeamTimesheetSummary
             {
                 EmployeeId = member.EmployeeId,
@@ -372,7 +376,7 @@ public class TimesheetService : ITimesheetService
                 OvertimeHours = timesheet.TotalOvertimeHours,
                 DaysWorked = timesheet.DaysWorked,
                 ExceptionCount = timesheet.ExceptionCount,
-                EmployeeApproved = timesheet.EmployeeApprovalStatus == ApprovalStatus.Approved || 
+                EmployeeApproved = timesheet.EmployeeApprovalStatus == ApprovalStatus.Approved ||
                                    timesheet.EmployeeApprovalStatus == ApprovalStatus.Locked,
                 SupervisorApproved = timesheet.SupervisorApprovalStatus == ApprovalStatus.Approved ||
                                      timesheet.SupervisorApprovalStatus == ApprovalStatus.Locked,
@@ -400,6 +404,10 @@ public class TimesheetService : ITimesheetService
         foreach (var employee in allHourlyEmployees)
         {
             var timesheet = await GetPayPeriodTimesheetAsync(employee.EmployeeId, periodStart, periodEnd);
+
+            // Only show employees with time recorded in the current pay period.
+            // HR doesn't need to see zero-hour rows during payroll review.
+            if (timesheet.TotalHours <= 0) continue;
 
             summaries.Add(new PayrollSummary
             {

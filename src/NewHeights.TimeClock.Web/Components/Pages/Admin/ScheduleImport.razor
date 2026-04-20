@@ -22,6 +22,9 @@
             <h1>Master Schedule Import</h1>
             <p class="admin-subtitle">Upload the campus master schedule spreadsheet to import teacher assignments.</p>
         </div>
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <button type="button" class="btn-secondary" @onclick="() => showImportHistory = true">View History</button>
+        </div>
     </div>
 
     @if (!string.IsNullOrEmpty(errorMessage))
@@ -201,6 +204,13 @@
     }
 </div>
 
+<EntityHistoryPanel Visible="@showImportHistory"
+                    Title="Schedule Import History"
+                    EntityTypes="@(new[] { AuditEntityTypes.MasterSchedule })"
+                    FromDate="@DateOnly.FromDateTime(DateTime.Today.AddMonths(-12))"
+                    ToDate="@DateOnly.FromDateTime(DateTime.Today)"
+                    OnClose="() => showImportHistory = false" />
+
 <style>
     .si-upload-card {
         background: var(--card-bg, #fff);
@@ -377,6 +387,9 @@
 </style>
 
 @code {
+    // Phase 7d: entity history panel visibility.
+    private bool showImportHistory = false;
+
     // ── Enums & inner models ──────────────────────────────────────────────────
 
     private enum ImportPhase { Upload, Review }

@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireAdmin")]
 @using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
 @using NewHeights.TimeClock.Web.Services
@@ -15,8 +16,13 @@
 
 <div class="admin-page">
     <div class="admin-header">
-        <h1>Employee Sync</h1>
-        <p class="admin-subtitle">Sync hourly employees and substitutes from Entra ID groups into TC_Employees.</p>
+        <div>
+            <h1>Employee Sync</h1>
+            <p class="admin-subtitle">Sync hourly employees and substitutes from Entra ID groups into TC_Employees.</p>
+        </div>
+        <div style="display:flex; gap:0.5rem; align-items:center">
+            <button type="button" class="btn-secondary" @onclick="() => showSyncHistory = true">View History</button>
+        </div>
     </div>
 
     @if (_lastResult != null)
@@ -117,6 +123,13 @@
     }
 </div>
 
+<EntityHistoryPanel Visible="@showSyncHistory"
+                    Title="Employee Sync History"
+                    EntityTypes="@(new[] { AuditEntityTypes.Employee })"
+                    FromDate="@DateOnly.FromDateTime(DateTime.Today.AddMonths(-6))"
+                    ToDate="@DateOnly.FromDateTime(DateTime.Today)"
+                    OnClose="() => showSyncHistory = false" />
+
 <style>
     .admin-page { padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
     .admin-header { margin-bottom: 1.5rem; }
@@ -164,11 +177,15 @@
     .type-badge.hourlyparttime { background: #e0e7ff; color: #4338ca; }
     .type-badge.salariedstaff  { background: #f0fdf4; color: #166534; }
     .type-badge.substitute     { background: #fef9c3; color: #854d0e; }
+    .type-badge.teacher        { background: #ede9fe; color: #5b21b6; }
     .active-dot   { color: #16a34a; font-weight: 600; }
     .inactive-dot { color: #9ca3af; }
 </style>
 
 @code {
+    // Phase 7d: entity history panel visibility.
+    private bool showSyncHistory = false;
+
     private bool _syncing = false;
     private EmployeeSyncResult? _lastResult;
     private string _search = "";
@@ -186,6 +203,8 @@
         ("GraphSync:EmployeeGroupIds:Substitute",           "Substitutes",             "Substitute"),
         ("GraphSync:SupervisorGroupIds:StopSix",            "Stop Six Supervisors",    "SalariedStaff"),
         ("GraphSync:SupervisorGroupIds:McCart",             "McCart Supervisors",      "SalariedStaff"),
+        ("GraphSync:TeacherGroupIds:StopSix",               "Stop Six Teachers",       "Teacher"),
+        ("GraphSync:TeacherGroupIds:McCart",                "McCart Teachers",         "Teacher"),
     };
 
 

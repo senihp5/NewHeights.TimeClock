@@ -48,7 +48,7 @@
             <span class="status-label">Employees</span>
         </div>
         <div class="status-card">
-            <span class="status-value">@payrollSummaries.Sum(p => p.TotalHours).ToString("F1")</span>
+            <span class="status-value">@payrollSummaries.Sum(p => p.TotalHours).ToString("F2")</span>
             <span class="status-label">Total Hours</span>
         </div>
     </div>
@@ -106,9 +106,9 @@
                         <tr>
                             <td>@emp.EmployeeName<br/><small>@emp.IdNumber</small></td>
                             <td>@emp.SupervisorName</td>
-                            <td>@emp.RegularHours.ToString("F1")</td>
-                            <td>@emp.OvertimeHours.ToString("F1")</td>
-                            <td><strong>@emp.TotalHours.ToString("F1")</strong></td>
+                            <td>@emp.RegularHours.ToString("F2")</td>
+                            <td>@emp.OvertimeHours.ToString("F2")</td>
+                            <td><strong>@emp.TotalHours.ToString("F2")</strong></td>
                             <td>
                                 @(emp.EmployeeApproved ? "E✓" : "E⏳")
                                 @(emp.SupervisorApproved ? "S✓" : "S⏳")

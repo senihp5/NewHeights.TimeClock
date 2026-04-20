@@ -66,15 +66,15 @@
     {
         <div class="period-summary-cards">
             <div class="summary-card">
-                <span class="card-value">@payPeriodTimesheet.TotalHours.ToString("F1")</span>
+                <span class="card-value">@payPeriodTimesheet.TotalHours.ToString("F2")</span>
                 <span class="card-label">Total Hours</span>
             </div>
             <div class="summary-card">
-                <span class="card-value">@payPeriodTimesheet.TotalRegularHours.ToString("F1")</span>
+                <span class="card-value">@payPeriodTimesheet.TotalRegularHours.ToString("F2")</span>
                 <span class="card-label">Regular</span>
             </div>
             <div class="summary-card overtime">
-                <span class="card-value">@payPeriodTimesheet.TotalOvertimeHours.ToString("F1")</span>
+                <span class="card-value">@payPeriodTimesheet.TotalOvertimeHours.ToString("F2")</span>
                 <span class="card-label">Overtime</span>
             </div>
             <div class="summary-card">
@@ -92,7 +92,7 @@
             <div class="week-section">
                 <div class="week-header">
                     <h3>Week of @week.WeekStartDate.ToString("MMMM d") - @week.WeekEndDate.ToString("MMMM d")</h3>
-                    <span class="week-total">@week.TotalHours.ToString("F1") hours</span>
+                    <span class="week-total">@week.TotalHours.ToString("F2") hours</span>
                 </div>
                 
                 <table class="timesheet-table">
@@ -161,14 +161,14 @@
                                     }
                                 </td>
                                 <td class="col-hours">
-                                    <span class="hours-value">@day.TotalHours.ToString("F1")</span>
+                                    <span class="hours-value">@day.TotalHours.ToString("F2")</span>
                                     @if (day.OvertimeHours > 0)
                                     {
-                                        <span class="ot-badge">+@day.OvertimeHours.ToString("F1") OT</span>
+                                        <span class="ot-badge">+@day.OvertimeHours.ToString("F2") OT</span>
                                     }
                                 </td>
                                 <td class="col-hours @(isHoliday ? "holiday-hours" : "")">
-                                    @holidayHours.ToString("F1")
+                                    @holidayHours.ToString("F2")
                                 </td>
                                 <td class="col-actions">
                                     @if (day.HasException)
@@ -246,7 +246,7 @@
                                             @if (isHoliday)
                                             {
                                                 <div class="holiday-notice">
-                                                    🎉 <strong>@holidayName</strong> — @holidayHours.ToString("F1") holiday hours credited
+                                                    🎉 <strong>@holidayName</strong> — @holidayHours.ToString("F2") holiday hours credited
                                                 </div>
                                             }
 

@@ -1,0 +1,423 @@
+@page "/employee/my-sub-requests"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@using System.Security.Claims
+@attribute [Authorize(Policy = "RequireAnyStaff")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject ILogger<MyRequests> Logger
+
+@*
+    My Sub Requests — Phase 9a teacher-driven sub workflow.
+    Shows the signed-in teacher their own absence requests and lets them
+    drive the sub-finding step (manual pick or auto-cascade) before the
+    request goes to the campus admin for final approval.
+    Lifecycle: AwaitingSub → SubAssigned (outreach in flight) → SubConfirmed (sub accepted) → AbsenceApproved (final).
+*@
+
+<PageTitle>My Sub Requests - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="my-requests-page">
+
+    <header class="my-requests-header">
+        <div class="header-info">
+            <h1>My Sub Requests</h1>
+            <p class="header-subtitle">
+                Track your absence requests and manage substitute outreach.
+                Once a sub accepts, the request goes to your campus admin for final approval.
+            </p>
+        </div>
+        <div class="header-actions">
+            <a class="btn-primary" href="/employee/absence-request">+ New Request</a>
+        </div>
+    </header>
+
+    <div class="filter-bar">
+        <span class="info-label">Show:</span>
+        <select @bind="filterStatus" @bind:after="LoadDataAsync">
+            <option value="open">Open (action needed or pending)</option>
+            <option value="all">All</option>
+            <option value="awaitingsub">Awaiting Sub</option>
+            <option value="assigned">Outreach in Flight</option>
+            <option value="confirmed">Sub Confirmed</option>
+            <option value="approved">Approved</option>
+            <option value="denied">Denied</option>
+            <option value="cancelled">Cancelled</option>
+        </select>
+    </div>
+
+    @if (!string.IsNullOrEmpty(actionError))
+    {
+        <div class="error-panel" role="alert">@actionError</div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading your requests…</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="error-panel">@loadError</div>
+    }
+    else if (requests.Count == 0)
+    {
+        <div class="empty-state">
+            <h3>No requests match this filter.</h3>
+            <p>Click <a href="/employee/absence-request">New Request</a> to submit an absence.</p>
+        </div>
+    }
+    else
+    {
+        @foreach (var req in requests)
+        {
+            var statusClass = "status-" + req.Status.ToString().ToLower();
+            <div class="request-card @statusClass">
+
+                <div class="request-header">
+                    <div class="request-who">
+                        <strong>Request #@req.SubRequestId</strong>
+                        <span class="request-dates">
+                            @(req.StartDate == req.EndDate
+                                ? req.StartDate.ToString("ddd, MMM d, yyyy")
+                                : $"{req.StartDate:ddd MMM d} – {req.EndDate:ddd MMM d, yyyy}")
+                        </span>
+                    </div>
+                    <div class="request-badges">
+                        <span class="chip @statusClass">@FormatStatus(req.Status)</span>
+                        @if (!string.IsNullOrWhiteSpace(req.Campus?.CampusName))
+                        {
+                            <span class="chip campus">@req.Campus.CampusName</span>
+                        }
+                    </div>
+                </div>
+
+                <div class="request-meta">
+                    <div><span class="meta-label">Absence:</span> @req.AbsenceType</div>
+                    <div><span class="meta-label">Periods:</span> @(string.IsNullOrWhiteSpace(req.PeriodsNeeded) ? "—" : req.PeriodsNeeded)</div>
+                    <div><span class="meta-label">Session:</span> @(string.IsNullOrWhiteSpace(req.SessionType) ? "DAY" : req.SessionType)</div>
+                    <div><span class="meta-label">Subject:</span> @(string.IsNullOrWhiteSpace(req.SubjectArea) ? "—" : req.SubjectArea)</div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(req.AbsenceReason))
+                {
+                    <div class="request-note"><strong>Reason:</strong> @req.AbsenceReason</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(req.SpecialInstructions))
+                {
+                    <div class="request-note"><strong>Instructions:</strong> @req.SpecialInstructions</div>
+                }
+
+                @* ── Status-specific action area ─────────────────────────── *@
+                @if (req.Status == SubRequestStatus.AwaitingSub
+                  || req.Status == SubRequestStatus.SubAssigned)
+                {
+                    <SubOutreachPanel Request="@req"
+                                      CurrentUserEmail="@currentUserEmail"
+                                      OnOutreachSent="LoadDataAsync" />
+
+                    <div class="cancel-row">
+                        <button type="button" class="btn-cancel-request"
+                                @onclick="() => CancelRequestAsync(req)"
+                                disabled="@(cancellingRequestId == req.SubRequestId)">
+                            @(cancellingRequestId == req.SubRequestId ? "Cancelling…" : "Cancel Request")
+                        </button>
+                    </div>
+                }
+                else if (req.Status == SubRequestStatus.SubConfirmed)
+                {
+                    <div class="confirmed-panel">
+                        <strong>Sub confirmed:</strong>
+                        @(req.AssignedSubEmployee?.Staff?.FullName ?? req.AssignedSubEmployee?.Email ?? $"Employee {req.AssignedSubEmployeeId}")
+                        @if (req.AssignedDate.HasValue)
+                        {
+                            <span class="confirmed-when"> · accepted @req.AssignedDate.Value.ToString("MMM d h:mm tt")</span>
+                        }
+                        <p class="confirmed-next">
+                            Awaiting final approval from your campus admin.
+                        </p>
+                    </div>
+
+                    <div class="cancel-row">
+                        <button type="button" class="btn-cancel-request"
+                                @onclick="() => CancelRequestAsync(req)"
+                                disabled="@(cancellingRequestId == req.SubRequestId)">
+                            @(cancellingRequestId == req.SubRequestId ? "Cancelling…" : "Cancel Request")
+                        </button>
+                    </div>
+                }
+                else if (req.Status == SubRequestStatus.AbsenceApproved)
+                {
+                    <div class="approved-panel">
+                        <strong>Approved.</strong>
+                        @if (req.AssignedSubEmployee?.Staff?.FullName != null)
+                        {
+                            <span> Sub: @req.AssignedSubEmployee.Staff.FullName.</span>
+                        }
+                        @if (req.SupervisorApprovedDate.HasValue)
+                        {
+                            <span> Approved on @req.SupervisorApprovedDate.Value.ToString("MMM d h:mm tt").</span>
+                        }
+                    </div>
+                }
+                else if (req.Status == SubRequestStatus.Denied)
+                {
+                    <div class="denied-panel">
+                        <strong>Denied.</strong>
+                        @if (req.SupervisorApprovedDate.HasValue)
+                        {
+                            <span> @req.SupervisorApprovedDate.Value.ToString("MMM d h:mm tt") by @req.SupervisorApprovedBy.</span>
+                        }
+                    </div>
+                }
+                else if (req.Status == SubRequestStatus.Cancelled)
+                {
+                    <div class="cancelled-panel">Cancelled.</div>
+                }
+                else
+                {
+                    <div class="legacy-panel">
+                        <em>Status: @req.Status (legacy pre-9a flow).</em>
+                    </div>
+                }
+            </div>
+        }
+    }
+
+</div>
+
+<style>
+    .my-requests-page { padding: 1.5rem; max-width: 1100px; margin: 0 auto; }
+    .my-requests-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem; gap: 1rem; flex-wrap: wrap; }
+    .my-requests-header h1 { color: #1e3a5f; margin: 0 0 .25rem; }
+    .header-subtitle { color: #6b7280; margin: 0; max-width: 640px; font-size: .9rem; }
+    .header-actions a.btn-primary { background: #1e3a5f; color: #fff; padding: .6rem 1.2rem; border-radius: 6px; text-decoration: none; font-weight: 500; }
+    .header-actions a.btn-primary:hover { background: #2d5282; }
+    .filter-bar { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: .75rem 1rem; margin-bottom: 1rem; display: flex; gap: .75rem; align-items: center; }
+    .info-label { color: #6b7280; font-weight: 500; font-size: .875rem; }
+    .filter-bar select { border: 1px solid #d1d5db; border-radius: 6px; padding: .35rem .5rem; font-size: .875rem; }
+    .loading, .empty-state { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 2rem; text-align: center; color: #6b7280; }
+    .empty-state h3 { color: #374151; margin: 0 0 .5rem; }
+    .error-panel { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .request-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1rem; border-left: 4px solid #d1d5db; }
+    .request-card.status-awaitingsub  { border-left-color: #f59e0b; }
+    .request-card.status-subassigned  { border-left-color: #3b82f6; }
+    .request-card.status-subconfirmed { border-left-color: #8b5cf6; }
+    .request-card.status-absenceapproved { border-left-color: #16a34a; }
+    .request-card.status-denied    { border-left-color: #dc2626; }
+    .request-card.status-cancelled { border-left-color: #6b7280; }
+    .request-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: .75rem; }
+    .request-who strong { color: #1e3a5f; margin-right: .75rem; }
+    .request-dates { color: #374151; font-weight: 500; }
+    .request-badges { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .chip { padding: .25rem .65rem; border-radius: 9999px; font-size: .75rem; font-weight: 600; background: #f3f4f6; color: #374151; }
+    .chip.status-awaitingsub  { background: #fef3c7; color: #92400e; }
+    .chip.status-subassigned  { background: #dbeafe; color: #1e40af; }
+    .chip.status-subconfirmed { background: #ede9fe; color: #5b21b6; }
+    .chip.status-absenceapproved { background: #dcfce7; color: #166534; }
+    .chip.status-denied    { background: #fee2e2; color: #991b1b; }
+    .chip.status-cancelled { background: #f3f4f6; color: #6b7280; }
+    .chip.campus { background: #e0e7ff; color: #3730a3; }
+    .request-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .5rem 1.5rem; margin: .5rem 0; font-size: .9rem; color: #374151; }
+    .meta-label { color: #6b7280; font-weight: 500; }
+    .request-note { background: #f9fafb; border-left: 3px solid #d1d5db; padding: .5rem .75rem; margin: .5rem 0; font-size: .9rem; color: #374151; }
+    .confirmed-panel { background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 6px; padding: .75rem 1rem; margin-top: .75rem; color: #4c1d95; }
+    .confirmed-when { color: #6b7280; font-size: .875rem; }
+    .confirmed-next { margin: .5rem 0 0; font-size: .875rem; color: #5b21b6; }
+    .approved-panel { background: #f0fdf4; border: 1px solid #86efac; border-radius: 6px; padding: .75rem 1rem; margin-top: .75rem; color: #166534; }
+    .denied-panel { background: #fef2f2; border: 1px solid #fca5a5; border-radius: 6px; padding: .75rem 1rem; margin-top: .75rem; color: #991b1b; }
+    .cancelled-panel { background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 6px; padding: .75rem 1rem; margin-top: .75rem; color: #6b7280; font-style: italic; }
+    .legacy-panel { background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: .75rem 1rem; margin-top: .75rem; color: #92400e; }
+    .cancel-row { margin-top: .75rem; text-align: right; }
+    .btn-cancel-request { background: #fff; border: 1px solid #dc2626; color: #dc2626; padding: .4rem .9rem; border-radius: 6px; cursor: pointer; font-size: .85rem; }
+    .btn-cancel-request:hover:not(:disabled) { background: #fef2f2; }
+    .btn-cancel-request:disabled { opacity: .6; cursor: not-allowed; }
+</style>
+
+@code {
+    private List<TcSubRequest> requests = new();
+    private bool isLoading = true;
+    private string loadError = "";
+    private string actionError = "";
+
+    private string filterStatus = "open";
+    private string currentUserEmail = "";
+    private int currentEmployeeId = 0;
+
+    private long? cancellingRequestId = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
+                        ?? authState.User.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "";
+
+        await ResolveEmployeeAsync();
+        if (currentEmployeeId > 0)
+            await LoadDataAsync();
+    }
+
+    private async Task ResolveEmployeeAsync()
+    {
+        if (string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            loadError = "Your session lost its user context — refresh and try again.";
+            isLoading = false;
+            return;
+        }
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var employee = await context.TcEmployees
+                .AsNoTracking()
+                .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
+
+            if (employee == null)
+            {
+                loadError = "Your employee record was not found. Contact your supervisor.";
+                isLoading = false;
+                return;
+            }
+
+            currentEmployeeId = employee.EmployeeId;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error resolving employee for {Email}", currentUserEmail);
+            loadError = "Unable to load your employee record. Please refresh and try again.";
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        if (currentEmployeeId == 0) return;
+
+        isLoading = true;
+        loadError = "";
+        actionError = "";
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var query = context.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
+                .Include(r => r.Campus)
+                .Where(r => r.RequestingEmployeeId == currentEmployeeId)
+                .AsQueryable();
+
+            query = filterStatus switch
+            {
+                "open" => query.Where(r => r.Status == SubRequestStatus.AwaitingSub
+                                        || r.Status == SubRequestStatus.SubAssigned
+                                        || r.Status == SubRequestStatus.SubConfirmed),
+                "all" => query,
+                "awaitingsub" => query.Where(r => r.Status == SubRequestStatus.AwaitingSub),
+                "assigned"    => query.Where(r => r.Status == SubRequestStatus.SubAssigned),
+                "confirmed"   => query.Where(r => r.Status == SubRequestStatus.SubConfirmed),
+                "approved"    => query.Where(r => r.Status == SubRequestStatus.AbsenceApproved),
+                "denied"      => query.Where(r => r.Status == SubRequestStatus.Denied),
+                "cancelled"   => query.Where(r => r.Status == SubRequestStatus.Cancelled),
+                _ => query
+            };
+
+            requests = await query
+                .OrderByDescending(r => r.StartDate)
+                .ThenByDescending(r => r.SubRequestId)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading my sub requests for employeeId={EmpId}", currentEmployeeId);
+            loadError = "Unable to load your sub requests. Please refresh and try again.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task CancelRequestAsync(TcSubRequest req)
+    {
+        if (cancellingRequestId != null) return;
+        cancellingRequestId = req.SubRequestId;
+        actionError = "";
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var tracked = await context.TcSubRequests
+                .FirstOrDefaultAsync(r => r.SubRequestId == req.SubRequestId);
+
+            if (tracked == null)
+                throw new InvalidOperationException("Request no longer exists.");
+            if (tracked.RequestingEmployeeId != currentEmployeeId)
+                throw new InvalidOperationException("You can only cancel your own requests.");
+            if (tracked.Status == SubRequestStatus.AbsenceApproved
+                || tracked.Status == SubRequestStatus.Denied
+                || tracked.Status == SubRequestStatus.Cancelled)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot cancel — request is {tracked.Status}.");
+            }
+
+            var oldStatus = tracked.Status;
+            tracked.Status = SubRequestStatus.Cancelled;
+            tracked.ModifiedDate = DateTime.Now;
+
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Absence.Cancelled,
+                entityType: AuditEntityTypes.SubRequest,
+                entityId: tracked.SubRequestId.ToString(),
+                oldValues: new { Status = oldStatus.ToString() },
+                newValues: new { Status = tracked.Status.ToString() },
+                deltaSummary: $"Cancelled by requester {currentUserEmail} from {oldStatus}",
+                source: AuditSource.AdminUi,
+                employeeId: currentEmployeeId,
+                campusId: tracked.CampusId);
+
+            await LoadDataAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "Cancel refused for request {Id}", req.SubRequestId);
+            actionError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error cancelling request {Id}", req.SubRequestId);
+            actionError = "Could not cancel the request. Please try again.";
+        }
+        finally
+        {
+            cancellingRequestId = null;
+        }
+    }
+
+    private static string FormatStatus(SubRequestStatus s) => s switch
+    {
+        SubRequestStatus.Submitted => "Submitted (legacy)",
+        SubRequestStatus.AwaitingSub => "Awaiting Sub",
+        SubRequestStatus.AbsenceApproved => "Approved",
+        SubRequestStatus.SubAssigned => "Outreach in Flight",
+        SubRequestStatus.SubConfirmed => "Sub Confirmed",
+        SubRequestStatus.Denied => "Denied",
+        SubRequestStatus.Cancelled => "Cancelled",
+        _ => s.ToString()
+    };
+}

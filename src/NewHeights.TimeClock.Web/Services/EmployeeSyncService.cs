@@ -49,6 +49,8 @@ public class EmployeeSyncService : IEmployeeSyncService
         ( "GraphSync:EmployeeGroupIds:Substitute",        EmployeeType.Substitute,      null,                            true  ),
         ( "GraphSync:SupervisorGroupIds:StopSix",         EmployeeType.SalariedStaff,   AppConstants.Campus.StopSixCode, false ),
         ( "GraphSync:SupervisorGroupIds:McCart",          EmployeeType.SalariedStaff,   AppConstants.Campus.McCartCode,  false ),
+        ( "GraphSync:TeacherGroupIds:StopSix",            EmployeeType.Teacher,         AppConstants.Campus.StopSixCode, false ),
+        ( "GraphSync:TeacherGroupIds:McCart",             EmployeeType.Teacher,         AppConstants.Campus.McCartCode,  false ),
     };
 
     public EmployeeSyncService(
@@ -81,6 +83,11 @@ public class EmployeeSyncService : IEmployeeSyncService
             ct: ct);
 
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
+
+        // Bulk teacher onboarding can insert 60+ TC_Employees rows plus matching
+        // audit rows in a single SaveChanges. Default EF command timeout (30s) is
+        // too tight on Azure SQL — bump to 5 minutes for this operation only.
+        db.Database.SetCommandTimeout(300);
 
         var campuses = await db.Campuses.ToDictionaryAsync(c => c.CampusCode, c => c.CampusId, ct);
 
@@ -271,13 +278,16 @@ public class EmployeeSyncService : IEmployeeSyncService
                 staff = byInit;
         }
 
-        // Strategy 4: EmployeeId -> IdNumber (last resort, can collide across roles)
-        if (staff == null)
-        {
-            var empIdKey = (user.EmployeeId ?? "").TrimStart('0').ToLower();
-            if (!string.IsNullOrEmpty(empIdKey) && staffByIdNumber.TryGetValue(empIdKey, out var byId))
-                staff = byId;
-        }
+        // Strategy 4 (REMOVED 2026-04-20): EmployeeId -> IdNumber matching was
+        // wrong-mapping teachers to unrelated Staff rows because Entra's
+        // employeeId attribute is the Ascender/CSS payroll number, while
+        // Staff.IdNumber is the PowerSchool local ID — different ID systems
+        // that happen to be small integers. Example collision: Amber Robins
+        // (Entra EmployeeId 000111) was being matched to Leighla Diaz's Staff
+        // row (PowerSchool IdNumber 111). Teachers that don't match Strategies
+        // 1-3 are now correctly Skipped with a warning so they can be triaged
+        // individually rather than incorrectly inserted under another person's
+        // IdNumber.
 
         if (staff == null && empType != EmployeeType.Substitute)
         {

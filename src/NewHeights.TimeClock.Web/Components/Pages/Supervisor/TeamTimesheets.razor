@@ -64,7 +64,7 @@
             <span class="stat-label">Awaiting Employee</span>
         </div>
         <div class="stat-card">
-            <span class="stat-value">@teamSummaries.Sum(t => t.TotalHours).ToString("F1")</span>
+            <span class="stat-value">@teamSummaries.Sum(t => t.TotalHours).ToString("F2")</span>
             <span class="stat-label">Total Hours</span>
         </div>
     </div>
@@ -104,12 +104,12 @@
                     <div class="card-body">
                         <div class="hours-section">
                             <div class="hours-main">
-                                <span class="hours-value">@member.TotalHours.ToString("F1")</span>
+                                <span class="hours-value">@member.TotalHours.ToString("F2")</span>
                                 <span class="hours-label">hours</span>
                             </div>
                             @if (member.OvertimeHours > 0)
                             {
-                                <span class="ot-badge" title="Overtime">+@member.OvertimeHours.ToString("F1") OT</span>
+                                <span class="ot-badge" title="Overtime">+@member.OvertimeHours.ToString("F2") OT</span>
                             }
                         </div>
                         

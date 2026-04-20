@@ -35,6 +35,13 @@ public class TcSubRequest
     /// <summary>Stamped when the accept-confirmation email fires.</summary>
     public DateTime? ConfirmationSentAt { get; set; }
 
+    /// <summary>
+    /// Phase 9c: last time SubRequestEscalationService notified the campus
+    /// admin that this AwaitingSub request has been sitting without outreach.
+    /// Used to throttle re-escalations within ReEscalationIntervalHours.
+    /// </summary>
+    public DateTime? EscalatedAt { get; set; }
+
     public TcEmployee RequestingEmployee { get; set; } = null!;
     public Campus Campus { get; set; } = null!;
     public TcSubPool? AssignedSub { get; set; }

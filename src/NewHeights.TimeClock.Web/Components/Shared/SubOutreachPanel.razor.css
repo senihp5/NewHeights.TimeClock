@@ -144,6 +144,29 @@
     font-weight: 500;
 }
 
+.conflict-badge {
+    display: inline-block;
+    margin: 0 0.35rem 0.15rem 0;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: help;
+    white-space: nowrap;
+}
+
+.conflict-badge.conflict-blocked {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+.conflict-badge.conflict-review {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
+}
+
 .muted {
     color: #9ca3af;
     font-style: italic;

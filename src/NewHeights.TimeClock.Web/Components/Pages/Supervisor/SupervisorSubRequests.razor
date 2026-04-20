@@ -22,7 +22,11 @@
 
     <header class="sub-requests-header">
         <h1>Sub Requests</h1>
-        <p class="header-subtitle">Review absence requests, approve or deny, and assign substitutes.</p>
+        <p class="header-subtitle">
+            Review sub-confirmed absence requests for final approval.
+            Teachers manage their own sub outreach via the My Sub Requests page;
+            this view also lets admins monitor in-flight requests and override outreach if needed.
+        </p>
     </header>
 
     <div class="filter-bar">
@@ -46,12 +50,14 @@
         <div class="info-item">
             <span class="info-label">Show:</span>
             <select @bind="filterStatus" @bind:after="LoadDataAsync">
-                <option value="open">Open (needs attention)</option>
+                <option value="needs_approval">Needs My Final Approval</option>
+                <option value="open">In-Flight (awaiting sub or confirmed)</option>
                 <option value="all">All</option>
-                <option value="submitted">Submitted</option>
-                <option value="approved">Absence Approved</option>
-                <option value="assigned">Sub Assigned</option>
-                <option value="confirmed">Sub Confirmed</option>
+                <option value="awaitingsub">Awaiting Sub (teacher action)</option>
+                <option value="assigned">Outreach in Flight</option>
+                <option value="confirmed">Sub Confirmed (awaiting approval)</option>
+                <option value="approved">Approved (final)</option>
+                <option value="submitted">Submitted (legacy)</option>
                 <option value="denied">Denied</option>
                 <option value="cancelled">Cancelled</option>
             </select>
@@ -86,16 +92,16 @@
                 <span class="stat-label">Matching</span>
             </div>
             <div class="stat-card pending">
-                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.Submitted)</span>
-                <span class="stat-label">Awaiting Approval</span>
+                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.SubConfirmed)</span>
+                <span class="stat-label">Needs Final Approval</span>
             </div>
             <div class="stat-card info">
-                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.AbsenceApproved || r.Status == SubRequestStatus.SubAssigned)</span>
-                <span class="stat-label">Needs Sub</span>
+                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.AwaitingSub || r.Status == SubRequestStatus.SubAssigned)</span>
+                <span class="stat-label">Sub Hunt In Flight</span>
             </div>
             <div class="stat-card success">
-                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.SubConfirmed)</span>
-                <span class="stat-label">Confirmed</span>
+                <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.AbsenceApproved)</span>
+                <span class="stat-label">Approved (Final)</span>
             </div>
         </div>
 
@@ -180,9 +186,20 @@
                         </div>
                     }
                 }
-                else if (req.Status == SubRequestStatus.AbsenceApproved
+                else if (req.Status == SubRequestStatus.AwaitingSub
+                      || req.Status == SubRequestStatus.AbsenceApproved
                       || req.Status == SubRequestStatus.SubAssigned)
                 {
+                    @* Phase 9a: AwaitingSub is teacher-driven, but admin override is allowed
+                       via this same panel. AbsenceApproved is the legacy pre-9a state still
+                       supported during transition. SubAssigned is the in-flight outreach state. *@
+                    @if (req.Status == SubRequestStatus.AwaitingSub)
+                    {
+                        <div style="background:#fffbeb; border:1px solid #fde68a; color:#92400e; padding:.5rem .75rem; border-radius:6px; margin:.5rem 0; font-size:.9rem;">
+                            <strong>Awaiting sub assignment by the teacher.</strong>
+                            Admin can dispatch outreach below to override if the teacher hasn't acted.
+                        </div>
+                    }
                     <SubOutreachPanel Request="@req"
                                       CurrentUserEmail="@currentUserEmail"
                                       OnOutreachSent="LoadDataAsync" />
@@ -201,6 +218,44 @@
                             <span class="confirmed-email"> · confirmation email sent ✓</span>
                         }
                     </div>
+
+                    @if (isDenyingThis)
+                    {
+                        <div class="deny-panel">
+                            <label for="deny-reason-@req.SubRequestId">Deny reason (required):</label>
+                            <textarea id="deny-reason-@req.SubRequestId"
+                                      @bind="denyReason"
+                                      rows="2"
+                                      maxlength="500"
+                                      placeholder="e.g. 'Insufficient documentation' or 'Coverage no longer needed'"
+                                      disabled="@isDenying"></textarea>
+                            <div class="deny-buttons">
+                                <button type="button" class="btn-confirm-deny"
+                                        @onclick="() => ConfirmDenyAsync(req)"
+                                        disabled="@(isDenying || string.IsNullOrWhiteSpace(denyReason))">
+                                    @(isDenying ? "Denying…" : "Confirm Deny")
+                                </button>
+                                <button type="button" class="btn-cancel-deny"
+                                        @onclick="CancelDeny"
+                                        disabled="@isDenying">Cancel</button>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="action-row">
+                            <button type="button" class="btn-approve"
+                                    @onclick="() => ApproveFinalAsync(req)"
+                                    disabled="@IsActionBusy(req.SubRequestId)">
+                                @(approvingRequestId == req.SubRequestId ? "Approving…" : "Final Approval")
+                            </button>
+                            <button type="button" class="btn-deny"
+                                    @onclick="() => BeginDeny(req.SubRequestId)"
+                                    disabled="@IsActionBusy(req.SubRequestId)">
+                                Deny
+                            </button>
+                        </div>
+                    }
                 }
                 else if (req.Status == SubRequestStatus.Denied)
                 {
@@ -234,7 +289,7 @@
     private string scopedCampusDisplay = "";
     private int selectedCampusFilter = 0;
 
-    private string filterStatus = "open";
+    private string filterStatus = "needs_approval";
 
     private Dictionary<int, string> campusNameById = new();
 
@@ -300,10 +355,14 @@
 
             query = filterStatus switch
             {
+                // Phase 9a: "needs_approval" is the default — admin's primary action queue.
+                "needs_approval" => query.Where(r => r.Status == SubRequestStatus.SubConfirmed),
                 "open" => query.Where(r => r.Status == SubRequestStatus.Submitted
-                                        || r.Status == SubRequestStatus.AbsenceApproved
-                                        || r.Status == SubRequestStatus.SubAssigned),
+                                        || r.Status == SubRequestStatus.AwaitingSub
+                                        || r.Status == SubRequestStatus.SubAssigned
+                                        || r.Status == SubRequestStatus.SubConfirmed),
                 "all" => query,
+                "awaitingsub" => query.Where(r => r.Status == SubRequestStatus.AwaitingSub),
                 "submitted" => query.Where(r => r.Status == SubRequestStatus.Submitted),
                 "approved" => query.Where(r => r.Status == SubRequestStatus.AbsenceApproved),
                 "assigned" => query.Where(r => r.Status == SubRequestStatus.SubAssigned),
@@ -398,6 +457,76 @@
         }
     }
 
+    /// <summary>
+    /// Phase 9a: Final admin approval after a sub has accepted.
+    /// Transitions SubConfirmed → AbsenceApproved. This is the new terminal
+    /// approval gate in the teacher-driven workflow.
+    /// </summary>
+    private async Task ApproveFinalAsync(TcSubRequest req)
+    {
+        if (approvingRequestId != null || isDenying) return;
+        if (string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            actionError = "Your session lost its user context — refresh and try again.";
+            return;
+        }
+
+        approvingRequestId = req.SubRequestId;
+        actionError = "";
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var tracked = await context.TcSubRequests
+                .FirstOrDefaultAsync(r => r.SubRequestId == req.SubRequestId);
+            if (tracked == null)
+                throw new InvalidOperationException("Request no longer exists.");
+            if (tracked.Status != SubRequestStatus.SubConfirmed)
+                throw new InvalidOperationException(
+                    $"Cannot finalize approval — request is {tracked.Status}, not SubConfirmed.");
+
+            var oldStatus = tracked.Status;
+            tracked.Status = SubRequestStatus.AbsenceApproved;
+            tracked.SupervisorApprovedBy = currentUserEmail;
+            tracked.SupervisorApprovedDate = DateTime.Now;
+            tracked.ModifiedDate = DateTime.Now;
+
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Absence.Approved,
+                entityType: AuditEntityTypes.SubRequest,
+                entityId: tracked.SubRequestId.ToString(),
+                oldValues: new { Status = oldStatus.ToString() },
+                newValues: new
+                {
+                    Status = tracked.Status.ToString(),
+                    ApprovedBy = tracked.SupervisorApprovedBy,
+                    ApprovedDate = tracked.SupervisorApprovedDate,
+                    AssignedSubEmployeeId = tracked.AssignedSubEmployeeId
+                },
+                deltaSummary: $"Final approval granted for request #{tracked.SubRequestId} by {currentUserEmail} (sub already confirmed)",
+                source: AuditSource.AdminUi,
+                employeeId: tracked.RequestingEmployeeId,
+                campusId: tracked.CampusId);
+
+            await LoadDataAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Logger.LogWarning(ex, "ApproveFinal refused for request {Id}", req.SubRequestId);
+            actionError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Unexpected error in final approval {Id}", req.SubRequestId);
+            actionError = "Could not approve the request. Please try again.";
+        }
+        finally
+        {
+            approvingRequestId = null;
+        }
+    }
+
     private void BeginDeny(long requestId)
     {
         actionError = "";
@@ -429,7 +558,11 @@
                 .FirstOrDefaultAsync(r => r.SubRequestId == req.SubRequestId);
             if (tracked == null)
                 throw new InvalidOperationException("Request no longer exists.");
-            if (tracked.Status != SubRequestStatus.Submitted)
+            // Phase 9a: deny is allowed for both legacy Submitted and the new
+            // SubConfirmed (admin denying after sub already accepted — coverage
+            // no longer needed, request was wrong, etc.).
+            if (tracked.Status != SubRequestStatus.Submitted
+                && tracked.Status != SubRequestStatus.SubConfirmed)
                 throw new InvalidOperationException(
                     $"Cannot deny — request is {tracked.Status}.");
 
@@ -483,9 +616,10 @@
 
     private static string FormatStatus(SubRequestStatus s) => s switch
     {
-        SubRequestStatus.Submitted => "Submitted",
-        SubRequestStatus.AbsenceApproved => "Absence Approved",
-        SubRequestStatus.SubAssigned => "Sub Assigned",
+        SubRequestStatus.Submitted => "Submitted (legacy)",
+        SubRequestStatus.AwaitingSub => "Awaiting Sub",
+        SubRequestStatus.AbsenceApproved => "Approved (Final)",
+        SubRequestStatus.SubAssigned => "Outreach in Flight",
         SubRequestStatus.SubConfirmed => "Sub Confirmed",
         SubRequestStatus.Denied => "Denied",
         SubRequestStatus.Cancelled => "Cancelled",

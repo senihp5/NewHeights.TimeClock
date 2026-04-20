@@ -1,0 +1,530 @@
+@page "/supervisor/sub-calendar"
+@page "/supervisor/sub-calendar/{WeekOffset:int}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IUserContextService UserContextSvc
+@inject NavigationManager Navigation
+@inject ILogger<SupervisorSubCalendar> Logger
+
+<PageTitle>Sub Schedule - @AppConstants.Branding.ShortName</PageTitle>
+
+<style>
+    #sub-cal-root { padding: 1.25rem 1.5rem; max-width: 1400px; margin: 0 auto; font-family: "Segoe UI", Arial, sans-serif; color: #1f2937; }
+    #sub-cal-root h1 { margin: 0 0 0.25rem 0 !important; font-size: 1.5rem !important; color: #111827 !important; }
+    #sub-cal-root .page-sub { margin: 0 0 1rem 0 !important; color: #6b7280; font-size: 0.9rem; }
+    #sub-cal-root .filter-bar { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
+    #sub-cal-root .info-item { display: flex; align-items: center; gap: 0.4rem; }
+    #sub-cal-root .info-label { font-weight: 600; color: #4b5563; font-size: 0.85rem; }
+    #sub-cal-root .info-value { color: #111827; font-size: 0.95rem; }
+    #sub-cal-root select { padding: 0.35rem 0.55rem; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; color: #111827; font-size: 0.9rem; min-width: 10rem; }
+    #sub-cal-root .week-nav { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 1rem; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 1.25rem; }
+    #sub-cal-root .btn-nav { background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; padding: 0.45rem 0.95rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+    #sub-cal-root .btn-nav:disabled { opacity: 0.5; cursor: not-allowed; }
+    #sub-cal-root .btn-nav:hover:not(:disabled) { background: #e0e7ff; }
+    #sub-cal-root .current-week { font-size: 1.05rem; color: #1f2937; }
+    #sub-cal-root .today-badge { display: inline-block; margin-left: 0.5rem; padding: 0.1rem 0.55rem; background: #10b981; color: #fff; border-radius: 9999px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; }
+    #sub-cal-root .btn-today { background: #fff; color: #374151; border: 1px solid #d1d5db; padding: 0.4rem 0.85rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    #sub-cal-root .btn-today:hover { background: #f3f4f6; }
+    #sub-cal-root .session-block { margin-bottom: 1.5rem; }
+    #sub-cal-root .session-title { font-weight: 700; color: #2D2D6D; font-size: 1rem; margin: 0 0 0.5rem 0.25rem; letter-spacing: 0.02em; text-transform: uppercase; }
+    #sub-cal-root .schedule-grid { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; table-layout: fixed; }
+    #sub-cal-root .schedule-grid thead th { background: #f9fafb; padding: 0.55rem 0.5rem; text-align: center; color: #4b5563; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.02em; border-bottom: 1px solid #e5e7eb; }
+    #sub-cal-root .schedule-grid thead th.period-col { width: 5rem; background: #f3f4f6; }
+    #sub-cal-root .schedule-grid thead th.today-col { background: #dbeafe; color: #1e40af; }
+    #sub-cal-root .schedule-grid td { border-right: 1px solid #f3f4f6; border-bottom: 1px solid #f3f4f6; padding: 0.25rem; vertical-align: top; min-height: 3rem; height: 3rem; }
+    #sub-cal-root .schedule-grid td.period-label { background: #f9fafb; font-weight: 600; color: #4b5563; text-align: center; font-size: 0.85rem; vertical-align: middle; }
+    #sub-cal-root .cell { display: flex; flex-direction: column; gap: 0.1rem; padding: 0.25rem 0.35rem; border-radius: 3px; min-height: 2.5rem; cursor: pointer; font-size: 0.78rem; line-height: 1.15; }
+    #sub-cal-root .cell.empty { cursor: default; background: transparent; }
+    #sub-cal-root .cell.confirmed { background: #d1fae5; color: #065f46; border-left: 3px solid #10b981; }
+    #sub-cal-root .cell.confirmed:hover { background: #a7f3d0; }
+    #sub-cal-root .cell.awaiting { background: #fef3c7; color: #92400e; border-left: 3px solid #f59e0b; }
+    #sub-cal-root .cell.awaiting:hover { background: #fde68a; }
+    #sub-cal-root .cell.needs-sub { background: #fed7aa; color: #9a3412; border-left: 3px solid #ea580c; }
+    #sub-cal-root .cell.needs-sub:hover { background: #fdba74; }
+    #sub-cal-root .cell.declined { background: #fee2e2; color: #991b1b; border-left: 3px solid #ef4444; }
+    #sub-cal-root .cell.declined:hover { background: #fecaca; }
+    #sub-cal-root .cell-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #sub-cal-root .cell-note { font-size: 0.7rem; color: inherit; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #sub-cal-root .cell.selected { outline: 2px solid #2563eb; outline-offset: -2px; }
+    #sub-cal-root .legend { display: flex; gap: 1rem; flex-wrap: wrap; padding: 0.5rem 0.25rem; font-size: 0.82rem; color: #4b5563; }
+    #sub-cal-root .legend-item { display: flex; align-items: center; gap: 0.35rem; }
+    #sub-cal-root .legend-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; }
+    #sub-cal-root .legend-swatch.confirmed { background: #d1fae5; border-left: 3px solid #10b981; }
+    #sub-cal-root .legend-swatch.awaiting { background: #fef3c7; border-left: 3px solid #f59e0b; }
+    #sub-cal-root .legend-swatch.needs-sub { background: #fed7aa; border-left: 3px solid #ea580c; }
+    #sub-cal-root .legend-swatch.declined { background: #fee2e2; border-left: 3px solid #ef4444; }
+    #sub-cal-root .detail-panel { margin-top: 1rem; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.85rem 1rem; }
+    #sub-cal-root .detail-panel h3 { margin: 0 0 0.5rem 0 !important; color: #2D2D6D; font-size: 1rem !important; }
+    #sub-cal-root .detail-row { display: grid; grid-template-columns: 8rem 1fr; gap: 0.25rem 0.75rem; font-size: 0.9rem; color: #374151; margin-bottom: 0.3rem; }
+    #sub-cal-root .detail-label { font-weight: 600; color: #4b5563; }
+    #sub-cal-root .detail-link { margin-top: 0.6rem; }
+    #sub-cal-root .detail-link a { color: #1d4ed8; text-decoration: underline; font-size: 0.9rem; }
+    #sub-cal-root .empty-state { padding: 1rem; background: #fafafa; border: 1px dashed #d1d5db; border-radius: 6px; text-align: center; color: #6b7280; }
+    #sub-cal-root .loading { padding: 1rem; background: #f3f4f6; color: #4b5563; border-radius: 6px; text-align: center; }
+    #sub-cal-root .error-panel { padding: 0.75rem 1rem; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 6px; margin-bottom: 1rem; }
+</style>
+
+<div id="sub-cal-root">
+    <h1>Substitute Schedule</h1>
+    <p class="page-sub">Weekly view of substitute assignments. Click any colored cell for detail.</p>
+
+    <div class="filter-bar">
+        <div class="info-item">
+            <span class="info-label">Campus:</span>
+            @if (isAdmin)
+            {
+                <select @bind="selectedCampusFilter" @bind:after="LoadDataAsync">
+                    <option value="0">All Campuses</option>
+                    @foreach (var kv in campusNameById.OrderBy(k => k.Value))
+                    {
+                        <option value="@kv.Key">@kv.Value</option>
+                    }
+                </select>
+            }
+            else
+            {
+                <span class="info-value">@scopedCampusDisplay</span>
+            }
+        </div>
+    </div>
+
+    <div class="week-nav">
+        <button type="button" class="btn-nav" @onclick="PreviousWeek" disabled="@isLoading">← Previous Week</button>
+        <div class="current-week">
+            <strong>Week of @weekMonday.ToString("MMMM d") – @weekMonday.AddDays(4).ToString("MMMM d, yyyy")</strong>
+            @if (weekOffset == 0)
+            {
+                <span class="today-badge">Current</span>
+            }
+        </div>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+            @if (weekOffset != 0)
+            {
+                <button type="button" class="btn-today" @onclick="JumpToToday">Today</button>
+            }
+            <button type="button" class="btn-nav" @onclick="NextWeek" disabled="@isLoading">Next Week →</button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="error-panel" role="alert">@loadError</div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading week…</div>
+    }
+    else
+    {
+        <div class="legend">
+            <div class="legend-item"><span class="legend-swatch confirmed"></span>Confirmed</div>
+            <div class="legend-item"><span class="legend-swatch awaiting"></span>Awaiting response</div>
+            <div class="legend-item"><span class="legend-swatch needs-sub"></span>Needs sub</div>
+            <div class="legend-item"><span class="legend-swatch declined"></span>Declined — re-assign</div>
+        </div>
+
+        @if (!dayAssignments.Any() && !nightAssignments.Any())
+        {
+            <div class="empty-state">
+                <strong>No sub requests for this week.</strong>
+                <div style="margin-top:0.25rem">Requests appear here once they reach supervisor review.</div>
+            </div>
+        }
+        else
+        {
+            <div class="session-block">
+                <h2 class="session-title">Day Session</h2>
+                @RenderGrid("DAY", dayAssignments)
+            </div>
+
+            <div class="session-block">
+                <h2 class="session-title">Night Session</h2>
+                @RenderGrid("NIGHT", nightAssignments)
+            </div>
+        }
+
+        @if (selectedCell != null)
+        {
+            <div class="detail-panel">
+                <h3>@selectedCell.SubName @(selectedCell.IsEmpty ? "(details)" : "")</h3>
+                <div class="detail-row"><span class="detail-label">Date:</span><span>@selectedCell.WorkDate.ToString("dddd, MMM d, yyyy")</span></div>
+                <div class="detail-row"><span class="detail-label">Period:</span><span>P@(selectedCell.PeriodNumber) (@selectedCell.SessionType)</span></div>
+                <div class="detail-row"><span class="detail-label">Request status:</span><span>@FormatStatus(selectedCell.Status)</span></div>
+                <div class="detail-row"><span class="detail-label">Covering:</span><span>@(selectedCell.TeacherName ?? "—")</span></div>
+                @if (!string.IsNullOrWhiteSpace(selectedCell.SubjectArea))
+                {
+                    <div class="detail-row"><span class="detail-label">Subject:</span><span>@selectedCell.SubjectArea</span></div>
+                }
+                @if (!string.IsNullOrWhiteSpace(selectedCell.SpecialInstructions))
+                {
+                    <div class="detail-row"><span class="detail-label">Instructions:</span><span>@selectedCell.SpecialInstructions</span></div>
+                }
+                <div class="detail-link">
+                    <a href="/supervisor/sub-requests">Open in Sub Requests →</a>
+                </div>
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public int? WeekOffset { get; set; }
+
+    private int weekOffset = 0;
+    private DateOnly weekMonday;
+    private bool isLoading = true;
+    private string loadError = "";
+
+    private UserContext? userCtx;
+    private bool isAdmin = false;
+    private int? scopedCampusId = null;
+    private string scopedCampusDisplay = "";
+    private int selectedCampusFilter = 0;
+
+    private Dictionary<int, string> campusNameById = new();
+
+    // Grid data: map of (day-of-week 0-4 for Mon..Fri, periodNumber 1..6) -> list of cell assignments.
+    // List because in rare cases more than one sub could be assigned to the same slot
+    // (e.g., a team-teach); render the most-confirmed one and stack a counter.
+    private Dictionary<(int dayIndex, int periodNumber), List<CellAssignment>> dayAssignments = new();
+    private Dictionary<(int dayIndex, int periodNumber), List<CellAssignment>> nightAssignments = new();
+
+    private CellAssignment? selectedCell = null;
+
+    private static readonly int[] AllPeriods = new[] { 1, 2, 3, 4, 5, 6 };
+    private static readonly string[] DayLabels = new[] { "Mon", "Tue", "Wed", "Thu", "Fri" };
+
+    protected override async Task OnInitializedAsync()
+    {
+        weekOffset = WeekOffset ?? 0;
+        userCtx = await UserContextSvc.GetCurrentUserAsync();
+        isAdmin = userCtx.IsAdmin;
+
+        if (!isAdmin)
+        {
+            if (!userCtx.CampusId.HasValue)
+            {
+                loadError = "Your account isn't assigned to a campus. Contact an administrator.";
+                isLoading = false;
+                return;
+            }
+            scopedCampusId = userCtx.CampusId;
+            scopedCampusDisplay = userCtx.CampusDisplayName;
+        }
+
+        RecomputeWeekMonday();
+        await LoadDataAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var incoming = WeekOffset ?? 0;
+        if (incoming != weekOffset)
+        {
+            weekOffset = incoming;
+            RecomputeWeekMonday();
+            await LoadDataAsync();
+        }
+    }
+
+    private void RecomputeWeekMonday()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var mondayOfThisWeek = today.AddDays(-(int)(today.DayOfWeek == DayOfWeek.Sunday ? 6 : (int)today.DayOfWeek - 1));
+        weekMonday = mondayOfThisWeek.AddDays(weekOffset * 7);
+    }
+
+    private async Task LoadDataAsync()
+    {
+        isLoading = true;
+        loadError = "";
+        selectedCell = null;
+        dayAssignments = new();
+        nightAssignments = new();
+
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            campusNameById = await context.Campuses
+                .AsNoTracking()
+                .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
+
+            int? filterCampusId = isAdmin
+                ? (selectedCampusFilter > 0 ? (int?)selectedCampusFilter : null)
+                : scopedCampusId;
+
+            var weekFriday = weekMonday.AddDays(4);
+
+            var query = context.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
+                .Where(r => r.Status != SubRequestStatus.Denied
+                         && r.Status != SubRequestStatus.Cancelled
+                         && r.StartDate <= weekFriday
+                         && r.EndDate >= weekMonday)
+                .AsQueryable();
+
+            if (filterCampusId.HasValue)
+                query = query.Where(r => r.CampusId == filterCampusId.Value);
+
+            var requests = await query.ToListAsync();
+
+            foreach (var req in requests)
+            {
+                var sessionTypes = ExpandSessions(req.SessionType);
+                var periodNums = ParsePeriodsNeeded(req.PeriodsNeeded);
+                if (periodNums.Count == 0) continue;
+
+                // For each day in the week that falls inside the request's date range:
+                for (int dayIdx = 0; dayIdx < 5; dayIdx++)
+                {
+                    var workDate = weekMonday.AddDays(dayIdx);
+                    if (workDate < req.StartDate || workDate > req.EndDate) continue;
+
+                    foreach (var session in sessionTypes)
+                    {
+                        var bucket = session == "NIGHT" ? nightAssignments : dayAssignments;
+                        foreach (var pn in periodNums)
+                        {
+                            var cell = BuildCellAssignment(req, workDate, session, pn);
+                            var key = (dayIdx, pn);
+                            if (!bucket.TryGetValue(key, out var list))
+                            {
+                                list = new List<CellAssignment>();
+                                bucket[key] = list;
+                            }
+                            list.Add(cell);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading sub calendar for week starting {Monday}", weekMonday);
+            loadError = "Could not load sub schedule. Please refresh.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private CellAssignment BuildCellAssignment(TcSubRequest req, DateOnly workDate, string session, int periodNumber)
+    {
+        var subName = req.AssignedSubEmployee?.Staff?.FullName
+                   ?? req.AssignedSubEmployee?.Email
+                   ?? "(unassigned)";
+        var teacherName = req.RequestingEmployee?.Staff?.FullName
+                       ?? req.RequestingEmployee?.Email;
+
+        string cellClass = req.Status switch
+        {
+            SubRequestStatus.SubConfirmed => "confirmed",
+            SubRequestStatus.SubAssigned  => "awaiting",
+            SubRequestStatus.AbsenceApproved => "needs-sub",
+            _ => "needs-sub"
+        };
+
+        // If AbsenceApproved but an Outreach row once declined, treat as "declined — re-assign".
+        // We don't have outreach joined in the query; for a zero-touch MVP, just show
+        // AbsenceApproved as needs-sub. Declined state comes through only if the row stayed
+        // in AbsenceApproved AND we later enrich the query with a .Any(o => o.ResponseStatus == "DECLINED") join.
+        // Reserved: add "declined" CSS class when we wire that enrichment in Phase 7c.2+.
+
+        return new CellAssignment
+        {
+            SubRequestId = req.SubRequestId,
+            WorkDate = workDate,
+            PeriodNumber = periodNumber,
+            SessionType = session,
+            Status = req.Status,
+            CssClass = cellClass,
+            SubName = req.AssignedSubEmployeeId.HasValue ? subName : "Needs sub",
+            TeacherName = teacherName,
+            SubjectArea = req.SubjectArea,
+            SpecialInstructions = req.SpecialInstructions,
+            IsEmpty = false
+        };
+    }
+
+    private RenderFragment RenderGrid(string session, Dictionary<(int dayIndex, int periodNumber), List<CellAssignment>> assignments) => __builder =>
+    {
+        var todayIdx = ComputeTodayColumnIndex();
+
+        <table class="schedule-grid">
+            <thead>
+                <tr>
+                    <th class="period-col">Period</th>
+                    @for (int d = 0; d < 5; d++)
+                    {
+                        var dateForCol = weekMonday.AddDays(d);
+                        var thClass = (d == todayIdx) ? "today-col" : "";
+                        <th class="@thClass">@DayLabels[d]<br/><small>@dateForCol.ToString("M/d")</small></th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var pn in AllPeriods)
+                {
+                    <tr>
+                        <td class="period-label">P@(pn)</td>
+                        @for (int d = 0; d < 5; d++)
+                        {
+                            var dayIdx = d;
+                            var periodNum = pn;
+                            assignments.TryGetValue((dayIdx, periodNum), out var list);
+                            var top = list?.OrderBy(c => CellOrdinal(c.Status)).FirstOrDefault();
+                            var isSelected = selectedCell != null
+                                          && top != null
+                                          && selectedCell.SubRequestId == top.SubRequestId
+                                          && selectedCell.SessionType == top.SessionType
+                                          && selectedCell.PeriodNumber == top.PeriodNumber
+                                          && selectedCell.WorkDate == top.WorkDate;
+                            <td>
+                                @if (top == null)
+                                {
+                                    <div class="cell empty"></div>
+                                }
+                                else
+                                {
+                                    <div class="cell @top.CssClass @(isSelected ? "selected" : "")"
+                                         @onclick="() => SelectCell(top)">
+                                        <span class="cell-name">@top.SubName</span>
+                                        @if (list != null && list.Count > 1)
+                                        {
+                                            <span class="cell-note">+@(list.Count - 1) more</span>
+                                        }
+                                        else if (!string.IsNullOrWhiteSpace(top.TeacherName))
+                                        {
+                                            <span class="cell-note">covering @top.TeacherName</span>
+                                        }
+                                    </div>
+                                }
+                            </td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    };
+
+    private int ComputeTodayColumnIndex()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        for (int d = 0; d < 5; d++)
+        {
+            if (weekMonday.AddDays(d) == today) return d;
+        }
+        return -1;
+    }
+
+    private static int CellOrdinal(SubRequestStatus status) => status switch
+    {
+        SubRequestStatus.SubConfirmed => 0,
+        SubRequestStatus.SubAssigned  => 1,
+        SubRequestStatus.AbsenceApproved => 2,
+        _ => 3
+    };
+
+    private void SelectCell(CellAssignment cell)
+    {
+        if (selectedCell != null
+            && selectedCell.SubRequestId == cell.SubRequestId
+            && selectedCell.SessionType == cell.SessionType
+            && selectedCell.PeriodNumber == cell.PeriodNumber
+            && selectedCell.WorkDate == cell.WorkDate)
+        {
+            selectedCell = null;  // toggle off
+        }
+        else
+        {
+            selectedCell = cell;
+        }
+    }
+
+    private static List<string> ExpandSessions(string? sessionType)
+    {
+        if (string.IsNullOrWhiteSpace(sessionType)) return new List<string> { "DAY" };
+        var t = sessionType.Trim().ToUpperInvariant();
+        return t switch
+        {
+            "NIGHT" => new List<string> { "NIGHT" },
+            "EVENING" => new List<string> { "NIGHT" },
+            "BOTH" => new List<string> { "DAY", "NIGHT" },
+            _ => new List<string> { "DAY" }
+        };
+    }
+
+    private static List<int> ParsePeriodsNeeded(string? raw)
+    {
+        var result = new List<int>();
+        if (string.IsNullOrWhiteSpace(raw)) return result;
+        foreach (var chunk in raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = chunk.Trim();
+            if (trimmed.StartsWith("P", StringComparison.OrdinalIgnoreCase))
+                trimmed = trimmed.Substring(1);
+            if (int.TryParse(trimmed, out var n) && n > 0 && n <= 20)
+                result.Add(n);
+        }
+        return result.Distinct().OrderBy(n => n).ToList();
+    }
+
+    private static string FormatStatus(SubRequestStatus s) => s switch
+    {
+        SubRequestStatus.Submitted => "Submitted",
+        SubRequestStatus.AbsenceApproved => "Absence Approved — needs sub",
+        SubRequestStatus.SubAssigned => "Sub Assigned — awaiting response",
+        SubRequestStatus.SubConfirmed => "Sub Confirmed",
+        SubRequestStatus.Denied => "Denied",
+        SubRequestStatus.Cancelled => "Cancelled",
+        _ => s.ToString()
+    };
+
+    private void PreviousWeek()
+    {
+        weekOffset--;
+        Navigation.NavigateTo($"/supervisor/sub-calendar/{weekOffset}");
+    }
+
+    private void NextWeek()
+    {
+        weekOffset++;
+        if (weekOffset == 0)
+            Navigation.NavigateTo("/supervisor/sub-calendar");
+        else
+            Navigation.NavigateTo($"/supervisor/sub-calendar/{weekOffset}");
+    }
+
+    private void JumpToToday()
+    {
+        weekOffset = 0;
+        Navigation.NavigateTo("/supervisor/sub-calendar");
+    }
+
+    private class CellAssignment
+    {
+        public long SubRequestId { get; set; }
+        public DateOnly WorkDate { get; set; }
+        public int PeriodNumber { get; set; }
+        public string SessionType { get; set; } = "DAY";
+        public SubRequestStatus Status { get; set; }
+        public string CssClass { get; set; } = "needs-sub";
+        public string SubName { get; set; } = "";
+        public string? TeacherName { get; set; }
+        public string? SubjectArea { get; set; }
+        public string? SpecialInstructions { get; set; }
+        public bool IsEmpty { get; set; }
+    }
+}

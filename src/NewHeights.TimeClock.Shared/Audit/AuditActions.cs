@@ -115,6 +115,7 @@ public static class AuditActions
         public const string Denied     = "ABSENCE_DENIED";
         public const string Cancelled  = "ABSENCE_CANCELLED";
         public const string Modified   = "ABSENCE_MODIFIED";
+        public const string Escalated  = "ABSENCE_ESCALATED";
     }
 
     // N. Substitute — Outreach & Scheduling

@@ -133,15 +133,16 @@
                                     }
                                 </td>
                                 <td class="conflicts-cell">
-                                    @if (c.Conflicts.Count == 0)
+                                    @if (c.ConflictDetails.Count == 0)
                                     {
                                         <span class="conflict-clean">None</span>
                                     }
                                     else
                                     {
-                                        <span class="conflict-note" title="@string.Join("; ", c.Conflicts)">
-                                            Booked: @string.Join(", ", c.Conflicts)
-                                        </span>
+                                        @foreach (var cd in c.ConflictDetails)
+                                        {
+                                            <span class="@GetConflictCssClass(cd.Severity)" title="@cd.Reason">@GetConflictLabel(cd)</span>
+                                        }
                                     }
                                 </td>
                                 <td class="cascade-actions">
@@ -295,6 +296,9 @@
                 .ToListAsync();
 
             // Conflicts: SubConfirmed SubRequests with overlapping date range.
+            // Phase 9b: project CampusId + PeriodsNeeded so we can classify each
+            // overlap by period intersection (RED) and cross-campus travel
+            // adjacency (RED/YELLOW). See BuildConflictDetail below.
             var subIds = subs.Select(s => s.EmployeeId).ToList();
             var conflictingAssignments = await context.TcSubRequests
                 .AsNoTracking()
@@ -304,22 +308,30 @@
                          && r.SubRequestId != Request.SubRequestId
                          && r.StartDate <= Request.EndDate
                          && r.EndDate >= Request.StartDate)
+                .Select(r => new ConflictingRequest
+                {
+                    SubEmployeeId   = r.AssignedSubEmployeeId!.Value,
+                    StartDate       = r.StartDate,
+                    EndDate         = r.EndDate,
+                    CampusId        = r.CampusId,
+                    PeriodsNeeded   = r.PeriodsNeeded ?? ""
+                })
                 .ToListAsync();
+
+            var currentPeriods = ParsePeriods(Request.PeriodsNeeded);
 
             candidates = subs
                 .Select(s => new SubCandidate
                 {
                     EmployeeId = s.EmployeeId,
-                    FullName = s.Staff?.FullName ?? s.Email ?? $"Employee {s.EmployeeId}",
-                    Email = s.Email,
-                    Phone = s.Phone,
+                    FullName   = s.Staff?.FullName ?? s.Email ?? $"Employee {s.EmployeeId}",
+                    Email      = s.Email,
+                    Phone      = s.Phone,
                     SmsOptedOut = s.SmsOptedOut,
-                    Conflicts = conflictingAssignments
-                        .Where(c => c.AssignedSubEmployeeId == s.EmployeeId)
-                        .Select(c => c.StartDate == c.EndDate
-                            ? c.StartDate.ToString("MMM d")
-                            : $"{c.StartDate:MMM d}–{c.EndDate:MMM d}")
-                        .Distinct()
+                    ConflictDetails = conflictingAssignments
+                        .Where(c => c.SubEmployeeId == s.EmployeeId)
+                        .Select(c => BuildConflictDetail(c, currentPeriods, Request.CampusId))
+                        .Where(cd => cd.Severity != ConflictSeverity.None)
                         .ToList()
                 })
                 .ToList();
@@ -430,6 +442,39 @@
         }
     }
 
+    // Phase 9b: periods 1..DaySessionLastPeriod are DAY session; higher numbers
+    // are NIGHT session. Cross-session conflicts do not produce a travel warning
+    // because of the natural day-to-night gap between 4th and 5th period.
+    private const int DaySessionLastPeriod = 4;
+
+    private enum ConflictSeverity
+    {
+        None = 0,
+        Review = 1,
+        Blocked = 2
+    }
+
+    private class ConflictingRequest
+    {
+        public int SubEmployeeId { get; set; }
+        public DateOnly StartDate { get; set; }
+        public DateOnly EndDate { get; set; }
+        public int CampusId { get; set; }
+        public string PeriodsNeeded { get; set; } = "";
+    }
+
+    private class ConflictDetail
+    {
+        public DateOnly StartDate { get; set; }
+        public DateOnly EndDate { get; set; }
+        public ConflictSeverity Severity { get; set; }
+        public string Reason { get; set; } = "";
+        public string DateLabel =>
+            StartDate == EndDate
+                ? StartDate.ToString("MMM d")
+                : $"{StartDate:MMM d}\u2013{EndDate:MMM d}";
+    }
+
     private class SubCandidate
     {
         public int EmployeeId { get; set; }
@@ -437,6 +482,94 @@
         public string? Email { get; set; }
         public string? Phone { get; set; }
         public bool SmsOptedOut { get; set; }
-        public List<string> Conflicts { get; set; } = new();
+        public List<ConflictDetail> ConflictDetails { get; set; } = new();
     }
+
+    private static HashSet<int> ParsePeriods(string? periodsNeeded)
+    {
+        var result = new HashSet<int>();
+        if (string.IsNullOrWhiteSpace(periodsNeeded)) return result;
+        var tokens = periodsNeeded.Split(
+            new[] { ',', ';', ' ', '\t' },
+            StringSplitOptions.RemoveEmptyEntries);
+        foreach (var raw in tokens)
+        {
+            var trimmed = raw.Trim().TrimStart('P', 'p');
+            if (int.TryParse(trimmed, out var n) && n > 0) result.Add(n);
+        }
+        return result;
+    }
+
+    private static ConflictDetail BuildConflictDetail(
+        ConflictingRequest other,
+        HashSet<int> currentPeriods,
+        int currentCampusId)
+    {
+        var otherPeriods = ParsePeriods(other.PeriodsNeeded);
+        var detail = new ConflictDetail
+        {
+            StartDate = other.StartDate,
+            EndDate = other.EndDate
+        };
+
+        if (currentPeriods.Count == 0 || otherPeriods.Count == 0)
+        {
+            detail.Severity = ConflictSeverity.Review;
+            detail.Reason = "Date overlap \u2014 periods not specified, confirm manually";
+            return detail;
+        }
+
+        var exactOverlap = currentPeriods.Intersect(otherPeriods).OrderBy(p => p).ToList();
+        if (exactOverlap.Count > 0)
+        {
+            detail.Severity = ConflictSeverity.Blocked;
+            detail.Reason = $"Same period: {string.Join(", ", exactOverlap.Select(p => $"P{p}"))}";
+            return detail;
+        }
+
+        if (currentCampusId == other.CampusId)
+        {
+            detail.Severity = ConflictSeverity.None;
+            return detail;
+        }
+
+        var worst = ConflictSeverity.None;
+        var worstReason = "";
+        foreach (var cp in currentPeriods)
+        {
+            foreach (var op in otherPeriods)
+            {
+                bool sameSession = (cp <= DaySessionLastPeriod) == (op <= DaySessionLastPeriod);
+                if (!sameSession) continue;
+                var gap = Math.Abs(cp - op);
+                if (gap == 1 && worst < ConflictSeverity.Blocked)
+                {
+                    worst = ConflictSeverity.Blocked;
+                    worstReason = $"Travel conflict: P{Math.Min(cp, op)}\u2192P{Math.Max(cp, op)} at different campuses";
+                }
+                else if (worst == ConflictSeverity.None)
+                {
+                    worst = ConflictSeverity.Review;
+                    worstReason = $"Cross-campus, same session (P{cp} vs P{op})";
+                }
+            }
+        }
+        detail.Severity = worst;
+        detail.Reason = worst == ConflictSeverity.None ? "" : worstReason;
+        return detail;
+    }
+
+    private static string GetConflictCssClass(ConflictSeverity s) => s switch
+    {
+        ConflictSeverity.Blocked => "conflict-badge conflict-blocked",
+        ConflictSeverity.Review  => "conflict-badge conflict-review",
+        _                         => "conflict-badge"
+    };
+
+    private static string GetConflictLabel(ConflictDetail cd) => cd.Severity switch
+    {
+        ConflictSeverity.Blocked => $"Booked {cd.DateLabel}",
+        ConflictSeverity.Review  => $"Review {cd.DateLabel}",
+        _                         => cd.DateLabel
+    };
 }

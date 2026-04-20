@@ -78,8 +78,8 @@
         <div class="report-summary-bar">
             <div class="summary-chip">Period: <strong>@reportDateLabel</strong></div>
             <div class="summary-chip">Employees: <strong>@employeeSummaries.Count</strong></div>
-            <div class="summary-chip">Total Regular: <strong>@employeeSummaries.Sum(e => e.RegularHours).ToString("F1")h</strong></div>
-            <div class="summary-chip">Total OT: <strong>@employeeSummaries.Sum(e => e.OvertimeHours).ToString("F1")h</strong></div>
+            <div class="summary-chip">Total Regular: <strong>@employeeSummaries.Sum(e => e.RegularHours).ToString("F2")h</strong></div>
+            <div class="summary-chip">Total OT: <strong>@employeeSummaries.Sum(e => e.OvertimeHours).ToString("F2")h</strong></div>
         </div>
         @foreach (var emp in employeeSummaries.OrderBy(e => e.LastName).ThenBy(e => e.FirstName))
         {
@@ -94,12 +94,12 @@
                         }
                     </div>
                     <div class="emp-hours-summary">
-                        <span class="hours-chip reg">Reg: @emp.RegularHours.ToString("F1")h</span>
+                        <span class="hours-chip reg">Reg: @emp.RegularHours.ToString("F2")h</span>
                         @if (emp.OvertimeHours > 0)
                         {
-                            <span class="hours-chip ot">OT: @emp.OvertimeHours.ToString("F1")h</span>
+                            <span class="hours-chip ot">OT: @emp.OvertimeHours.ToString("F2")h</span>
                         }
-                        <span class="hours-chip total">Total: @emp.TotalHours.ToString("F1")h</span>
+                        <span class="hours-chip total">Total: @emp.TotalHours.ToString("F2")h</span>
                         <span class="expand-icon">@(expandedEmployees.Contains(emp.EmployeeId) ? "▴" : "▾")</span>
                     </div>
                 </div>
@@ -132,9 +132,9 @@
                                         </td>
                                         <td>@(day.ClockIn.HasValue ? day.ClockIn.Value.ToString("h:mm tt") : "—")</td>
                                         <td>@(day.ClockOut.HasValue ? day.ClockOut.Value.ToString("h:mm tt") : "—")</td>
-                                        <td>@day.RegularHours.ToString("F1")</td>
-                                        <td>@(day.OvertimeHours > 0 ? day.OvertimeHours.ToString("F1") : "—")</td>
-                                        <td><strong>@day.TotalHours.ToString("F1")</strong></td>
+                                        <td>@day.RegularHours.ToString("F2")</td>
+                                        <td>@(day.OvertimeHours > 0 ? day.OvertimeHours.ToString("F2") : "—")</td>
+                                        <td><strong>@day.TotalHours.ToString("F2")</strong></td>
                                         <td>@day.CampusName</td>
                                         <td>@day.ExceptionNotes</td>
                                     </tr>

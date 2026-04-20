@@ -133,11 +133,11 @@
                                     <span class="status-pill @eveningStatus.ToLower().Replace(" ", "-")">@eveningStatus</span>
                                 }
                             </td>
-                            <td class="col-hours">@day.TotalHours.ToString("F1")</td>
-                            <td class="col-hours">@GetLeaveHours(day).ToString("F1")</td>
-                            <td class="col-hours @(isHoliday ? "holiday-hours" : "")">@holidayHours.ToString("F1")</td>
+                            <td class="col-hours">@day.TotalHours.ToString("F2")</td>
+                            <td class="col-hours">@GetLeaveHours(day).ToString("F2")</td>
+                            <td class="col-hours @(isHoliday ? "holiday-hours" : "")">@holidayHours.ToString("F2")</td>
                             <td class="col-total @(GetDayTotal(day) == 8 ? "valid" : GetDayTotal(day) > 0 ? "warning" : "")">
-                                @GetDayTotal(day).ToString("F1")
+                                @GetDayTotal(day).ToString("F2")
                             </td>
                         </tr>
 
@@ -204,7 +204,7 @@
                                         @if (isHoliday)
                                         {
                                             <div class="holiday-notice">
-                                                🎉 <strong>@holidayName</strong> — @holidayHours.ToString("F1") holiday hours credited
+                                                🎉 <strong>@holidayName</strong> — @holidayHours.ToString("F2") holiday hours credited
                                             </div>
                                         }
 
@@ -234,14 +234,14 @@
                 <tfoot>
                     <tr class="totals-row">
                         <td colspan="4" class="totals-label">Weekly Totals</td>
-                        <td class="col-hours"><strong>@weeklyTimesheet.TotalHours.ToString("F1")</strong></td>
-                        <td class="col-hours"><strong>@totalLeaveHours.ToString("F1")</strong></td>
-                        <td class="col-hours"><strong>@totalHolidayHours.ToString("F1")</strong></td>
+                        <td class="col-hours"><strong>@weeklyTimesheet.TotalHours.ToString("F2")</strong></td>
+                        <td class="col-hours"><strong>@totalLeaveHours.ToString("F2")</strong></td>
+                        <td class="col-hours"><strong>@totalHolidayHours.ToString("F2")</strong></td>
                         <td class="col-total">
-                            <strong>@grandTotal.ToString("F1")</strong>
+                            <strong>@grandTotal.ToString("F2")</strong>
                             @if (weeklyTimesheet.TotalOvertimeHours > 0)
                             {
-                                <span class="overtime-note">(+@weeklyTimesheet.TotalOvertimeHours.ToString("F1") OT)</span>
+                                <span class="overtime-note">(+@weeklyTimesheet.TotalOvertimeHours.ToString("F2") OT)</span>
                             }
                         </td>
                     </tr>

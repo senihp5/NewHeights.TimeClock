@@ -209,6 +209,12 @@ builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
 // Stale outreach token expiry job — runs every 4 hours (Phase 7a)
 builder.Services.AddHostedService<StaleTokenExpiryService>();
 
+// Phase 9c: escalate stale AwaitingSub requests to campus admin via email + SMS.
+// Runs on ScanIntervalHours cadence (default 4h). Disabled via appsettings flag.
+builder.Services.Configure<SubRequestEscalationOptions>(
+    builder.Configuration.GetSection("SubRequestEscalation"));
+builder.Services.AddHostedService<SubRequestEscalationService>();
+
 // Email Service
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailService, EmailService>();

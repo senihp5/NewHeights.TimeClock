@@ -23,17 +23,20 @@ public class TimePunchService : ITimePunchService
     private readonly TimeClockDbContext _context;
     private readonly IGeofenceService _geofenceService;
     private readonly IAuditService _audit;
+    private readonly ISubstituteTimesheetService _subTimesheetService;
     private readonly ILogger<TimePunchService> _logger;
 
     public TimePunchService(
         TimeClockDbContext context,
         IGeofenceService geofenceService,
         IAuditService audit,
+        ISubstituteTimesheetService subTimesheetService,
         ILogger<TimePunchService> logger)
     {
         _context = context;
         _geofenceService = geofenceService;
         _audit = audit;
+        _subTimesheetService = subTimesheetService;
         _logger = logger;
     }
 
@@ -167,7 +170,7 @@ public class TimePunchService : ITimePunchService
 
             var punchType = await DeterminePunchTypeAsync(employee.EmployeeId, campusId);
             var now = DateTime.Now;
-            var roundedTime = RoundTime(now, 15);
+            var roundedTime = CeilingToNextMinute(now);
 
             var punch = new TcTimePunch
             {
@@ -221,6 +224,26 @@ public class TimePunchService : ITimePunchService
                 await CheckAndFlagEarlyCheckout(punch, campusId);
             }
             _logger.LogInformation("Punch recorded: Employee={Id}, Type={Type}, Time={Time}", employee.EmployeeId, punchType, now);
+
+            // Phase 7 day-of automation: if a Substitute clocks In, auto-create their
+            // TcSubstituteTimecard for the day at this campus and auto-populate any
+            // PRE_ASSIGNED period entries from their confirmed TcSubRequest. Walk-in
+            // subs (no matching request) get an empty card. Wrapped in try/catch so
+            // the auto-flow can never break the primary punch transaction.
+            if (punchType == PunchType.In && employee.EmployeeType == EmployeeType.Substitute)
+            {
+                try
+                {
+                    await _subTimesheetService.OnKioskCheckInAsync(
+                        employee.EmployeeId, campusId, punch.PunchId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "Phase 7 auto-flow failed for sub {EmployeeId} at campus {CampusId}. Punch {PunchId} still recorded.",
+                        employee.EmployeeId, campusId, punch.PunchId);
+                }
+            }
 
             await UpdateDailyTimecardAsync(employee.EmployeeId, campusId, now.Date);
             var totalHours = await GetTodayHoursAsync(employee.EmployeeId);
@@ -318,11 +341,21 @@ public class TimePunchService : ITimePunchService
         return photo?.PhotoData == null ? null : Convert.ToBase64String(photo.PhotoData);
     }
 
-    private static DateTime RoundTime(DateTime time, int intervalMinutes)
+    /// <summary>
+    /// Rounds a punch time UP to the next whole minute (ceiling).
+    /// Per business rule (2026-04-20): all timesheet rounding is ceiling-to-the-minute,
+    /// applied uniformly to IN and OUT punches. Replaces the previous 15-minute
+    /// nearest-interval rounding.
+    /// Examples:
+    ///   9:00:00.000 -> 9:00:00 (already on minute boundary, no change)
+    ///   9:00:00.001 -> 9:01:00
+    ///   9:00:30.500 -> 9:01:00
+    ///   9:00:59.999 -> 9:01:00
+    /// </summary>
+    private static DateTime CeilingToNextMinute(DateTime time)
     {
-        var totalMinutes = (int)time.TimeOfDay.TotalMinutes;
-        var rounded = (int)(Math.Round((double)totalMinutes / intervalMinutes) * intervalMinutes);
-        return time.Date.AddMinutes(rounded);
+        var truncated = new DateTime(time.Year, time.Month, time.Day, time.Hour, time.Minute, 0, time.Kind);
+        return truncated < time ? truncated.AddMinutes(1) : truncated;
     }
 
     private static string GetTimeOfDayGreeting()

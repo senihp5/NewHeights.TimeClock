@@ -24,23 +24,30 @@
     <header class="absence-request-header">
         <h1>Request Time Off</h1>
         <p class="header-subtitle">
-            Submit an absence request. Your campus manager will review it and assign a substitute.
+            Submit an absence request, then go to <a href="/employee/my-sub-requests">My Sub Requests</a>
+            to find a substitute. Your request goes to the campus admin for final approval after a sub accepts.
         </p>
     </header>
 
     @if (submittedRequestId.HasValue)
     {
         <div class="success-panel" role="status">
-            <h2>Request Submitted</h2>
+            <h2>Request Created</h2>
             <p>
                 Your request (#@submittedRequestId) for
                 <strong>@form.StartDate.ToString("MMM d")@(form.StartDate != form.EndDate ? $" – {form.EndDate:MMM d, yyyy}" : $", {form.StartDate.Year}")</strong>
-                has been sent to your campus manager for approval.
+                is awaiting a substitute.
             </p>
-            <p>You'll hear back by email once it's been reviewed.</p>
+            <p>
+                <strong>Next step:</strong> go to
+                <a href="/employee/my-sub-requests">My Sub Requests</a>
+                to invite a substitute (manually or via auto-cascade).
+                Once a sub accepts, the request will be sent to the campus admin for final approval.
+            </p>
             <div class="success-actions">
+                <a class="btn-primary" href="/employee/my-sub-requests">Find a Sub</a>
                 <button type="button" class="btn-secondary" @onclick="ResetForm">Submit Another</button>
-                <a class="btn-primary" href="/">Back to Home</a>
+                <a class="btn-secondary" href="/">Back to Home</a>
             </div>
         </div>
     }
@@ -93,10 +100,29 @@
                         <label for="end-date">End Date</label>
                         <input id="end-date" type="date"
                                @bind="form.EndDate"
+                               @bind:after="OnEndDateChanged"
                                min="@form.StartDate.ToString("yyyy-MM-dd")"
                                required />
                     </div>
                 </div>
+
+                @if (otherAbsences.Count > 0)
+                {
+                    <div class="same-day-banner" role="status">
+                        <div class="same-day-heading">
+                            <strong>@otherAbsences.Count</strong> other teacher@(otherAbsences.Count == 1 ? "" : "s") already absent during this date range
+                        </div>
+                        <ul class="same-day-list">
+                            @foreach (var grp in otherAbsences.GroupBy(a => a.CampusCode).OrderBy(g => g.Key))
+                            {
+                                <li>
+                                    <span class="campus-tag">@grp.Key</span>
+                                    @string.Join(", ", grp.OrderBy(a => a.StartDate).Select(FormatOtherAbsence))
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
 
                 <div class="form-row">
                     <label>Session</label>
@@ -204,6 +230,8 @@
 
     private long? submittedRequestId = null;
 
+    private List<OtherAbsence> otherAbsences = new();
+
     protected override async Task OnInitializedAsync()
     {
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
@@ -242,6 +270,8 @@
             var today = DateOnly.FromDateTime(DateTime.Today);
             form.StartDate = today;
             form.EndDate = today;
+
+            await LoadOtherAbsencesAsync();
         }
         catch (Exception ex)
         {
@@ -254,10 +284,59 @@
         }
     }
 
-    private void OnStartDateChanged()
+    private async Task OnStartDateChanged()
     {
         if (form.EndDate < form.StartDate)
             form.EndDate = form.StartDate;
+        await LoadOtherAbsencesAsync();
+    }
+
+    private async Task OnEndDateChanged()
+    {
+        if (form.EndDate < form.StartDate)
+            form.EndDate = form.StartDate;
+        await LoadOtherAbsencesAsync();
+    }
+
+    private async Task LoadOtherAbsencesAsync()
+    {
+        if (employeeId == 0) return;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            otherAbsences = await context.TcSubRequests
+                .AsNoTracking()
+                .Where(r => r.RequestingEmployeeId != employeeId
+                         && r.Status != SubRequestStatus.Denied
+                         && r.Status != SubRequestStatus.Cancelled
+                         && r.StartDate <= form.EndDate
+                         && r.EndDate >= form.StartDate)
+                .Select(r => new OtherAbsence
+                {
+                    TeacherName = r.RequestingEmployee.Staff != null
+                        ? (r.RequestingEmployee.Staff.FirstName + " " + r.RequestingEmployee.Staff.LastName)
+                        : (r.RequestingEmployee.Email ?? ("Employee " + r.RequestingEmployeeId)),
+                    CampusCode = r.Campus.CampusCode,
+                    StartDate = r.StartDate,
+                    EndDate = r.EndDate,
+                    Status = r.Status
+                })
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex,
+                "Could not load other absences for banner (employee {EmployeeId})", employeeId);
+            otherAbsences = new();
+        }
+    }
+
+    private static string FormatOtherAbsence(OtherAbsence a)
+    {
+        var dates = a.StartDate == a.EndDate
+            ? a.StartDate.ToString("MMM d")
+            : $"{a.StartDate:MMM d}\u2013{a.EndDate:MMM d}";
+        return $"{a.TeacherName} ({dates})";
     }
 
     private void TogglePeriod(int periodNumber, bool checkedState)
@@ -323,7 +402,7 @@
                 SessionType = form.SessionType,
                 SubjectArea = string.IsNullOrWhiteSpace(form.SubjectArea) ? null : form.SubjectArea,
                 SpecialInstructions = string.IsNullOrWhiteSpace(form.SpecialInstructions) ? null : form.SpecialInstructions.Trim(),
-                Status = SubRequestStatus.Submitted,
+                Status = SubRequestStatus.AwaitingSub,
                 CreatedDate = DateTime.Now,
                 ModifiedDate = DateTime.Now
             };
@@ -393,5 +472,14 @@
         public string? SubjectArea { get; set; }
         public string? AbsenceReason { get; set; }
         public string? SpecialInstructions { get; set; }
+    }
+
+    private class OtherAbsence
+    {
+        public string TeacherName { get; set; } = "";
+        public string CampusCode { get; set; } = "";
+        public DateOnly StartDate { get; set; }
+        public DateOnly EndDate { get; set; }
+        public SubRequestStatus Status { get; set; }
     }
 }
