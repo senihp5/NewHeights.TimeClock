@@ -851,6 +851,12 @@ public class SubOutreachService : ISubOutreachService
                 : $"{request.StartDate:MMM d}-{request.EndDate:MMM d}";
 
             // Resolve supervisor's employee record (for phone + opt-out).
+            // Primary: SupervisorApprovedBy email, set when a supervisor formally
+            // approved the absence (pre-9a flow, or post-9a after final approval).
+            // Fallback (Phase 9a): the teacher's Entra-linked supervisor, populated
+            // by EmployeeSyncService from the Entra `manager` attribute. In 9a
+            // SupervisorApprovedBy isn't set until *after* the sub accepts, so we
+            // need the fallback to notify the admin that final approval is pending.
             TcEmployee? supervisorEmp = null;
             if (!string.IsNullOrWhiteSpace(request.SupervisorApprovedBy))
             {
@@ -859,6 +865,18 @@ public class SubOutreachService : ISubOutreachService
                     .AsNoTracking()
                     .Include(e => e.Staff)
                     .FirstOrDefaultAsync(e => e.Email == supervisorEmail && e.IsActive);
+            }
+
+            if (supervisorEmp == null)
+            {
+                var teacherId = request.RequestingEmployeeId;
+                supervisorEmp = await context.TcEmployees
+                    .AsNoTracking()
+                    .Include(e => e.Staff)
+                    .Where(e => e.IsActive)
+                    .FirstOrDefaultAsync(e => context.TcEmployees
+                        .Any(t => t.EmployeeId == teacherId
+                               && t.SupervisorEmployeeId == e.EmployeeId));
             }
 
             var isAccept = string.Equals(eventKind, "ACCEPTED", StringComparison.OrdinalIgnoreCase);
@@ -933,11 +951,11 @@ public class SubOutreachService : ISubOutreachService
 
         if (isAccept && isSupervisor)
         {
-            smsBody  = $"New Heights: {subName} accepted the sub request for {teacherName} at {campusName} on {dates}.";
-            subject  = $"Sub confirmed — {subName} for {teacherName} ({dates})";
+            smsBody  = $"New Heights: {subName} accepted for {teacherName} at {campusName} on {dates}. Please give final approval: clock.newheightsed.com/supervisor/sub-requests";
+            subject  = $"Action needed: final approval \u2014 {subName} for {teacherName} ({dates})";
             color    = "#059669";
-            headline = "Substitute Confirmed";
-            body     = $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> accepted the sub request for <strong>{System.Net.WebUtility.HtmlEncode(teacherName)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> on <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong>.</p>";
+            headline = "Substitute Confirmed \u2014 Final Approval Needed";
+            body     = $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> accepted the sub request for <strong>{System.Net.WebUtility.HtmlEncode(teacherName)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> on <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong>.</p><p><strong>Next step:</strong> review and give final approval so the absence is officially confirmed.</p><p><a href='https://clock.newheightsed.com/supervisor/sub-requests' style='display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;text-decoration:none;border-radius:4px;font-weight:500;'>Open Sub Requests</a></p>";
         }
         else if (isAccept && !isSupervisor)
         {
