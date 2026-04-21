@@ -1109,6 +1109,31 @@
             Logger.LogInformation("Supervisor {Sup} approved correction {Id} for employee {Emp}",
                 currentUserEmail, request.RequestId, EmployeeId);
 
+            // Email notification to the employee. Wrapped in try/catch so a mail
+            // delivery failure (SMTP hiccup, wrong address) cannot break the
+            // correction workflow — the DB writes + audit row are already committed.
+            if (!string.IsNullOrWhiteSpace(employeeEmail))
+            {
+                try
+                {
+                    await EmailService.SendCorrectionApprovedAsync(
+                        employeeEmail,
+                        employeeName,
+                        currentUserName,
+                        FormatRequestType(entity.RequestType),
+                        entity.WorkDate,
+                        entity.Reason ?? "",
+                        newPunch?.PunchDateTime,
+                        newPunch?.PunchType.ToString());
+                }
+                catch (Exception mailEx)
+                {
+                    Logger.LogError(mailEx,
+                        "Correction-approved email failed for employee {EmployeeId} correction {RequestId}. Decision already committed.",
+                        EmployeeId, request.RequestId);
+                }
+            }
+
             await LoadTimesheet();
         }
         catch (Exception ex)
@@ -1155,6 +1180,28 @@
 
             Logger.LogInformation("Supervisor {Sup} denied correction {Id} for employee {Emp}",
                 currentUserEmail, request.RequestId, EmployeeId);
+
+            // Email notification to the employee — same safety-first pattern as the
+            // approve path. DB + audit are already committed; mail failures are logged.
+            if (!string.IsNullOrWhiteSpace(employeeEmail))
+            {
+                try
+                {
+                    await EmailService.SendCorrectionDeniedAsync(
+                        employeeEmail,
+                        employeeName,
+                        currentUserName,
+                        FormatRequestType(entity.RequestType),
+                        entity.WorkDate,
+                        entity.Reason ?? "");
+                }
+                catch (Exception mailEx)
+                {
+                    Logger.LogError(mailEx,
+                        "Correction-denied email failed for employee {EmployeeId} correction {RequestId}. Decision already committed.",
+                        EmployeeId, request.RequestId);
+                }
+            }
 
             await LoadTimesheet();
         }

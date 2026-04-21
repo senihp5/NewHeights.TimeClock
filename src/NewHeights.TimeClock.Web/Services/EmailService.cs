@@ -11,6 +11,27 @@ public interface IEmailService
     Task<bool> SendTimesheetReminderAsync(string employeeEmail, string employeeName, string supervisorName, DateOnly deadline);
     Task<bool> SendSupervisorReminderAsync(string supervisorEmail, string supervisorName, int pendingCount, DateOnly deadline);
     Task<bool> SendApprovalNotificationAsync(string employeeEmail, string employeeName, string approvedBy, string periodName);
+
+    // Phase 8 — correction decision notifications. Fired by SupervisorTimesheetView
+    // after ApproveCorrectionRequest / DenyCorrectionRequest commit. Employees see
+    // the outcome without having to hunt /my/timesheet for status changes.
+    Task<bool> SendCorrectionApprovedAsync(
+        string employeeEmail,
+        string employeeName,
+        string supervisorName,
+        string correctionType,
+        DateOnly workDate,
+        string requestReason,
+        DateTime? appliedPunchTime,
+        string? appliedPunchType);
+
+    Task<bool> SendCorrectionDeniedAsync(
+        string employeeEmail,
+        string employeeName,
+        string supervisorName,
+        string correctionType,
+        DateOnly workDate,
+        string requestReason);
 }
 
 public class EmailSettings
@@ -148,6 +169,80 @@ public class EmailService : IEmailService
             <p>Your time sheet has been forwarded to HR for final processing.</p>
             <p style='color: #666; font-size: 14px; margin-top: 20px;'>
                 No action is required on your part. If you have questions, please contact HR.
+            </p>";
+
+        return await SendEmailAsync(employeeEmail, subject, body);
+    }
+
+    public async Task<bool> SendCorrectionApprovedAsync(
+        string employeeEmail,
+        string employeeName,
+        string supervisorName,
+        string correctionType,
+        DateOnly workDate,
+        string requestReason,
+        DateTime? appliedPunchTime,
+        string? appliedPunchType)
+    {
+        var subject = $"✓ Time Correction Approved — {workDate:MMM d}";
+
+        var appliedPunchBlock = appliedPunchTime.HasValue
+            ? $@"<div style='background: #f0fdf4; border: 1px solid {Green}; padding: 15px; border-radius: 8px; margin: 15px 0;'>
+                    <p style='margin: 0;'><strong>New Punch Added</strong></p>
+                    <p style='margin: 5px 0 0;'>{appliedPunchType ?? "Punch"} at {appliedPunchTime.Value:MMM d, h:mm tt}</p>
+                 </div>"
+            : "";
+
+        var reasonBlock = string.IsNullOrWhiteSpace(requestReason)
+            ? ""
+            : $@"<p style='margin-top: 15px; color: #555;'><strong>Your reason:</strong> {System.Net.WebUtility.HtmlEncode(requestReason)}</p>";
+
+        var body = $@"
+            <h2 style='color: {Green}; margin-bottom: 5px;'>✓ Time Correction Approved</h2>
+            <p>Hello {employeeName},</p>
+            <p>Your <strong>{correctionType}</strong> correction for <strong>{workDate:dddd, MMM d, yyyy}</strong> has been approved by {supervisorName}.</p>
+            {appliedPunchBlock}
+            {reasonBlock}
+            <p style='margin-top: 20px;'>
+                <a href='https://clock.newheightsed.com/my/timesheet'
+                   style='background: {NavyBlue}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;'>
+                    View My Time Sheet
+                </a>
+            </p>
+            <p style='color: #666; font-size: 14px; margin-top: 20px;'>
+                The change is now reflected on your time sheet. No further action is required.
+            </p>";
+
+        return await SendEmailAsync(employeeEmail, subject, body);
+    }
+
+    public async Task<bool> SendCorrectionDeniedAsync(
+        string employeeEmail,
+        string employeeName,
+        string supervisorName,
+        string correctionType,
+        DateOnly workDate,
+        string requestReason)
+    {
+        var subject = $"Time Correction Denied — {workDate:MMM d}";
+
+        var reasonBlock = string.IsNullOrWhiteSpace(requestReason)
+            ? ""
+            : $@"<p style='margin-top: 15px; color: #555;'><strong>Your reason:</strong> {System.Net.WebUtility.HtmlEncode(requestReason)}</p>";
+
+        var body = $@"
+            <h2 style='color: {Red}; margin-bottom: 5px;'>Time Correction Denied</h2>
+            <p>Hello {employeeName},</p>
+            <p>Your <strong>{correctionType}</strong> correction request for <strong>{workDate:dddd, MMM d, yyyy}</strong> has been denied by {supervisorName}.</p>
+            {reasonBlock}
+            <div style='background: #fff3cd; border-left: 4px solid {Amber}; padding: 15px; margin: 15px 0;'>
+                <p style='margin: 0;'>If you believe this was in error, or if you have additional information, please speak with {supervisorName} directly. You may also submit a new correction request with clarifying details.</p>
+            </div>
+            <p style='margin-top: 20px;'>
+                <a href='https://clock.newheightsed.com/my/timesheet'
+                   style='background: {NavyBlue}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;'>
+                    View My Time Sheet
+                </a>
             </p>";
 
         return await SendEmailAsync(employeeEmail, subject, body);

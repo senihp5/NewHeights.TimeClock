@@ -33,7 +33,7 @@
                 <span class="result-badge updated">&#8635; @_lastResult.Updated Updated</span>
                 <span class="result-badge deactivated">&#8856; @_lastResult.Deactivated Deactivated</span>
                 <span class="result-badge skipped">&#9135; @_lastResult.Skipped Skipped</span>
-                <span class="result-time">@_lastResult.CompletedAt.ToLocalTime().ToString("M/d h:mm tt")</span>
+                <span class="result-time">@_lastResult.CompletedAt.ToString("M/d h:mm tt")</span>
             </div>
             @if (_lastResult.Warnings.Any())
             {
@@ -114,7 +114,7 @@
                             <td>@e.HomeCampus?.CampusCode</td>
                             <td>@(e.Supervisor != null ? $"{e.Supervisor.Staff?.FirstName} {e.Supervisor.Staff?.LastName}" : "—")</td>
                             <td><span class="@(e.IsActive ? "active-dot" : "inactive-dot")">@(e.IsActive ? "Yes" : "No")</span></td>
-                            <td>@e.ModifiedDate.ToLocalTime().ToString("M/d/yy h:mm tt")</td>
+                            <td>@e.ModifiedDate.ToString("M/d/yy h:mm tt")</td>
                         </tr>
                     }
                 </tbody>
