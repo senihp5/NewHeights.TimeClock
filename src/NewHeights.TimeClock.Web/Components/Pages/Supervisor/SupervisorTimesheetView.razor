@@ -392,7 +392,20 @@
                 {
                     <div class="approval-form">
                         <p>Review the time sheet above. If everything looks correct, approve to send to HR for final processing.</p>
-                        
+
+                        @{
+                            var unresolvedCount = payPeriodTimesheet.Weeks
+                                .SelectMany(w => w.Days)
+                                .Count(d => d.HasException);
+                        }
+                        @if (unresolvedCount > 0)
+                        {
+                            <div style="background:#fef3c7;border:1px solid #fde68a;color:#78350f;padding:0.6rem 0.75rem;border-radius:6px;margin:0.5rem 0;font-size:.9rem;">
+                                ⚠️ <strong>@unresolvedCount exception@(unresolvedCount == 1 ? "" : "s") unresolved.</strong>
+                                Resolve or acknowledge all exceptions before approving this time sheet.
+                            </div>
+                        }
+
                         <div class="supervisor-notes">
                             <label>Supervisor Notes (optional)</label>
                             <textarea @bind="supervisorNotes" placeholder="Add any notes about this time sheet..."></textarea>
@@ -404,7 +417,8 @@
                         </label>
 
                         <div class="approval-actions">
-                            <button class="btn-approve" @onclick="ApproveTimesheet" disabled="@(!approvalChecked || isApproving)">
+                            <button class="btn-approve" @onclick="ApproveTimesheet"
+                                    disabled="@(!approvalChecked || isApproving || unresolvedCount > 0)">
                                 @if (isApproving)
                                 {
                                     <span>Approving...</span>
@@ -456,26 +470,35 @@
 
                 <hr />
 
-                <h4>Add Correction</h4>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>Punch Type</label>
-                        <select @bind="newPunchType">
-                            <option value="In">Clock In</option>
-                            <option value="Out">Clock Out</option>
-                            <option value="LunchOut">Lunch Out</option>
-                            <option value="LunchIn">Lunch In</option>
-                        </select>
+                <h4>Edit Entry</h4>
+
+                <label style="display:flex;align-items:center;gap:6px;margin:0.5rem 0;">
+                    <input type="checkbox" @bind="addPunchInCorrection" />
+                    <span>Add a new punch entry</span>
+                </label>
+
+                @if (addPunchInCorrection)
+                {
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Punch Type</label>
+                            <select @bind="newPunchType">
+                                <option value="In">Clock In</option>
+                                <option value="Out">Clock Out</option>
+                                <option value="LunchOut">Lunch Out</option>
+                                <option value="LunchIn">Lunch In</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Time</label>
+                            <input type="time" @bind="newPunchTime" />
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>Time</label>
-                        <input type="time" @bind="newPunchTime" />
-                    </div>
-                </div>
+                }
 
                 <div class="form-group">
-                    <label>Reason for Correction *</label>
-                    <textarea @bind="correctionReason" placeholder="Required: Explain the correction..."></textarea>
+                    <label>Reason *</label>
+                    <textarea @bind="correctionReason" placeholder="Required: Explain the correction, acknowledgment, or flag..."></textarea>
                 </div>
 
                 @if (editingDay.HasException)
@@ -485,15 +508,27 @@
                         <p>@editingDay.ExceptionNotes</p>
                         <label class="resolve-checkbox">
                             <input type="checkbox" @bind="markExceptionResolved" />
-                            <span>Mark exception as resolved</span>
+                            <span>Mark exception as resolved (acknowledged)</span>
                         </label>
+                    </div>
+                }
+
+                <label class="resolve-checkbox" style="margin-top:0.5rem;">
+                    <input type="checkbox" @bind="flagAsException" />
+                    <span>Flag this day as an exception for follow-up</span>
+                </label>
+                @if (flagAsException && markExceptionResolved)
+                {
+                    <div style="color:#b45309;font-size:.85rem;margin-top:.25rem;">
+                        Resolve and Flag are mutually exclusive. Resolve wins; flag will be ignored.
                     </div>
                 }
             </div>
             <div class="modal-footer">
                 <button class="btn-cancel" @onclick="CloseEditModal">Cancel</button>
-                <button class="btn-save" @onclick="SaveCorrection" disabled="@(string.IsNullOrWhiteSpace(correctionReason))">
-                    Save Correction
+                <button class="btn-save" @onclick="SaveCorrection"
+                        disabled="@(string.IsNullOrWhiteSpace(correctionReason) || (!addPunchInCorrection && !markExceptionResolved && !flagAsException))">
+                    Save
                 </button>
             </div>
         </div>
@@ -549,6 +584,8 @@
     private TimeOnly newPunchTime = new TimeOnly(8, 0);
     private string correctionReason = "";
     private bool markExceptionResolved = false;
+    private bool addPunchInCorrection = false;
+    private bool flagAsException = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -735,6 +772,11 @@
         newPunchTime = new TimeOnly(8, 0);
         correctionReason = "";
         markExceptionResolved = false;
+        // Default the modal to acknowledge-mode (no punch) when opening on an
+        // exception day. That way the Resolve button on an exception doesn't
+        // silently add an 8:00 AM IN punch if the supervisor forgets to uncheck.
+        addPunchInCorrection = !day.HasException;
+        flagAsException = false;
         showEditModal = true;
     }
 
@@ -742,11 +784,14 @@
     {
         showEditModal = false;
         editingDay = null;
+        addPunchInCorrection = false;
+        flagAsException = false;
     }
 
     private async Task SaveCorrection()
     {
         if (editingDay == null || string.IsNullOrWhiteSpace(correctionReason)) return;
+        if (!addPunchInCorrection && !markExceptionResolved && !flagAsException) return;
 
         try
         {
@@ -755,72 +800,124 @@
             var employee = await context.TcEmployees.FindAsync(EmployeeId);
             if (employee == null) return;
 
-            var punchDateTime = editingDay.Date.ToDateTime(newPunchTime);
-            var punchType = Enum.Parse<PunchType>(newPunchType);
+            TcTimePunch? newPunch = null;
 
-            var newPunch = new TcTimePunch
+            // 1. Optional punch creation
+            if (addPunchInCorrection)
             {
-                EmployeeId = EmployeeId,
-                CampusId = employee.HomeCampusId,
-                PunchType = punchType,
-                PunchDateTime = punchDateTime,
-                RoundedDateTime = RoundToQuarterHour(punchDateTime),
-                VerificationMethod = "MANUAL",
-                ScanMethod = "SUPERVISOR",
-                IsManualEntry = true,
-                IsModified = true,
-                ModifiedBy = currentUserEmail,
-                ModifiedReason = $"[Supervisor Correction] {correctionReason}",
-                Notes = correctionReason,
-                PunchStatus = PunchStatus.Active,
-                CreatedDate = DateTime.Now
-            };
+                var punchDateTime = editingDay.Date.ToDateTime(newPunchTime);
+                var punchType = Enum.Parse<PunchType>(newPunchType);
 
-            context.TcTimePunches.Add(newPunch);
-            await context.SaveChangesAsync();
-
-            // Audit the supervisor-initiated punch add. PUNCH_MODIFIED action
-            // with source AdminUi makes it searchable alongside employee-submitted
-            // corrections.
-            await Audit.LogActionAsync(
-                actionCode: AuditActions.Punch.Modified,
-                entityType: AuditEntityTypes.Punch,
-                entityId: newPunch.PunchId.ToString(),
-                newValues: new
+                newPunch = new TcTimePunch
                 {
-                    newPunch.PunchId,
-                    newPunch.EmployeeId,
-                    newPunch.CampusId,
-                    PunchType = newPunch.PunchType.ToString(),
-                    newPunch.PunchDateTime,
-                    ScanMethod = newPunch.ScanMethod,
-                    Source = "SUPERVISOR_CORRECTION"
-                },
-                reason: correctionReason,
-                deltaSummary:
-                    $"Supervisor correction: added {newPunch.PunchType} at {newPunch.PunchDateTime:MMM d h:mm tt} for employee {EmployeeId} by {currentUserEmail}",
-                source: AuditSource.AdminUi,
-                employeeId: EmployeeId,
-                punchId: newPunch.PunchId);
+                    EmployeeId = EmployeeId,
+                    CampusId = employee.HomeCampusId,
+                    PunchType = punchType,
+                    PunchDateTime = punchDateTime,
+                    RoundedDateTime = RoundToQuarterHour(punchDateTime),
+                    VerificationMethod = "MANUAL",
+                    ScanMethod = "SUPERVISOR",
+                    IsManualEntry = true,
+                    IsModified = true,
+                    ModifiedBy = currentUserEmail,
+                    ModifiedReason = $"[Supervisor Correction] {correctionReason}",
+                    Notes = correctionReason,
+                    PunchStatus = PunchStatus.Active,
+                    CreatedDate = DateTime.Now
+                };
 
-            // Recalculate daily timecard
-            await TimesheetService.RecalculateDailyTimecardAsync(EmployeeId, editingDay.Date);
+                context.TcTimePunches.Add(newPunch);
+                await context.SaveChangesAsync();
 
-            // Mark exception resolved if checked
-            if (markExceptionResolved)
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.Punch.Modified,
+                    entityType: AuditEntityTypes.Punch,
+                    entityId: newPunch.PunchId.ToString(),
+                    newValues: new
+                    {
+                        newPunch.PunchId,
+                        newPunch.EmployeeId,
+                        newPunch.CampusId,
+                        PunchType = newPunch.PunchType.ToString(),
+                        newPunch.PunchDateTime,
+                        ScanMethod = newPunch.ScanMethod,
+                        Source = "SUPERVISOR_CORRECTION"
+                    },
+                    reason: correctionReason,
+                    deltaSummary:
+                        $"Supervisor correction: added {newPunch.PunchType} at {newPunch.PunchDateTime:MMM d h:mm tt} for employee {EmployeeId} by {currentUserEmail}",
+                    source: AuditSource.AdminUi,
+                    employeeId: EmployeeId,
+                    punchId: newPunch.PunchId);
+
+                await TimesheetService.RecalculateDailyTimecardAsync(EmployeeId, editingDay.Date);
+            }
+
+            // 2. Exception state change: resolve OR flag (Resolve wins if both)
+            if (markExceptionResolved || flagAsException)
             {
                 var timecard = await context.TcDailyTimecards
                     .FirstOrDefaultAsync(t => t.EmployeeId == EmployeeId && t.WorkDate == editingDay.Date);
+
+                if (timecard == null && flagAsException)
+                {
+                    timecard = new TcDailyTimecard
+                    {
+                        EmployeeId = EmployeeId,
+                        CampusId = employee.HomeCampusId,
+                        WorkDate = editingDay.Date,
+                        ApprovalStatus = ApprovalStatus.Pending,
+                        CreatedDate = DateTime.Now,
+                        ModifiedDate = DateTime.Now
+                    };
+                    context.TcDailyTimecards.Add(timecard);
+                }
+
                 if (timecard != null)
                 {
-                    timecard.HasException = false;
-                    timecard.ExceptionNotes = $"Resolved by {currentUserName}: {correctionReason}";
+                    if (markExceptionResolved)
+                    {
+                        timecard.HasException = false;
+                        timecard.ExceptionNotes =
+                            $"Acknowledged by {currentUserName} on {DateTime.Now:MMM d h:mm tt}: {correctionReason}";
+                    }
+                    else if (flagAsException)
+                    {
+                        timecard.HasException = true;
+                        timecard.ExceptionNotes =
+                            $"Flagged by {currentUserName} on {DateTime.Now:MMM d h:mm tt}: {correctionReason}";
+                    }
+                    timecard.ModifiedDate = DateTime.Now;
                     await context.SaveChangesAsync();
+
+                    await Audit.LogActionAsync(
+                        actionCode: markExceptionResolved
+                            ? AuditActions.Timesheet.ExceptionAcknowledged
+                            : AuditActions.Timesheet.ExceptionFlagged,
+                        entityType: AuditEntityTypes.Timecard,
+                        entityId: timecard.TimecardId.ToString(),
+                        newValues: new
+                        {
+                            timecard.TimecardId,
+                            timecard.EmployeeId,
+                            WorkDate = timecard.WorkDate.ToString("yyyy-MM-dd"),
+                            HasException = timecard.HasException,
+                            PunchCreated = newPunch?.PunchId,
+                            Actor = currentUserEmail
+                        },
+                        reason: correctionReason,
+                        deltaSummary: markExceptionResolved
+                            ? $"Exception acknowledged on {timecard.WorkDate:MMM d} by {currentUserEmail} for employee {EmployeeId}"
+                            : $"Day {timecard.WorkDate:MMM d} flagged as exception by {currentUserEmail} for employee {EmployeeId}",
+                        source: AuditSource.AdminUi,
+                        employeeId: EmployeeId);
                 }
             }
 
-            Logger.LogInformation("Supervisor {Supervisor} added correction for {Employee} on {Date}: {Type} at {Time}",
-                currentUserEmail, EmployeeId, editingDay.Date, newPunchType, newPunchTime);
+            Logger.LogInformation(
+                "Supervisor {Supervisor} edit on {Date} for employee {Employee}: AddPunch={AddPunch}, Resolve={Resolve}, Flag={Flag}",
+                currentUserEmail, editingDay.Date, EmployeeId,
+                addPunchInCorrection, markExceptionResolved, flagAsException);
 
             CloseEditModal();
             await LoadTimesheet();

@@ -40,6 +40,8 @@ public static class AuditActions
         public const string Submitted               = "TIMESHEET_SUBMITTED";
         public const string SupervisorApproved      = "TIMESHEET_SUPERVISOR_APPROVED";
         public const string SupervisorRejected      = "TIMESHEET_SUPERVISOR_REJECTED";
+        public const string ExceptionAcknowledged   = "TIMESHEET_EXCEPTION_ACK";
+        public const string ExceptionFlagged        = "TIMESHEET_EXCEPTION_FLAGGED";
     }
 
     // F. HR Payroll
