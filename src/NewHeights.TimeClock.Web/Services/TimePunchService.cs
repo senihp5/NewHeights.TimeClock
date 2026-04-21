@@ -393,19 +393,30 @@ public class TimePunchService : ITimePunchService
             if (window.SessionType == "NIGHT" && dayOfWeek == DayOfWeek.Friday)
                 continue;
 
-            // If punching out during expected work hours, flag it
+            // If punching out during expected work hours, flag it.
             if (punchTime >= window.ExpectedArrivalTime && punchTime < window.ExpectedDepartureTime)
             {
-                punch.PunchSubType = "EARLY_OUT";
-                _context.TcTimePunches.Update(punch);
-                await _context.SaveChangesAsync();
+                // Preserve a user-provided reason (LUNCH / MEDICAL / MEETING / PERSONAL /
+                // EMERGENCY) from the mobile early-out modal — it's strictly more informative
+                // than the generic EARLY_OUT marker. Only auto-label when nothing is set.
+                var userProvidedReason = punch.PunchSubType;
+                bool appliedGenericFlag = false;
+                if (string.IsNullOrEmpty(userProvidedReason))
+                {
+                    punch.PunchSubType = "EARLY_OUT";
+                    _context.TcTimePunches.Update(punch);
+                    await _context.SaveChangesAsync();
+                    appliedGenericFlag = true;
+                }
 
-                _logger.LogInformation("Early checkout flagged for supervisor review: Employee={Id}, Time={Time}",
-                                    punch.EmployeeId, punch.PunchDateTime);
+                _logger.LogInformation("Early checkout flagged for supervisor review: Employee={Id}, Time={Time}, Reason={Reason}",
+                                    punch.EmployeeId, punch.PunchDateTime, punch.PunchSubType);
 
                 // Audit: PUNCH_EARLY_OUT_FLAG — lets supervisors filter on "what went home early today"
                 // without having to scan every punch. Source=SYSTEM because the flag is set by
-                // the rule engine, not by a user action.
+                // the rule engine, not by a user action. Fires regardless of whether we set the
+                // generic EARLY_OUT marker or kept the user-provided reason, so the supervisor
+                // filter stays complete.
                 await _audit.LogActionAsync(
                     actionCode: AuditActions.Punch.EarlyOutFlag,
                     entityType: AuditEntityTypes.Punch,
@@ -413,12 +424,14 @@ public class TimePunchService : ITimePunchService
                     newValues: new
                     {
                         punch.PunchId,
-                        punch.PunchSubType,
+                        FinalPunchSubType = punch.PunchSubType,
+                        UserProvidedReason = userProvidedReason,
+                        AppliedGenericFlag = appliedGenericFlag,
                         punch.PunchDateTime,
                         ExpectedDeparture = window.ExpectedDepartureTime,
                         window.SessionType
                     },
-                    deltaSummary: $"Early OUT at {punchTime} (expected ≥ {window.ExpectedDepartureTime}, session {window.SessionType})",
+                    deltaSummary: $"Early OUT at {punchTime} (expected ≥ {window.ExpectedDepartureTime}, session {window.SessionType}, reason {punch.PunchSubType ?? "UNSPECIFIED"})",
                     source: AuditSource.System,
                     employeeId: punch.EmployeeId,
                     campusId: campusId,
