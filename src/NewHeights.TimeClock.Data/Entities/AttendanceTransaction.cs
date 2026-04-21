@@ -25,6 +25,14 @@ public class AttendanceTransaction
     // RETURN_LUNCH, RETURN_MEDICAL, etc. (same-day return punch)
     public string? PunchSubType { get; set; }
 
+    // Migration 039: GPS proof captured at the moment of the scan. Populated
+    // by geofence-gated paths (StudentCheckin, MobileCheckin); null for the
+    // kiosk path (physical device presence IS the validation) and any admin
+    // manual override.
+    public decimal? Latitude { get; set; }
+    public decimal? Longitude { get; set; }
+    public decimal? LocationAccuracyMeters { get; set; }
+
     public DateTime CreatedDate { get; set; } = DateTime.Now;
 
     // Navigation

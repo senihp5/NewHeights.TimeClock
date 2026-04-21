@@ -415,6 +415,10 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.ValidationStatus).HasMaxLength(20).IsRequired();
             entity.Property(e => e.ValidationMessage).HasMaxLength(500);
             entity.Property(e => e.Notes).HasMaxLength(500);
+            // Migration 039: GPS proof. Same precision as TcTimePunch.
+            entity.Property(e => e.Latitude).HasColumnType("decimal(9,6)");
+            entity.Property(e => e.Longitude).HasColumnType("decimal(9,6)");
+            entity.Property(e => e.LocationAccuracyMeters).HasColumnType("decimal(8,2)");
             entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId);
             entity.HasIndex(e => new { e.IdNumber, e.ScanDateTime });
             entity.HasIndex(e => new { e.CampusId, e.ScanDateTime });

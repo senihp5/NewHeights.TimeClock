@@ -7,11 +7,15 @@
 @using NewHeights.TimeClock.Data.Entities
 @using NewHeights.TimeClock.Shared.Constants
 @using System.Security.Claims
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.JSInterop
 @attribute [AllowAnonymous]
 @rendermode InteractiveServer
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IGeofenceService Geofence
 @inject ILogger<StudentCheckin> Logger
 
 <PageTitle>Student Check-In - @AppConstants.Branding.ShortName</PageTitle>
@@ -99,45 +103,69 @@
                     <p class="meta-row">Grade: @student.Grade</p>
                 }
 
-                @if (campusList.Count > 1)
+                @if (isResolvingLocation || !locationResolved)
                 {
-                    <div class="campus-picker">
-                        <label for="campus-select">Campus:</label>
-                        <select id="campus-select" @bind="selectedCampusId">
-                            @foreach (var kv in campusList)
-                            {
-                                <option value="@kv.Key">@kv.Value</option>
-                            }
-                        </select>
+                    <div class="loading" style="margin-top:1rem;">
+                        Verifying your location&hellip;
                     </div>
                 }
-
-                @if (checkInSuccess)
+                else if (!locationOnCampus)
                 {
-                    <div class="status-success">
-                        <strong>@(checkInAction == "CAMPUS_IN" ? "You're checked in!" : "You're checked out.")</strong>
-                        <div>@(checkInAction == "CAMPUS_IN" ? "Have a great day." : "See you tomorrow.")</div>
+                    <div class="status-error">
+                        <strong>Off-campus.</strong>
+                        <div style="margin-top:0.25rem;">@locationError</div>
+                        @if (locationAccuracyMeters.HasValue && locationAccuracyMeters.Value > 100)
+                        {
+                            <div style="margin-top:0.4rem;font-size:.82rem;">
+                                GPS accuracy is low (&plusmn;@($"{locationAccuracyMeters.Value:F0}")m).
+                                Step outside and try again for a better fix.
+                            </div>
+                        }
+                        <div style="margin-top:0.6rem;">
+                            <button type="button" class="btn-google"
+                                    @onclick="RetryLocationAsync"
+                                    style="margin-top:0;">
+                                Retry location
+                            </button>
+                        </div>
                     </div>
-                }
-                else if (!string.IsNullOrEmpty(checkInError))
-                {
-                    <div class="status-error">@checkInError</div>
                 }
                 else
                 {
-                    <button type="button" class="btn-checkin"
-                            @onclick="CheckInAsync"
-                            disabled="@isProcessing">
-                        @(isProcessing ? "Processing…" : (willCheckOut ? "Check Out" : "Check In"))
-                    </button>
-                    @if (willCheckOut)
+                    <div class="meta-row" style="color:#059669;font-weight:600;margin-top:0.5rem;">
+                        &check; On campus at @locationCampusName
+                        <span style="color:#6b7280;font-weight:400;">
+                            &middot; @($"{locationDistanceMeters:F0}")m from center
+                        </span>
+                    </div>
+
+                    @if (checkInSuccess)
                     {
-                        <p class="help-text">You're already checked in. Tap above to check out.</p>
+                        <div class="status-success">
+                            <strong>@(checkInAction == "CAMPUS_IN" ? "You're checked in!" : "You're checked out.")</strong>
+                            <div>@(checkInAction == "CAMPUS_IN" ? "Have a great day." : "See you tomorrow.")</div>
+                        </div>
+                    }
+                    else if (!string.IsNullOrEmpty(checkInError))
+                    {
+                        <div class="status-error">@checkInError</div>
+                    }
+                    else
+                    {
+                        <button type="button" class="btn-checkin"
+                                @onclick="CheckInAsync"
+                                disabled="@isProcessing">
+                            @(isProcessing ? "Processing\u2026" : (willCheckOut ? "Check Out" : "Check In"))
+                        </button>
+                        @if (willCheckOut)
+                        {
+                            <p class="help-text">You're already checked in. Tap above to check out.</p>
+                        }
                     }
                 }
 
                 <p class="signed-as">
-                    Signed in as @signedInEmail ·
+                    Signed in as @signedInEmail &middot;
                     <a href="/student/sign-out">Sign out</a>
                 </p>
             }
@@ -146,6 +174,16 @@
 </div>
 
 @code {
+    /// <summary>
+    /// Phase 8 QR flyer deep-link. When a student scans the per-campus QR code
+    /// (see /outputs/*-flyer.pdf), the URL carries ?campus=STOPSIX or
+    /// ?campus=MCCART so the campus picker is pre-selected without the student
+    /// having to switch. Falls back to the default (Stop Six) if absent or
+    /// unrecognized.
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "campus")]
+    public string? CampusHint { get; set; }
+
     private bool isLoading = true;
     private bool isAuthenticated = false;
     private bool isStudentDomain = false;
@@ -160,6 +198,22 @@
     private string checkInAction = "CAMPUS_IN";
     private string checkInError = "";
     private bool willCheckOut = false;
+
+    // Phase 8 geofencing: browser geolocation resolves the student's campus
+    // automatically. If they're outside every campus radius, check-in is
+    // disabled. Manual campus picker is suppressed when geofence resolves.
+    private bool isResolvingLocation = false;
+    private bool locationResolved = false;
+    private bool locationOnCampus = false;
+    private string locationError = "";
+    private string locationCampusName = "";
+    private double? locationDistanceMeters = null;
+    private double? locationAccuracyMeters = null;
+    // Persisted onto the AttendanceTransaction for audit (migration 039).
+    private double? locationLatitude = null;
+    private double? locationLongitude = null;
+
+    private record GeoPosition(double Latitude, double Longitude, double Accuracy);
 
     protected override async Task OnInitializedAsync()
     {
@@ -182,6 +236,107 @@
         }
 
         isLoading = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        if (!isStudentDomain || student == null) return;
+        if (locationResolved || isResolvingLocation) return;
+
+        isResolvingLocation = true;
+        StateHasChanged();
+        try
+        {
+            await ResolveLocationAsync();
+        }
+        finally
+        {
+            isResolvingLocation = false;
+            locationResolved = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ResolveLocationAsync()
+    {
+        GeoPosition? pos = null;
+        try
+        {
+            pos = await JS.InvokeAsync<GeoPosition>("geolocation.getPosition");
+        }
+        catch (JSException jsEx)
+        {
+            Logger.LogWarning(jsEx, "StudentCheckin: geolocation denied / unavailable for {Email}", signedInEmail);
+            locationError = jsEx.Message;
+            locationOnCampus = false;
+            return;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "StudentCheckin: unexpected geolocation failure for {Email}", signedInEmail);
+            locationError = "We couldn't read your location. Please enable location access and tap Retry.";
+            locationOnCampus = false;
+            return;
+        }
+
+        locationAccuracyMeters = pos.Accuracy;
+        locationLatitude = pos.Latitude;
+        locationLongitude = pos.Longitude;
+
+        var nearest = await Geofence.GetNearestCampusAsync(pos.Latitude, pos.Longitude);
+        if (nearest == null)
+        {
+            locationError = "No campus geofence data found. Please ask the front receptionist for help.";
+            locationOnCampus = false;
+            return;
+        }
+
+        var validation = await Geofence.ValidateLocationAsync(nearest.CampusId, pos.Latitude, pos.Longitude);
+        locationDistanceMeters = validation.DistanceMeters;
+        locationCampusName = nearest.CampusName;
+
+        if (validation.IsValid)
+        {
+            locationOnCampus = true;
+            selectedCampusId = nearest.CampusId;
+            locationError = "";
+            Logger.LogInformation(
+                "StudentCheckin: geofence VALID for {Email} at {Campus} ({Distance:F0}m, \u00b1{Accuracy:F0}m accuracy)",
+                signedInEmail, nearest.CampusName, validation.DistanceMeters, pos.Accuracy);
+        }
+        else
+        {
+            locationOnCampus = false;
+            locationError = $"You're {validation.DistanceMeters:F0}m from {nearest.CampusName}. You must be on campus to check in.";
+            Logger.LogInformation(
+                "StudentCheckin: geofence OUT-OF-RANGE for {Email} \u2014 {Distance:F0}m from {Campus}",
+                signedInEmail, validation.DistanceMeters, nearest.CampusName);
+        }
+    }
+
+    private async Task RetryLocationAsync()
+    {
+        locationResolved = false;
+        locationError = "";
+        locationOnCampus = false;
+        locationDistanceMeters = null;
+        locationAccuracyMeters = null;
+        locationLatitude = null;
+        locationLongitude = null;
+        isResolvingLocation = true;
+        StateHasChanged();
+
+        try
+        {
+            await ResolveLocationAsync();
+        }
+        finally
+        {
+            isResolvingLocation = false;
+            locationResolved = true;
+            StateHasChanged();
+        }
     }
 
     private async Task LoadStudentAsync()
@@ -207,9 +362,15 @@
 
             if (campusesForStudents.Count > 0)
             {
-                var stopSix = campusesForStudents.FirstOrDefault(
+                Campus? preferred = null;
+                if (!string.IsNullOrWhiteSpace(CampusHint))
+                {
+                    preferred = campusesForStudents.FirstOrDefault(
+                        c => string.Equals(c.CampusCode, CampusHint, StringComparison.OrdinalIgnoreCase));
+                }
+                preferred ??= campusesForStudents.FirstOrDefault(
                     c => c.CampusCode == AppConstants.Campus.StopSixCode);
-                selectedCampusId = stopSix?.CampusId ?? campusesForStudents[0].CampusId;
+                selectedCampusId = preferred?.CampusId ?? campusesForStudents[0].CampusId;
             }
 
             if (student != null)
@@ -250,7 +411,12 @@
         if (student == null || isProcessing) return;
         if (selectedCampusId <= 0)
         {
-            checkInError = "Please pick a campus first.";
+            checkInError = "Location not resolved yet. Tap Retry location and try again.";
+            return;
+        }
+        if (!locationOnCampus)
+        {
+            checkInError = "You must be on campus to check in.";
             return;
         }
 
@@ -277,6 +443,10 @@
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
                 PunchSubType = null,
+                // Migration 039: GPS proof of the geofence validation.
+                Latitude = locationLatitude.HasValue ? (decimal?)Convert.ToDecimal(locationLatitude.Value) : null,
+                Longitude = locationLongitude.HasValue ? (decimal?)Convert.ToDecimal(locationLongitude.Value) : null,
+                LocationAccuracyMeters = locationAccuracyMeters.HasValue ? (decimal?)Convert.ToDecimal(locationAccuracyMeters.Value) : null,
                 CreatedDate = DateTime.Now
             };
             ctx.AttendanceTransactions.Add(tx);

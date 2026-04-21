@@ -201,6 +201,12 @@
     private int? nearestCampusId;
     private string nearestCampusName = "";
 
+    // Migration 039: persisted onto AttendanceTransaction.Latitude/Longitude
+    // for audit proof of the geofence validation.
+    private double? latestLatitude;
+    private double? latestLongitude;
+    private double? latestAccuracyMeters;
+
     // QR / result
     private bool showResult = false;
     private bool isSuccess = false;
@@ -298,6 +304,10 @@
             var position = await JS.InvokeAsync<LocResult>("kioskInterop.getPosition");
             if (position != null)
             {
+                latestLatitude = position.Latitude;
+                latestLongitude = position.Longitude;
+                latestAccuracyMeters = position.Accuracy > 0 ? position.Accuracy : null;
+
                 var nearestCampus = await GeofenceService.GetNearestCampusAsync(position.Latitude, position.Longitude);
                 if (nearestCampus != null)
                 {
@@ -530,6 +540,10 @@
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
                 PunchSubType = earlyOutReason,
+                // Migration 039: GPS proof of the geofence validation.
+                Latitude = latestLatitude.HasValue ? (decimal?)Convert.ToDecimal(latestLatitude.Value) : null,
+                Longitude = latestLongitude.HasValue ? (decimal?)Convert.ToDecimal(latestLongitude.Value) : null,
+                LocationAccuracyMeters = latestAccuracyMeters.HasValue ? (decimal?)Convert.ToDecimal(latestAccuracyMeters.Value) : null,
                 CreatedDate = DateTime.Now
             };
 
@@ -676,6 +690,10 @@
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
                 PunchSubType = earlyOutReason,
+                // Migration 039: GPS proof of the geofence validation.
+                Latitude = latestLatitude.HasValue ? (decimal?)Convert.ToDecimal(latestLatitude.Value) : null,
+                Longitude = latestLongitude.HasValue ? (decimal?)Convert.ToDecimal(latestLongitude.Value) : null,
+                LocationAccuracyMeters = latestAccuracyMeters.HasValue ? (decimal?)Convert.ToDecimal(latestAccuracyMeters.Value) : null,
                 CreatedDate = DateTime.Now
             };
             context.AttendanceTransactions.Add(transaction);
@@ -855,6 +873,7 @@
     {
         public double Latitude { get; set; }
         public double Longitude { get; set; }
+        public double Accuracy { get; set; }
     }
 
 }
