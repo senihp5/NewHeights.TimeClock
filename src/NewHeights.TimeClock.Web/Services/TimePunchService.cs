@@ -187,14 +187,17 @@ public class TimePunchService : ITimePunchService
                 QRCodeScanned = request.IdNumber,
                 PunchStatus = PunchStatus.Active,
                 IsManualEntry = false,
+                PunchSubType = request.PunchSubType,
+                PunchSource = request.PunchSource ?? AuditSource.Kiosk,
                 CreatedDate = DateTime.Now
             };
 
             _context.TcTimePunches.Add(punch);
             await _context.SaveChangesAsync();
 
-            // Audit: PUNCH_CREATED. Source defaults to KIOSK — MobileClock.razor can later
-            // pass an explicit PunchRequest.Source override without changing this service.
+            // Audit: PUNCH_CREATED. Callers pass PunchRequest.PunchSource to label the
+            // originating surface (MOBILE, ADMIN_UI, etc). When null, default to KIOSK
+            // so the kiosk flow needs no code change.
             // Fires AFTER save so punch.PunchId is populated.
             await _audit.LogActionAsync(
                 actionCode: AuditActions.Punch.Created,
@@ -213,7 +216,7 @@ public class TimePunchService : ITimePunchService
                     punch.VerificationMethod
                 },
                 deltaSummary: $"{punchType} punch at campus {campusId} for {employee.Staff?.FullName ?? employee.IdNumber}",
-                source: AuditSource.Kiosk,
+                source: request.PunchSource ?? AuditSource.Kiosk,
                 employeeId: employee.EmployeeId,
                 campusId: campusId,
                 punchId: punch.PunchId);

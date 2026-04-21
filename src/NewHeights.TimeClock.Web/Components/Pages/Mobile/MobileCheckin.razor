@@ -6,6 +6,7 @@
 @using NewHeights.TimeClock.Web.Services
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Shared.DTOs
 @using NewHeights.TimeClock.Shared.Enums
 @using Microsoft.EntityFrameworkCore
@@ -433,6 +434,45 @@
             context.AttendanceTransactions.Add(transaction);
             await context.SaveChangesAsync();
 
+            // Dual-write for hourly / PT / sub employees: mirror the check-in
+            // to TC_TimePunches via TimePunchService so payroll sees the same
+            // event the safety system just recorded. Salaried users and any
+            // user not in TcEmployees only get the AttendanceTransaction row.
+            // Safety-first: a payroll failure produces a soft warning — the
+            // AttendanceTransaction is already committed, so the user is not
+            // blocked. They can self-correct on /my/timesheet via the Phase A
+            // inline-edit workflow.
+            payrollWarning = "";
+            if (needsTimePunch)
+            {
+                try
+                {
+                    var punchResult = await TimePunchService.ProcessPunchAsync(new PunchRequest
+                    {
+                        IdNumber       = staffIdNumber,
+                        CampusId       = nearestCampusId.Value,
+                        Latitude       = latestLatitude,
+                        Longitude      = latestLongitude,
+                        ScanMethod     = "GPS_MOBILE",
+                        IsMobileMode   = true,
+                        PunchSubType   = earlyOutReason,
+                        PunchSource    = AuditSource.Mobile
+                    });
+                    if (!punchResult.Success)
+                    {
+                        payrollWarning = $"Payroll record did not save ({punchResult.Message}). Use My Timesheet to request a correction.";
+                        Logger.LogWarning("Mobile dual-write: TcTimePunch failed for {IdNumber} at campus {CampusId}. Attendance row committed. Result: {Message} / {ErrorCode}",
+                            staffIdNumber, nearestCampusId.Value, punchResult.Message, punchResult.ErrorCode);
+                    }
+                }
+                catch (Exception pex)
+                {
+                    payrollWarning = "Payroll record did not save. Use My Timesheet to request a correction.";
+                    Logger.LogError(pex, "Mobile dual-write: TcTimePunch threw for {IdNumber} at campus {CampusId}. Attendance row committed.",
+                        staffIdNumber, nearestCampusId.Value);
+                }
+            }
+
             isSuccess = true;
             lastCheckType = nextActionIsCheckIn ? "IN" : "OUT";
             var now = DateTime.Now;
@@ -461,6 +501,7 @@
         showResult = false;
         lastCheckType = "";
         resultMessage = "";
+        payrollWarning = "";
         isSuccess = false;
         _ = Task.Run(async () =>
         {

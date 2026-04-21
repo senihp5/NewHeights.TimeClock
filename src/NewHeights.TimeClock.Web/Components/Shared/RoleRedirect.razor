@@ -37,7 +37,7 @@
             user.IsInRole("TimeClock.Employee.McCart.PT") ||
             user.IsInRole("TimeClock.Substitute"))
         {
-            Nav.NavigateTo("/mobile/clock", forceLoad: false);
+            Nav.NavigateTo("/mobile/checkin", forceLoad: false);
             return;
         }
 

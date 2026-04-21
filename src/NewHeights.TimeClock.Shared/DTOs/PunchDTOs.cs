@@ -12,6 +12,17 @@ public class PunchRequest
     public string ScanMethod { get; set; } = "QR";
     public bool IsMobileMode { get; set; }
     public string? LoggedInUserIdNumber { get; set; }
+
+    // Mobile check-in can propagate the early-out reason captured in the
+    // PunchSubType reason modal through to the TcTimePunch row so the hourly
+    // side's audit matches the AttendanceTransaction side. Values:
+    // LUNCH, MEDICAL, MEETING, PERSONAL, EMERGENCY (see MobileCheckin.EarlyOutReasons).
+    public string? PunchSubType { get; set; }
+
+    // Where this punch originated — use AuditSource constants (KIOSK, MOBILE,
+    // ADMIN_UI, etc). When null, TimePunchService defaults to AuditSource.Kiosk
+    // for backward compatibility with the unchanged kiosk flow.
+    public string? PunchSource { get; set; }
 }
 
 public class PunchResult
