@@ -13,6 +13,7 @@
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IAuditService Audit
 @inject IUserContextService UserContextSvc
+@inject ISubOutreachService OutreachService
 @inject NavigationManager Navigation
 @inject ILogger<SupervisorSubRequests> Logger
 
@@ -509,6 +510,9 @@
                 employeeId: tracked.RequestingEmployeeId,
                 campusId: tracked.CampusId);
 
+            await OutreachService.NotifyAbsenceDecisionAsync(
+                tracked.SubRequestId, "APPROVED", null, currentUserEmail);
+
             await LoadDataAsync();
         }
         catch (InvalidOperationException ex)
@@ -593,6 +597,9 @@
                 source: AuditSource.AdminUi,
                 employeeId: tracked.RequestingEmployeeId,
                 campusId: tracked.CampusId);
+
+            await OutreachService.NotifyAbsenceDecisionAsync(
+                tracked.SubRequestId, "DENIED", trimmedReason, currentUserEmail);
 
             denyingRequestId = null;
             denyReason = "";

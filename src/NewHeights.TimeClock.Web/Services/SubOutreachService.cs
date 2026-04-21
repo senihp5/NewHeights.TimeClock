@@ -68,6 +68,20 @@ public interface ISubOutreachService
     /// page. Returns null if token is unknown.
     /// </summary>
     Task<TcSubOutreach?> GetOutreachByTokenAsync(string token);
+
+    /// <summary>
+    /// Phase 7d gap close (post-9a): notify the requesting teacher via email + SMS
+    /// that the admin has approved or denied their absence. If decision is DENIED
+    /// and a sub had been confirmed, the assigned sub is also notified that the
+    /// assignment has been canceled. Never throws — notification failures are
+    /// logged but must not roll back the approve/deny DB transaction.
+    /// </summary>
+    /// <param name="subRequestId">The TcSubRequest.SubRequestId.</param>
+    /// <param name="decision">"APPROVED" or "DENIED" (case-insensitive).</param>
+    /// <param name="reason">Admin-provided reason (shown on DENIED; ignored on APPROVED).</param>
+    /// <param name="adminEmail">Email of the admin who made the decision, for logs.</param>
+    Task NotifyAbsenceDecisionAsync(
+        long subRequestId, string decision, string? reason, string adminEmail);
 }
 
 public class SubOutreachService : ISubOutreachService
@@ -997,6 +1011,133 @@ public class SubOutreachService : ISubOutreachService
   <p style='color:#6b7280;font-size:0.85rem;'>You received this because you are listed as the {(isSupervisor ? "campus manager" : "requesting employee")} for this sub request.</p>
 </div>";
 
+        return (smsBody, subject, html);
+    }
+
+    // ── Absence decision notifications (Phase 7d gap close, post-9a) ─────
+
+    public async Task NotifyAbsenceDecisionAsync(
+        long subRequestId, string decision, string? reason, string adminEmail)
+    {
+        try
+        {
+            using var context = await _dbFactory.CreateDbContextAsync();
+            var request = await context.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                .Include(r => r.Campus)
+                .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
+                .FirstOrDefaultAsync(r => r.SubRequestId == subRequestId);
+
+            if (request == null)
+            {
+                _logger.LogWarning(
+                    "NotifyAbsenceDecisionAsync: request {Id} not found \u2014 skipping.",
+                    subRequestId);
+                return;
+            }
+
+            var isApproved = string.Equals(decision, "APPROVED", StringComparison.OrdinalIgnoreCase);
+
+            var teacher = request.RequestingEmployee;
+            var sub = request.AssignedSubEmployee;
+            var teacherShort = teacher?.Staff?.FirstName ?? teacher?.Staff?.FullName ?? "Teacher";
+            var teacherFull  = teacher?.Staff?.FullName ?? teacher?.Email ?? "the teacher";
+            var subName = sub?.Staff?.FullName ?? sub?.Email ?? "a substitute";
+            var campusName = request.Campus?.CampusName ?? "New Heights";
+            var dates = request.StartDate == request.EndDate
+                ? request.StartDate.ToString("MMM d")
+                : $"{request.StartDate:MMM d}-{request.EndDate:MMM d}";
+
+            // Teacher notification (always)
+            if (teacher != null)
+            {
+                var (smsBody, subject, html) = BuildAbsenceDecisionForTeacher(
+                    isApproved, teacherShort, subName, campusName, dates, reason,
+                    request.AssignedSubEmployeeId.HasValue);
+                await TrySendOneStakeholderAsync(teacher, smsBody, subject, html);
+            }
+
+            // Sub notification only on DENY when a sub was previously confirmed.
+            if (!isApproved && sub != null)
+            {
+                var (smsBody, subject, html) = BuildAbsenceDeniedForSub(
+                    teacherFull, campusName, dates, reason);
+                await TrySendOneStakeholderAsync(sub, smsBody, subject, html);
+            }
+
+            _logger.LogInformation(
+                "NotifyAbsenceDecisionAsync: request {Id} decision {Decision} by {Admin} \u2014 teacher notified={TeacherOk}, sub notified={SubOk}.",
+                subRequestId, decision, adminEmail,
+                teacher != null, !isApproved && sub != null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "NotifyAbsenceDecisionAsync: notification failed for request {Id} decision {Decision}. The decision itself is already recorded in TcSubRequest + audit log.",
+                subRequestId, decision);
+        }
+    }
+
+    private static (string smsBody, string subject, string html) BuildAbsenceDecisionForTeacher(
+        bool isApproved, string teacherShort, string subName, string campusName,
+        string dates, string? reason, bool hadAssignedSub)
+    {
+        string smsBody, subject, color, headline, body;
+        if (isApproved)
+        {
+            smsBody  = hadAssignedSub
+                ? $"New Heights: Your absence for {dates} at {campusName} is approved. {subName} is confirmed as your sub."
+                : $"New Heights: Your absence for {dates} at {campusName} is approved.";
+            subject  = $"Absence approved \u2014 {campusName} ({dates})";
+            color    = "#059669";
+            headline = "Your Absence is Approved";
+            body     = $"<p>Your absence request for <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> has been <strong>approved</strong>.</p>";
+            if (hadAssignedSub)
+                body += $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> is confirmed as your sub.</p>";
+        }
+        else
+        {
+            smsBody = $"New Heights: Your absence for {dates} at {campusName} was denied.";
+            if (!string.IsNullOrWhiteSpace(reason))
+                smsBody += $" Reason: {reason}";
+            subject  = $"Absence denied \u2014 {campusName} ({dates})";
+            color    = "#b45309";
+            headline = "Your Absence was Denied";
+            body     = $"<p>Your absence request for <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> has been <strong>denied</strong> by admin.</p>";
+            if (!string.IsNullOrWhiteSpace(reason))
+                body += $"<p><strong>Reason:</strong> {System.Net.WebUtility.HtmlEncode(reason)}</p>";
+            body += "<p>If you have questions, please reach out to your campus manager.</p>";
+        }
+        if (smsBody.Length > SmsMaxLength) smsBody = smsBody.Substring(0, SmsMaxLength);
+
+        var html = $@"
+<div style='font-family: Segoe UI, Arial, sans-serif; max-width: 600px; color: #1f2937;'>
+  <h2 style='color: {color};'>{headline}</h2>
+  {body}
+  <p style='color:#6b7280;font-size:0.85rem;'>You received this because you are the requesting employee for this sub request.</p>
+</div>";
+        return (smsBody, subject, html);
+    }
+
+    private static (string smsBody, string subject, string html) BuildAbsenceDeniedForSub(
+        string teacherFull, string campusName, string dates, string? reason)
+    {
+        var smsBody = $"New Heights: The sub assignment for {teacherFull} at {campusName} on {dates} has been canceled by admin. You do not need to report for this day.";
+        if (smsBody.Length > SmsMaxLength) smsBody = smsBody.Substring(0, SmsMaxLength);
+
+        var subject = $"Sub assignment canceled \u2014 {teacherFull} ({dates})";
+        var headline = "Sub Assignment Canceled";
+        var body = $"<p>The sub request from <strong>{System.Net.WebUtility.HtmlEncode(teacherFull)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> on <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong> has been <strong>denied</strong> by admin. You do not need to report for this day.</p>";
+        if (!string.IsNullOrWhiteSpace(reason))
+            body += $"<p><strong>Reason provided:</strong> {System.Net.WebUtility.HtmlEncode(reason)}</p>";
+
+        var html = $@"
+<div style='font-family: Segoe UI, Arial, sans-serif; max-width: 600px; color: #1f2937;'>
+  <h2 style='color: #b45309;'>{headline}</h2>
+  {body}
+  <p style='color:#6b7280;font-size:0.85rem;'>You received this because you were the assigned substitute for this request.</p>
+</div>";
         return (smsBody, subject, html);
     }
 
