@@ -54,6 +54,13 @@ public class EmployeeSyncService : IEmployeeSyncService
         ( "GraphSync:EmployeeGroupIds:StopSixPT",        EmployeeType.HourlyPartTime,  AppConstants.Campus.StopSixCode, false ),
         ( "GraphSync:EmployeeGroupIds:McCartPT",         EmployeeType.HourlyPartTime,  AppConstants.Campus.McCartCode,  false ),
         ( "GraphSync:EmployeeGroupIds:Substitute",        EmployeeType.Substitute,      null,                            true  ),
+        // SubstituteAdmin members get a TcEmployees row (EmployeeType=Substitute)
+        // from this pass so ApplyAdminSubOverlayAsync has a row to flip
+        // SubRole=ADMIN_SUB on. Listed AFTER main Substitute so first-wins
+        // keeps main-group membership primary when someone is in both groups
+        // (order only matters for non-matching EmployeeTypes; harmless here
+        // since both entries use EmployeeType.Substitute).
+        ( "GraphSync:EmployeeGroupIds:SubstituteAdmin",   EmployeeType.Substitute,      null,                            true  ),
         ( "GraphSync:SupervisorGroupIds:StopSix",         EmployeeType.SalariedStaff,   AppConstants.Campus.StopSixCode, false ),
         ( "GraphSync:SupervisorGroupIds:McCart",          EmployeeType.SalariedStaff,   AppConstants.Campus.McCartCode,  false ),
         ( "GraphSync:TeacherGroupIds:StopSix",            EmployeeType.Teacher,         AppConstants.Campus.StopSixCode, false ),
@@ -253,11 +260,15 @@ public class EmployeeSyncService : IEmployeeSyncService
 
     /// <summary>
     /// Phase D5 / B1: read the SubstituteAdmin Entra group (config key
-    /// GraphSync:EmployeeGroupIds:SubstituteAdmin) and flip SubRole='RECEPTION'
-    /// on TcEmployees rows for any sub that's a member. Subs in the main
-    /// Substitute group but not in this admin group are reset to SubRole=NULL
-    /// (treated as TEACHER by application code) so flipping a sub OUT of the
-    /// admin group propagates correctly on the next sync.
+    /// GraphSync:EmployeeGroupIds:SubstituteAdmin) and flip SubRole='ADMIN_SUB'
+    /// on TcEmployees rows for any member. Employees NOT in this admin group
+    /// whose SubRole is currently 'ADMIN_SUB' get reset to NULL (interpreted
+    /// by the teacher-pool query as legacy-TEACHER_SUB for Substitute rows,
+    /// or "not a sub" for non-Substitute rows).
+    ///
+    /// Works across all EmployeeTypes — a HourlyPartTime receptionist in the
+    /// admin Entra group gets SubRole='ADMIN_SUB' without losing her primary
+    /// HourlyPartTime classification.
     ///
     /// Uses transitive membership (admin sub group may be nested). Errors are
     /// logged + added to result.Warnings; main sync result is not failed by
@@ -295,23 +306,52 @@ public class EmployeeSyncService : IEmployeeSyncService
                 result.Warnings.Add($"SubstituteAdmin overlay: group {adminGroupId} returned 0 transitive members. Verify group ID, transitive membership, and that User.Read.All has admin consent.");
             }
 
-            // All active subs.
-            var allSubs = await db.TcEmployees
-                .Where(e => e.IsActive && e.EmployeeType == NewHeights.TimeClock.Shared.Enums.EmployeeType.Substitute)
+            // All active employees regardless of EmployeeType. SubRole='ADMIN_SUB'
+            // is a cross-cutting role tag — a HourlyPartTime receptionist who is
+            // also in the SubstituteAdmin Entra group should get SubRole flipped
+            // to ADMIN_SUB without losing her primary HourlyPartTime
+            // classification. Filtering this to EmployeeType=Substitute would
+            // silently skip her. Filter is done in memory after load because EF
+            // translation of HashSet<string>.Contains against a client-side set
+            // is inconsistent across providers.
+            //
+            // Demotion caveat: this overlay is authoritative on SubRole. If
+            // someone has SubRole='ADMIN_SUB' set manually but is not in the
+            // admin group, next sync will demote them. Entra group is source
+            // of truth; manual flips via SubPoolManagement are intended as
+            // short-lived overrides until the next sync.
+            var allActive = await db.TcEmployees
+                .Where(e => e.IsActive)
                 .ToListAsync(ct);
 
-            int subsWithoutObjectId = allSubs.Count(s => string.IsNullOrWhiteSpace(s.EntraObjectId));
-            if (subsWithoutObjectId > 0)
+            // Only employees either currently tagged ADMIN_SUB or in the admin
+            // group are candidates for a SubRole change. The rest are no-ops
+            // (NULL → NULL) and don't need to be touched.
+            var candidates = allActive
+                .Where(e => string.Equals(e.SubRole, "ADMIN_SUB", StringComparison.OrdinalIgnoreCase)
+                         || (!string.IsNullOrWhiteSpace(e.EntraObjectId)
+                             && adminObjectIds.Contains(e.EntraObjectId)))
+                .ToList();
+
+            int candidatesWithoutObjectId = candidates.Count(s => string.IsNullOrWhiteSpace(s.EntraObjectId));
+            if (candidatesWithoutObjectId > 0)
             {
-                result.Warnings.Add($"SubstituteAdmin overlay: {subsWithoutObjectId} active sub(s) have no EntraObjectId and cannot be matched against the admin group. Run main sync first so new subs get linked.");
+                result.Warnings.Add($"SubstituteAdmin overlay: {candidatesWithoutObjectId} admin-pool employee(s) have no EntraObjectId and cannot be matched against the admin group. Run main sync first so new employees get linked.");
             }
 
             int promoted = 0, demoted = 0;
-            foreach (var sub in allSubs)
+            foreach (var sub in candidates)
             {
                 bool isAdmin = !string.IsNullOrWhiteSpace(sub.EntraObjectId)
                             && adminObjectIds.Contains(sub.EntraObjectId);
-                var desired = isAdmin ? "RECEPTION" : null;
+                // "Promote" means SubRole becomes ADMIN_SUB. "Demote" means
+                // SubRole is cleared — NULL for non-Substitute employees
+                // (they have no sub role at all) and NULL is interpreted as
+                // legacy-TEACHER_SUB by the teacher-pool query for Substitute
+                // rows. We could explicitly write TEACHER_SUB on demote to be
+                // less ambiguous but NULL matches existing data shape and
+                // keeps the overlay idempotent on non-sub employees.
+                string? desired = isAdmin ? "ADMIN_SUB" : null;
                 if (!string.Equals(sub.SubRole, desired, StringComparison.OrdinalIgnoreCase))
                 {
                     sub.SubRole = desired;

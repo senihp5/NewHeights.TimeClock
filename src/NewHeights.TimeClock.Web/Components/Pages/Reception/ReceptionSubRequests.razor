@@ -1,0 +1,161 @@
+@page "/reception/sub-requests"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@using System.Security.Claims
+@attribute [Authorize(Policy = "RequireReception")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<ReceptionSubRequests> Logger
+
+<PageTitle>Reception Sub Requests</PageTitle>
+
+<div class="sub-requests-page" style="padding: 1.25rem;">
+    <header style="margin-bottom: 1.5rem;">
+        <h1 style="margin:0;">Reception Sub Requests</h1>
+        <p style="color:#64748b; margin:.35rem 0 0; font-size:.9rem;">
+            Front-desk and admin coverage. Teacher subs are not eligible — these
+            requests draw only from employees flagged with SubRole = ADMIN_SUB.
+            Submit a new request via <a href="/employee/absence-request">Request Time Off</a>
+            and pick "Reception / Front desk coverage" as the sub pool.
+        </p>
+    </header>
+
+    @if (isLoading)
+    {
+        <div>Loading…</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div role="alert" style="background:#fee2e2; border:1px solid #fca5a5; color:#991b1b; padding:.75rem 1rem; border-radius:6px;">
+            @loadError
+        </div>
+    }
+    else if (requests.Count == 0)
+    {
+        <div style="background:#f8fafc; border:1px dashed #cbd5e1; padding:2rem; border-radius:8px; text-align:center; color:#64748b;">
+            <p style="margin:0;">No reception sub requests at the moment.</p>
+        </div>
+    }
+    else
+    {
+        @foreach (var req in requests)
+        {
+            var statusClass = "status-" + req.Status.ToString().ToLower();
+            <div class="request-card @statusClass" style="background:white; border:1px solid #e2e8f0; border-radius:8px; padding:1rem 1.25rem; margin-bottom:1rem; box-shadow:0 1px 2px rgba(0,0,0,.04);">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem; margin-bottom:.75rem;">
+                    <div>
+                        <strong style="font-size:1.05rem;">
+                            @(req.RequestingEmployee?.Staff?.FullName
+                                ?? req.RequestingEmployee?.DisplayName
+                                ?? req.RequestingEmployee?.Email
+                                ?? "—")
+                        </strong>
+                        @if (req.CreatedByEmployeeId.HasValue && req.CreatedByEmployee != null)
+                        {
+                            <span style="display:inline-block; margin-left:8px; padding:2px 10px; background:#eff6ff; color:#0369a1; border:1px solid #93c5fd; border-radius:12px; font-size:0.8rem; font-weight:500;">
+                                Created by @(req.CreatedByEmployee.Staff?.FullName ?? req.CreatedByEmployee.DisplayName ?? req.CreatedByEmployee.Email ?? "Admin")
+                            </span>
+                        }
+                        <div style="margin-top:.25rem; color:#475569; font-size:.9rem;">
+                            @(req.StartDate == req.EndDate
+                                ? req.StartDate.ToString("ddd, MMM d, yyyy")
+                                : $"{req.StartDate:ddd MMM d} – {req.EndDate:ddd MMM d, yyyy}")
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:.5rem; flex-wrap:wrap;">
+                        <span style="background:#0369a1; color:white; padding:2px 10px; border-radius:12px; font-size:.8rem; font-weight:500;">RECEPTION</span>
+                        <span style="background:#475569; color:white; padding:2px 10px; border-radius:12px; font-size:.8rem; font-weight:500;">@req.Status</span>
+                        @if (!string.IsNullOrWhiteSpace(req.Campus?.CampusName))
+                        {
+                            <span style="background:#0f766e; color:white; padding:2px 10px; border-radius:12px; font-size:.8rem; font-weight:500;">@req.Campus.CampusName</span>
+                        }
+                    </div>
+                </div>
+
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:.5rem; margin-bottom:.5rem; font-size:.9rem;">
+                    <div><strong>Absence:</strong> @req.AbsenceType</div>
+                    <div><strong>Periods:</strong> @(string.IsNullOrWhiteSpace(req.PeriodsNeeded) ? "—" : req.PeriodsNeeded)</div>
+                    <div><strong>Session:</strong> @(string.IsNullOrWhiteSpace(req.SessionType) ? "DAY" : req.SessionType)</div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(req.AbsenceReason))
+                {
+                    <div style="margin-bottom:.5rem;"><strong>Reason:</strong> @req.AbsenceReason</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(req.SpecialInstructions))
+                {
+                    <div style="margin-bottom:.5rem;"><strong>Instructions:</strong> @req.SpecialInstructions</div>
+                }
+
+                @if (req.AssignedSubEmployeeId.HasValue)
+                {
+                    <div style="background:#dcfce7; border-left:4px solid #16a34a; padding:.5rem .75rem; border-radius:4px; margin-top:.5rem; color:#166534;">
+                        Assigned: <strong>@(req.AssignedSubEmployee?.Staff?.FullName ?? req.AssignedSubEmployee?.DisplayName ?? "—")</strong>
+                    </div>
+                }
+
+                @* Outreach panel — same component as the supervisor page; the
+                   candidate filter inside SubOutreachPanel is RequestType-aware
+                   so this only shows reception subs. *@
+                @if (req.Status == SubRequestStatus.AwaitingSub
+                  || req.Status == SubRequestStatus.AbsenceApproved
+                  || req.Status == SubRequestStatus.SubAssigned)
+                {
+                    <div style="margin-top:.75rem;">
+                        <SubOutreachPanel Request="req" />
+                    </div>
+                }
+            </div>
+        }
+    }
+</div>
+
+@code {
+    private List<TcSubRequest> requests = new();
+    private bool isLoading = true;
+    private string loadError = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        loadError = "";
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            requests = await context.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
+                .Include(r => r.Campus)
+                .Include(r => r.CreatedByEmployee).ThenInclude(e => e!.Staff)
+                .Where(r => r.RequestType == "RECEPTION"
+                         && r.Status != SubRequestStatus.Denied
+                         && r.Status != SubRequestStatus.Cancelled)
+                .OrderByDescending(r => r.StartDate)
+                .ThenByDescending(r => r.SubRequestId)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading reception sub requests");
+            loadError = "Could not load reception sub requests.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+}

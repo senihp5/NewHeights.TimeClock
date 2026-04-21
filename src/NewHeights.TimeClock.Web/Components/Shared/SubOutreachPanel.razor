@@ -294,28 +294,51 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
 
-            // Candidates: active substitutes at the request's campus, filtered
-            // by SubRole/RequestType per Phase D4B strict isolation. A
-            // RequestType=RECEPTION absence only matches subs with
-            // SubRole=RECEPTION; any other request (TEACHER or NULL legacy)
-            // matches subs with SubRole=TEACHER or NULL (legacy default).
+            // Candidates: filter by RequestType per Phase D4B strict isolation.
+            // Post-D5 followup (migration 047): SubRole values are now
+            // ADMIN_SUB / TEACHER_SUB (NULL still legacy-TEACHER_SUB for
+            // Substitute rows). The RequestType values on TcSubRequest stay
+            // RECEPTION/TEACHER because they describe the request kind
+            // (reception-desk vs classroom coverage), not the employee role.
+            //
+            // RECEPTION request  → any active employee (any EmployeeType)
+            //                      tagged SubRole='ADMIN_SUB'. Non-Substitute
+            //                      employees are campus-scoped; Substitutes
+            //                      are district-wide.
+            // TEACHER request    → active Substitutes with SubRole NULL or
+            //                      TEACHER_SUB (legacy NULL default),
+            //                      district-wide.
             bool isReceptionRequest = string.Equals(Request.RequestType, "RECEPTION",
                 StringComparison.OrdinalIgnoreCase);
 
-            var subs = await context.TcEmployees
-                .AsNoTracking()
-                .Include(e => e.Staff)
-                .Where(e => e.EmployeeType == EmployeeType.Substitute
-                         && e.IsActive
-                         && !e.ExcludedFromSubPool
-                         && (e.HomeCampusId == Request.CampusId
-                             || e.EmployeeType == EmployeeType.Substitute)
-                         && (isReceptionRequest
-                             ? e.SubRole == "RECEPTION"
-                             : (e.SubRole == null || e.SubRole == "TEACHER")))
-                .OrderBy(e => e.Staff!.LastName)
-                .ThenBy(e => e.Staff!.FirstName)
-                .ToListAsync();
+            List<TcEmployee> subs;
+            if (isReceptionRequest)
+            {
+                subs = await context.TcEmployees
+                    .AsNoTracking()
+                    .Include(e => e.Staff)
+                    .Where(e => e.IsActive
+                             && !e.ExcludedFromSubPool
+                             && e.SubRole == "ADMIN_SUB"
+                             && (e.EmployeeType == EmployeeType.Substitute
+                                 || e.HomeCampusId == Request.CampusId))
+                    .OrderBy(e => e.Staff!.LastName)
+                    .ThenBy(e => e.Staff!.FirstName)
+                    .ToListAsync();
+            }
+            else
+            {
+                subs = await context.TcEmployees
+                    .AsNoTracking()
+                    .Include(e => e.Staff)
+                    .Where(e => e.EmployeeType == EmployeeType.Substitute
+                             && e.IsActive
+                             && !e.ExcludedFromSubPool
+                             && (e.SubRole == null || e.SubRole == "TEACHER_SUB"))
+                    .OrderBy(e => e.Staff!.LastName)
+                    .ThenBy(e => e.Staff!.FirstName)
+                    .ToListAsync();
+            }
 
             // Phase D5: load specialty assignments for the candidate set
             // (admin subs only — TEACHER subs don't carry specialties in this

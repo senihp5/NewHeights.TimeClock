@@ -24,15 +24,14 @@
     <header style="margin-bottom: 1.5rem;">
         <h1 style="margin:0;">Sub Pool Management</h1>
         <p style="color:#64748b; margin:.35rem 0 0; font-size:.9rem;">
-            Exclude individual subs from outreach without removing them from
-            Entra. Manage admin-sub specialties (Admissions, etc.). Specialties
-            display only on RECEPTION subs.
+            Teacher subs and admin subs are managed as separate pools. Admin subs
+            sync from the <code>TimeClock.Substitute.Admin</code> Entra group and
+            are tagged with one or more specialties (Reception, Admin, etc.).
         </p>
         @if (adminGroupConfigured && adminGroupFetchError == null)
         {
             <p style="margin:.4rem 0 0; font-size:.82rem; color:#075985;">
                 SubstituteAdmin Entra group returned <strong>@adminGroupMemberCount</strong> transitive member(s).
-                The &#9989; column marks subs whose EntraObjectId matches. Use <strong>Set RECEPTION</strong> to manually promote.
             </p>
         }
         else if (!adminGroupConfigured)
@@ -40,7 +39,6 @@
             <p style="margin:.4rem 0 0; font-size:.82rem; color:#854d0e;">
                 SubstituteAdmin Entra group is not configured
                 (set <code>GraphSync__EmployeeGroupIds__SubstituteAdmin</code>).
-                You can still use <strong>Set RECEPTION</strong> to manually promote admin subs.
             </p>
         }
         else
@@ -57,13 +55,61 @@
     }
     else
     {
+        @* ── Teacher Subs ─────────────────────────────────────────────── *@
         <section style="margin-bottom:2rem;">
-            <h2 style="margin:0 0 .75rem;">Active Subs (@activeSubs.Count)</h2>
+            <h2 style="margin:0 0 .75rem;">Active Teacher Subs (@activeTeacherSubs.Count)</h2>
             <table style="width:100%; border-collapse:collapse; background:white; border:1px solid #e2e8f0;">
                 <thead style="background:#f8fafc; text-align:left;">
                     <tr>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Name</th>
-                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Role</th>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Email</th>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in activeTeacherSubs)
+                    {
+                        <tr>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
+                                <strong>@(s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {s.EmployeeId}")</strong>
+                            </td>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; color:#475569; font-size:.85rem;">
+                                @(s.Email ?? "—")
+                            </td>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right; white-space:nowrap;">
+                                <button type="button"
+                                        style="margin-right:.4rem; padding:.35rem .6rem; background:#0369a1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
+                                        title="Manually tag this sub as ADMIN_SUB. Normally admin subs should be in the SubstituteAdmin Entra group; this is a manual override."
+                                        @onclick="() => ManualSetAdminSubAsync(s.EmployeeId)">
+                                    Set Admin Sub
+                                </button>
+                                <button type="button"
+                                        style="padding:.35rem .75rem; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
+                                        @onclick="() => OpenExcludeModal(s.EmployeeId)">
+                                    Exclude
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                    @if (activeTeacherSubs.Count == 0)
+                    {
+                        <tr><td colspan="3" style="padding:.75rem; color:#94a3b8;">No active teacher subs.</td></tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+
+        @* ── Admin Subs ───────────────────────────────────────────────── *@
+        <section style="margin-bottom:2rem;">
+            <h2 style="margin:0 0 .4rem;">Active Admin Subs (@activeAdminSubs.Count)</h2>
+            <p style="color:#64748b; font-size:.85rem; margin:0 0 .75rem;">
+                Click <strong>Edit Specialties</strong>, pick one or more from the list,
+                then click <strong>Save</strong>. Tags render as chips in the Specialties column.
+            </p>
+            <table style="width:100%; border-collapse:collapse; background:white; border:1px solid #e2e8f0;">
+                <thead style="background:#f8fafc; text-align:left;">
+                    <tr>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Name</th>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:center;" title="In SubstituteAdmin Entra group?">Admin Group</th>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Email</th>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Specialties</th>
@@ -71,24 +117,13 @@
                     </tr>
                 </thead>
                 <tbody>
-                    @foreach (var s in activeSubs)
+                    @foreach (var s in activeAdminSubs)
                     {
-                        var isAdminSub = string.Equals(s.SubRole, "RECEPTION", StringComparison.OrdinalIgnoreCase);
                         var inAdminGroup = !string.IsNullOrWhiteSpace(s.EntraObjectId)
                                         && adminGroupMemberObjectIds.Contains(s.EntraObjectId);
                         <tr>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
                                 <strong>@(s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {s.EmployeeId}")</strong>
-                            </td>
-                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
-                                @if (isAdminSub)
-                                {
-                                    <span style="display:inline-block; padding:2px 10px; background:#0369a1; color:white; border-radius:12px; font-size:0.78rem; font-weight:500;">RECEPTION</span>
-                                }
-                                else
-                                {
-                                    <span style="display:inline-block; padding:2px 10px; background:#475569; color:white; border-radius:12px; font-size:0.78rem; font-weight:500;">TEACHER</span>
-                                }
                             </td>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:center;">
                                 @if (!adminGroupConfigured)
@@ -105,66 +140,61 @@
                                 }
                                 else
                                 {
-                                    <span style="color:#cbd5e1;" title="Not a member of SubstituteAdmin Entra group">—</span>
+                                    <span style="color:#94a3b8;" title="Not a member of SubstituteAdmin (likely a manual override)">&#10005;</span>
                                 }
                             </td>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; color:#475569; font-size:.85rem;">
                                 @(s.Email ?? "—")
                             </td>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
-                                @if (isAdminSub)
-                                {
+                                @{
                                     var assigned = currentAssignmentsByEmployee.GetValueOrDefault(s.EmployeeId, new());
-                                    @if (assigned.Count == 0)
-                                    {
-                                        <span style="color:#94a3b8; font-size:.85rem;">none</span>
-                                    }
-                                    else
-                                    {
-                                        @foreach (var sid in assigned)
-                                        {
-                                            var name = specialtyCatalog.FirstOrDefault(x => x.SpecialtyId == sid)?.SpecialtyName ?? "?";
-                                            <span style="display:inline-block; margin-right:4px; padding:1px 8px; background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; border-radius:10px; font-size:0.78rem;">@name</span>
-                                        }
-                                    }
+                                }
+                                @if (assigned.Count == 0)
+                                {
+                                    <span style="color:#94a3b8; font-size:.85rem;">none</span>
                                 }
                                 else
                                 {
-                                    <span style="color:#cbd5e1; font-size:.85rem;">n/a</span>
+                                    @foreach (var sid in assigned)
+                                    {
+                                        var name = specialtyCatalog.FirstOrDefault(x => x.SpecialtyId == sid)?.SpecialtyName ?? "?";
+                                        <span style="display:inline-block; margin-right:4px; padding:1px 8px; background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; border-radius:10px; font-size:0.78rem;">@name</span>
+                                    }
                                 }
                             </td>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right; white-space:nowrap;">
-                                @if (isAdminSub)
-                                {
-                                    <button type="button" style="margin-right:.4rem; padding:.35rem .6rem; background:#64748b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
-                                            title="Flip this sub back to TEACHER. The next sync may re-promote them if they remain in the admin group."
-                                            @onclick="() => ManualSetTeacherAsync(s.EmployeeId)">
-                                        Unset RECEPTION
-                                    </button>
-                                    <button type="button" style="margin-right:.4rem; padding:.35rem .75rem; background:#1e40af; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
-                                            @onclick="() => OpenSpecialtyEditor(s.EmployeeId)">
-                                        Edit Specialties
-                                    </button>
-                                }
-                                else
-                                {
-                                    <button type="button" style="margin-right:.4rem; padding:.35rem .6rem; background:#0369a1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
-                                            title="Manually flip this sub to RECEPTION without waiting for the Entra overlay. The next sync will keep them RECEPTION if they are in the SubstituteAdmin group."
-                                            @onclick="() => ManualSetReceptionAsync(s.EmployeeId)">
-                                        Set RECEPTION
-                                    </button>
-                                }
-                                <button type="button" style="padding:.35rem .75rem; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
+                                <button type="button"
+                                        style="margin-right:.4rem; padding:.35rem .75rem; background:#1e40af; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
+                                        @onclick="() => OpenSpecialtyEditor(s.EmployeeId)">
+                                    Edit Specialties
+                                </button>
+                                <button type="button"
+                                        style="margin-right:.4rem; padding:.35rem .6rem; background:#64748b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
+                                        title="Clear the ADMIN_SUB tag. The next sync may re-apply it if this employee remains in the admin Entra group."
+                                        @onclick="() => ManualUnsetAdminSubAsync(s.EmployeeId)">
+                                    Unset Admin Sub
+                                </button>
+                                <button type="button"
+                                        style="padding:.35rem .75rem; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
                                         @onclick="() => OpenExcludeModal(s.EmployeeId)">
                                     Exclude
                                 </button>
                             </td>
                         </tr>
                     }
+                    @if (activeAdminSubs.Count == 0)
+                    {
+                        <tr><td colspan="5" style="padding:.75rem; color:#94a3b8;">
+                            No active admin subs. To add one: place the person in the
+                            <code>TimeClock.Substitute.Admin</code> Entra group and run Employee Sync.
+                        </td></tr>
+                    }
                 </tbody>
             </table>
         </section>
 
+        @* ── Excluded Subs ────────────────────────────────────────────── *@
         @if (excludedSubs.Count > 0)
         {
             <section style="margin-bottom:2rem;">
@@ -176,6 +206,7 @@
                     <thead style="background:#fee2e2; text-align:left;">
                         <tr>
                             <th style="padding:.5rem .75rem;">Name</th>
+                            <th style="padding:.5rem .75rem;">Pool</th>
                             <th style="padding:.5rem .75rem;">Excluded By</th>
                             <th style="padding:.5rem .75rem;">When</th>
                             <th style="padding:.5rem .75rem;">Reason</th>
@@ -185,8 +216,10 @@
                     <tbody>
                         @foreach (var s in excludedSubs)
                         {
+                            var wasAdmin = string.Equals(s.SubRole, "ADMIN_SUB", StringComparison.OrdinalIgnoreCase);
                             <tr>
                                 <td style="padding:.5rem .75rem;"><strong>@(s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? "—")</strong></td>
+                                <td style="padding:.5rem .75rem; font-size:.85rem;">@(wasAdmin ? "Admin" : "Teacher")</td>
                                 <td style="padding:.5rem .75rem; font-size:.85rem;">@(s.ExcludedFromSubPoolBy ?? "—")</td>
                                 <td style="padding:.5rem .75rem; font-size:.85rem;">@(s.ExcludedFromSubPoolDate?.ToString("MMM d, yyyy h:mm tt") ?? "—")</td>
                                 <td style="padding:.5rem .75rem; font-size:.85rem;">@(s.ExcludedFromSubPoolReason ?? "—")</td>
@@ -230,19 +263,26 @@
     <div style="position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000;" @onclick="CloseSpecialtyEditor">
         <div style="background:white; padding:1.5rem; border-radius:8px; max-width:500px; width:90%;" @onclick:stopPropagation>
             <h3 style="margin-top:0;">Specialties — @specialtyTargetName</h3>
-            <p style="color:#475569;">Toggle which specialties this admin sub is qualified for.</p>
-            @foreach (var sp in specialtyCatalog.Where(s => s.IsActive).OrderBy(s => s.SortOrder).ThenBy(s => s.SpecialtyName))
+            <p style="color:#475569;">Pick one or more specialties. Save commits the selection.</p>
+            @if (specialtyCatalog.Where(s => s.IsActive).Any())
             {
-                <label style="display:block; padding:.4rem 0;">
-                    <input type="checkbox"
-                           checked="@workingSpecialtyIds.Contains(sp.SpecialtyId)"
-                           @onchange="(e) => ToggleSpecialty(sp.SpecialtyId, (bool?)e.Value == true)" />
-                    <strong>@sp.SpecialtyName</strong>
-                    @if (!string.IsNullOrWhiteSpace(sp.Description))
-                    {
-                        <span style="color:#64748b; font-size:.85rem;"> — @sp.Description</span>
-                    }
-                </label>
+                @foreach (var sp in specialtyCatalog.Where(s => s.IsActive).OrderBy(s => s.SortOrder).ThenBy(s => s.SpecialtyName))
+                {
+                    <label style="display:block; padding:.4rem 0;">
+                        <input type="checkbox"
+                               checked="@workingSpecialtyIds.Contains(sp.SpecialtyId)"
+                               @onchange="(e) => ToggleSpecialty(sp.SpecialtyId, (bool?)e.Value == true)" />
+                        <strong>@sp.SpecialtyName</strong>
+                        @if (!string.IsNullOrWhiteSpace(sp.Description))
+                        {
+                            <span style="color:#64748b; font-size:.85rem;"> — @sp.Description</span>
+                        }
+                    </label>
+                }
+            }
+            else
+            {
+                <p style="color:#b45309;">No active specialties in the catalog. Run migration 046 to seed Reception + Admin.</p>
             }
             <div style="margin-top:1rem; display:flex; justify-content:flex-end; gap:.5rem;">
                 <button type="button" style="padding:.5rem 1rem; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;" @onclick="CloseSpecialtyEditor">Cancel</button>
@@ -256,17 +296,21 @@
     private bool isLoading = true;
     private string currentUserEmail = "";
 
-    private List<TcEmployee> activeSubs = new();
+    // Split pools — SubRole='ADMIN_SUB' lands in activeAdminSubs; everything
+    // else (NULL / TEACHER_SUB) lands in activeTeacherSubs. Both tables render
+    // independently so teacher and admin pools can be managed side by side
+    // without cross-contamination (e.g. specialty chips only make sense on
+    // the admin pool and the admin-group diagnostic column is noise on the
+    // teacher table).
+    private List<TcEmployee> activeTeacherSubs = new();
+    private List<TcEmployee> activeAdminSubs = new();
     private List<TcEmployee> excludedSubs = new();
     private List<TcSubSpecialty> specialtyCatalog = new();
     private Dictionary<int, HashSet<int>> currentAssignmentsByEmployee = new();
 
-    // D5 followup: SubstituteAdmin Entra group membership, fetched once on load.
-    // adminGroupConfigured  — config key present (env var bound)
-    // adminGroupMemberObjectIds — ObjectIds of transitive members; empty set when
-    //                             the group returned 0 or the fetch failed
-    // adminGroupMemberCount — shown in the header info line
-    // adminGroupFetchError  — non-null when Graph threw; surfaces the message
+    // SubstituteAdmin Entra group membership, fetched once on load. See
+    // RefreshAdminGroupMembersAsync. Used to render the Admin Group column
+    // on the admin table.
     private bool adminGroupConfigured = false;
     private HashSet<string> adminGroupMemberObjectIds = new(StringComparer.OrdinalIgnoreCase);
     private int adminGroupMemberCount = 0;
@@ -284,6 +328,14 @@
     private string specialtyTargetName = "";
     private HashSet<int> workingSpecialtyIds = new();
 
+    /// <summary>
+    /// Combined view used by modal openers (OpenExcludeModal /
+    /// OpenSpecialtyEditor) that take an EmployeeId and must find it
+    /// regardless of whether the sub is currently rendered in the teacher
+    /// or admin table.
+    /// </summary>
+    private IEnumerable<TcEmployee> AllActiveSubs => activeTeacherSubs.Concat(activeAdminSubs);
+
     protected override async Task OnInitializedAsync()
     {
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
@@ -300,23 +352,45 @@
         {
             using var ctx = await DbFactory.CreateDbContextAsync();
 
-            var allSubs = await ctx.TcEmployees
+            // Teacher pool: EmployeeType=Substitute without ADMIN_SUB tag.
+            // These are the traditional sub pool members synced from the main
+            // Substitute Entra group. NULL SubRole counts as teacher pool
+            // (legacy default for Substitute-typed employees).
+            var teacherPool = await ctx.TcEmployees
                 .AsNoTracking()
                 .Include(e => e.Staff)
-                .Where(e => e.EmployeeType == EmployeeType.Substitute && e.IsActive)
+                .Where(e => e.EmployeeType == EmployeeType.Substitute
+                         && e.IsActive
+                         && (e.SubRole == null || e.SubRole != "ADMIN_SUB"))
                 .OrderBy(e => e.Staff!.LastName)
                 .ThenBy(e => e.Staff!.FirstName)
                 .ToListAsync();
 
-            activeSubs   = allSubs.Where(s => !s.ExcludedFromSubPool).ToList();
-            excludedSubs = allSubs.Where(s =>  s.ExcludedFromSubPool).ToList();
+            // Admin pool: anyone (any EmployeeType) tagged SubRole='ADMIN_SUB'.
+            // This captures Substitutes who are also in the admin group AND
+            // non-Substitutes (HourlyPartTime receptionists, SalariedStaff
+            // admins, etc.) who are willing to cover admin-sub shifts.
+            var adminPool = await ctx.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .Where(e => e.IsActive && e.SubRole == "ADMIN_SUB")
+                .OrderBy(e => e.Staff!.LastName)
+                .ThenBy(e => e.Staff!.FirstName)
+                .ToListAsync();
+
+            activeTeacherSubs = teacherPool.Where(s => !s.ExcludedFromSubPool).ToList();
+            activeAdminSubs   = adminPool.Where(s => !s.ExcludedFromSubPool).ToList();
+            excludedSubs      = teacherPool.Concat(adminPool).Where(s => s.ExcludedFromSubPool).ToList();
 
             specialtyCatalog = await ctx.TcSubSpecialties
                 .AsNoTracking()
                 .OrderBy(s => s.SortOrder).ThenBy(s => s.SpecialtyName)
                 .ToListAsync();
 
-            var subIds = allSubs.Select(s => s.EmployeeId).ToList();
+            // Specialties UI only renders on admin-pool rows; but we fetch
+            // for both pools in case a teacher sub has stale assignments —
+            // they'll just be hidden by the UI's isAdminSub guard.
+            var subIds = teacherPool.Concat(adminPool).Select(s => s.EmployeeId).ToList();
             currentAssignmentsByEmployee = (await ctx.TcSubSpecialtyAssignments
                 .AsNoTracking()
                 .Where(a => subIds.Contains(a.EmployeeId))
@@ -334,9 +408,9 @@
 
     /// <summary>
     /// Fetches transitive members of the SubstituteAdmin Entra group once per
-    /// page load so the table can show which rows are in the group. Swallows
-    /// exceptions into <c>adminGroupFetchError</c> so Graph outages don't
-    /// break the whole page — the manual Set/Unset RECEPTION buttons still
+    /// page load so the Admin Subs table can show which rows are in the group.
+    /// Swallows exceptions into <c>adminGroupFetchError</c> so Graph outages
+    /// don't break the whole page — manual Set/Unset Admin Sub buttons still
     /// work without the column.
     /// </summary>
     private async Task RefreshAdminGroupMembersAsync()
@@ -374,7 +448,7 @@
 
     private void OpenExcludeModal(int employeeId)
     {
-        var s = activeSubs.FirstOrDefault(x => x.EmployeeId == employeeId);
+        var s = AllActiveSubs.FirstOrDefault(x => x.EmployeeId == employeeId);
         if (s == null) return;
         excludeTargetEmployeeId = employeeId;
         excludeTargetName = s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {employeeId}";
@@ -481,13 +555,15 @@
     // Note: the next sync WILL re-assert whatever Entra says. A manual
     // flip isn't sticky across syncs unless the Entra group is also updated.
 
-    private async Task ManualSetReceptionAsync(int employeeId)
+    private async Task ManualSetAdminSubAsync(int employeeId)
     {
-        await SetRoleCoreAsync(employeeId, newRole: "RECEPTION");
+        await SetRoleCoreAsync(employeeId, newRole: "ADMIN_SUB");
     }
 
-    private async Task ManualSetTeacherAsync(int employeeId)
+    private async Task ManualUnsetAdminSubAsync(int employeeId)
     {
+        // Clears the ADMIN_SUB tag. NULL is interpreted as legacy-TEACHER_SUB
+        // for Substitute-typed employees and "not a sub at all" for non-subs.
         await SetRoleCoreAsync(employeeId, newRole: null);
     }
 
@@ -509,12 +585,12 @@
             await ctx.SaveChangesAsync();
 
             var name = sub.Staff?.FullName ?? sub.DisplayName ?? sub.Email ?? $"Employee {employeeId}";
-            var actionCode = newRole == "RECEPTION"
+            var actionCode = newRole == "ADMIN_SUB"
                 ? AuditActions.SubPool.RoleManualSet
                 : AuditActions.SubPool.RoleManualUnset;
-            var summary = newRole == "RECEPTION"
-                ? $"Manually set {name} SubRole to RECEPTION (was {oldRole ?? "NULL"}) by {currentUserEmail}"
-                : $"Manually unset {name} SubRole to TEACHER (was {oldRole ?? "NULL"}) by {currentUserEmail}";
+            var summary = newRole == "ADMIN_SUB"
+                ? $"Manually set {name} SubRole to ADMIN_SUB (was {oldRole ?? "NULL"}) by {currentUserEmail}"
+                : $"Manually cleared {name} ADMIN_SUB tag (was {oldRole ?? "NULL"}) by {currentUserEmail}";
 
             await Audit.LogActionAsync(
                 actionCode: actionCode,
@@ -540,7 +616,7 @@
 
     private void OpenSpecialtyEditor(int employeeId)
     {
-        var s = activeSubs.FirstOrDefault(x => x.EmployeeId == employeeId);
+        var s = AllActiveSubs.FirstOrDefault(x => x.EmployeeId == employeeId);
         if (s == null) return;
         specialtyTargetEmployeeId = employeeId;
         specialtyTargetName = s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {employeeId}";
