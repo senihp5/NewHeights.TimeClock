@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
@@ -69,7 +70,8 @@ public class GeofenceService : IGeofenceService
                     Latitude = c.Latitude,
                     Longitude = c.Longitude,
                     GeofenceRadiusMeters = c.GeofenceRadiusMeters,
-                    CampusWifiSSID = c.CampusWifiSSID
+                    CampusWifiSSID = c.CampusWifiSSID,
+                    GeofencePolygon = c.GeofencePolygon
                 })
                 .ToListAsync();
 
@@ -134,18 +136,138 @@ public class GeofenceService : IGeofenceService
 
     private GeofenceResult ValidateAgainstCampus(Campus campus, double latitude, double longitude)
     {
-        var distance = CalculateDistanceMeters(latitude, longitude, (double)campus.Latitude!.Value, (double)campus.Longitude!.Value);
-        var isWithinRadius = distance <= campus.GeofenceRadiusMeters;
+        // Distance to the campus center is always computed — used in the user-
+        // facing message even when the polygon is the authoritative check.
+        var distance = CalculateDistanceMeters(
+            latitude, longitude,
+            (double)campus.Latitude!.Value,
+            (double)campus.Longitude!.Value);
+
+        // Polygon takes precedence when present. Falls back to the circular
+        // radius check when the polygon is missing or malformed.
+        var polygon = ParsePolygonVertices(campus.GeofencePolygon);
+        bool isValid;
+        string method;
+        if (polygon != null && polygon.Count >= 3)
+        {
+            isValid = IsPointInPolygon(latitude, longitude, polygon);
+            method = "polygon";
+        }
+        else
+        {
+            if (!string.IsNullOrWhiteSpace(campus.GeofencePolygon))
+            {
+                _logger.LogWarning(
+                    "Geofence: campus {Code} has GeofencePolygon but it's malformed or has <3 vertices \u2014 falling back to radius.",
+                    campus.CampusCode);
+            }
+            isValid = distance <= campus.GeofenceRadiusMeters;
+            method = "radius";
+        }
 
         return new GeofenceResult
         {
-            IsValid = isWithinRadius,
-            Status = isWithinRadius ? GeofenceStatus.Verified : GeofenceStatus.OutOfRange,
+            IsValid = isValid,
+            Status = isValid ? GeofenceStatus.Verified : GeofenceStatus.OutOfRange,
             DistanceMeters = distance,
             CampusId = campus.CampusId,
             CampusName = campus.CampusName,
-            Message = isWithinRadius ? $"Within {campus.CampusName}" : $"Too far from {campus.CampusName} ({distance:F0}m away)"
+            Message = isValid
+                ? $"Within {campus.CampusName} ({method})"
+                : $"Outside {campus.CampusName} \u2014 {distance:F0}m from center ({method})"
         };
+    }
+
+    /// <summary>
+    /// Parses GeoJSON into a list of (Lat, Lon) vertices for the outer ring.
+    /// Accepts three common shapes emitted by geojson.io and similar tools:
+    ///   1. Raw Polygon object:  {"type":"Polygon","coordinates":[[[lon,lat],...]]}
+    ///   2. Feature wrapper:     {"type":"Feature","geometry":{...polygon...}}
+    ///   3. FeatureCollection:   {"type":"FeatureCollection","features":[...]}
+    /// Returns null on parse failure or missing ring. GeoJSON uses
+    /// [longitude, latitude] order — we flip to (Lat, Lon) for consistency
+    /// with the rest of the codebase.
+    /// </summary>
+    private List<(double Lat, double Lon)>? ParsePolygonVertices(string? geoJson)
+    {
+        if (string.IsNullOrWhiteSpace(geoJson)) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(geoJson);
+            var root = doc.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (!root.TryGetProperty("type", out var typeElem)) return null;
+
+            var type = typeElem.GetString();
+            JsonElement polygon;
+
+            if (string.Equals(type, "FeatureCollection", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!root.TryGetProperty("features", out var features)
+                 || features.ValueKind != JsonValueKind.Array
+                 || features.GetArrayLength() == 0)
+                    return null;
+                if (!features[0].TryGetProperty("geometry", out polygon)) return null;
+            }
+            else if (string.Equals(type, "Feature", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!root.TryGetProperty("geometry", out polygon)) return null;
+            }
+            else
+            {
+                polygon = root;
+            }
+
+            if (!polygon.TryGetProperty("coordinates", out var coords)
+             || coords.ValueKind != JsonValueKind.Array
+             || coords.GetArrayLength() == 0)
+                return null;
+
+            // First ring is the outer boundary; holes (additional rings) ignored.
+            var ring = coords[0];
+            if (ring.ValueKind != JsonValueKind.Array) return null;
+
+            var result = new List<(double Lat, double Lon)>(ring.GetArrayLength());
+            foreach (var pt in ring.EnumerateArray())
+            {
+                if (pt.ValueKind != JsonValueKind.Array || pt.GetArrayLength() < 2) continue;
+                // GeoJSON: [longitude, latitude]
+                var lon = pt[0].GetDouble();
+                var lat = pt[1].GetDouble();
+                result.Add((lat, lon));
+            }
+            return result.Count >= 3 ? result : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Geofence: failed to parse GeofencePolygon GeoJSON.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Ray-casting point-in-polygon. Treats lat/lon as planar coordinates —
+    /// accurate at the scale of a school campus (&lt;1km). For larger polygons
+    /// a spherical calculation would be needed.
+    /// </summary>
+    private static bool IsPointInPolygon(double testLat, double testLon, List<(double Lat, double Lon)> ring)
+    {
+        var inside = false;
+        for (int i = 0, j = ring.Count - 1; i < ring.Count; j = i++)
+        {
+            var (lat_i, lon_i) = ring[i];
+            var (lat_j, lon_j) = ring[j];
+
+            var latCrosses = (lat_i > testLat) != (lat_j > testLat);
+            if (!latCrosses) continue;
+
+            // Longitude of the edge at the test point's latitude.
+            var lonAtTestLat = lon_i + (testLat - lat_i) * (lon_j - lon_i) / (lat_j - lat_i);
+            if (testLon < lonAtTestLat) inside = !inside;
+        }
+        return inside;
     }
 
     public double CalculateDistanceMeters(double lat1, double lon1, double lat2, double lon2)
