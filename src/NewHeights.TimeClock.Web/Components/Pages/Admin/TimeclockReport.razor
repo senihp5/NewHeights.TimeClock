@@ -244,25 +244,25 @@
     private List<EmployeeReportSummary> employeeSummaries = new();
     private HashSet<int> expandedEmployees = new();
     
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
-        currentPayPeriod = PayPeriodService.GetPayPeriodForDate(DateTime.Today);
+        currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(DateTime.Today);
     }
-    
-    private void PrevPeriod()
+
+    private async Task PrevPeriod()
     {
         periodOffset--;
         var anchor = DateTime.Today.AddDays(periodOffset * 15);
-        currentPayPeriod = PayPeriodService.GetPayPeriodForDate(anchor);
+        currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchor);
     }
-    
-    private void NextPeriod()
+
+    private async Task NextPeriod()
     {
         if (periodOffset < 0)
         {
             periodOffset++;
             var anchor = DateTime.Today.AddDays(periodOffset * 15);
-            currentPayPeriod = PayPeriodService.GetPayPeriodForDate(anchor);
+            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchor);
         }
     }
     

@@ -668,7 +668,7 @@
         currentUserEmail = user.FindFirst("preferred_username")?.Value ??
                            user.FindFirst(ClaimTypes.Email)?.Value ?? "";
 
-        currentPayPeriod = PayPeriodService.GetCurrentPayPeriod();
+        currentPayPeriod = await PayPeriodService.GetCurrentPayPeriodAsync();
         await LoadEmployeeAndTimesheet();
     }
 

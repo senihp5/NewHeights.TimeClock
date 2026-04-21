@@ -184,7 +184,7 @@
         isLoading = true;
         try
         {
-            currentPayPeriod = PayPeriodService.GetPayPeriodForDate(DateTime.Today.AddDays(periodOffset * 15));
+            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(DateTime.Today.AddDays(periodOffset * 15));
             payrollSummaries = await TimesheetService.GetPayrollSummariesAsync(currentPayPeriod.StartDate, currentPayPeriod.EndDate);
 
             using var context = await DbFactory.CreateDbContextAsync();

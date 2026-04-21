@@ -201,7 +201,7 @@
         isLoading = true;
         try
         {
-            currentPayPeriod = PayPeriodService.GetPayPeriodForDate(periodAnchorDate);
+            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
             
             if (currentSupervisorId > 0)
             {

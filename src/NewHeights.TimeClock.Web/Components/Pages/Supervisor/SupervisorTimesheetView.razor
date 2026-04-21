@@ -653,7 +653,7 @@
 
     private async Task LoadTimesheet()
     {
-        currentPayPeriod = PayPeriodService.GetPayPeriodForDate(periodAnchorDate);
+        currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
 
         payPeriodTimesheet = await TimesheetService.GetPayPeriodTimesheetAsync(
             EmployeeId,
