@@ -18,6 +18,14 @@
 
 <div class="outreach-panel">
 
+    @if (Request?.IsEmergency == true)
+    {
+        <div style="background:#dc2626; color:white; padding:.65rem .9rem; border-radius:6px; margin:0 0 .9rem; font-weight:600; font-size:.95rem; display:flex; align-items:center; gap:.5rem;">
+            <span style="font-size:1.1rem;">&#9888;&#65039;</span>
+            <span>URGENT — Emergency Fill. Outreach will broadcast to every selected sub at once; tokens expire in 30 minutes.</span>
+        </div>
+    }
+
     @if (isLoading)
     {
         <div class="panel-loading">Loading candidates…</div>
@@ -216,6 +224,50 @@
             }
         </div>
 
+        @if (assignments.Count > 0)
+        {
+            <div class="panel-section">
+                <div class="section-title">
+                    Current Assignments
+                    @if (!string.IsNullOrEmpty(assignmentsCoverageSummary))
+                    {
+                        <span style="margin-left:.5rem; font-size:.85rem; font-weight:400; color:#475569;">— @assignmentsCoverageSummary</span>
+                    }
+                </div>
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Sub</th>
+                            <th>Periods</th>
+                            <th>Accepted</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var a in assignments)
+                        {
+                            <tr>
+                                <td>@(a.SubEmployee?.Staff?.FullName ?? a.SubEmployee?.DisplayName ?? a.SubEmployee?.Email ?? $"Employee {a.SubEmployeeId}")</td>
+                                <td>
+                                    @if (string.IsNullOrWhiteSpace(a.PeriodsCovered))
+                                    {
+                                        <em style="color:#64748b;">whole request</em>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var p in a.PeriodsCovered.Split(','))
+                                        {
+                                            <span style="display:inline-block; margin-right:3px; padding:1px 7px; background:#dcfce7; color:#166534; border:1px solid #86efac; border-radius:9px; font-size:.78rem;">@p.Trim()</span>
+                                        }
+                                    }
+                                </td>
+                                <td>@a.AcceptedAt.ToString("MMM d h:mm tt")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
         @if (history.Count > 0)
         {
             <div class="panel-section">
@@ -263,6 +315,9 @@
     // Phase D5: specialty tag display per candidate (admin subs only carry these).
     private Dictionary<int, List<string>> specialtyByEmployeeId = new();
     private List<TcSubOutreach> history = new();
+    // Phase A: partial-acceptance assignments for this request.
+    private List<TcSubRequestAssignment> assignments = new();
+    private string assignmentsCoverageSummary = "";
     private OutreachMode mode = OutreachMode.Manual;
     private int? manualSelectedId = null;
     private List<int> cascadeOrderedIds = new();
@@ -397,6 +452,32 @@
                 .ToList();
 
             history = await OutreachService.GetOutreachForRequestAsync(Request.SubRequestId);
+
+            // Phase A: load partial-acceptance assignments so the supervisor
+            // can see who owns which periods and what's still uncovered.
+            assignments = await context.TcSubRequestAssignments
+                .AsNoTracking()
+                .Include(a => a.SubEmployee).ThenInclude(e => e!.Staff)
+                .Where(a => a.SubRequestId == Request.SubRequestId)
+                .OrderBy(a => a.AcceptedAt)
+                .ToListAsync();
+
+            // Coverage summary string for the section header.
+            var needed = ParsePeriodsLocal(Request.PeriodsNeeded);
+            var covered = assignments
+                .SelectMany(a => ParsePeriodsLocal(a.PeriodsCovered))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var remaining = needed.Except(covered, StringComparer.OrdinalIgnoreCase).ToList();
+            if (needed.Count > 0)
+            {
+                assignmentsCoverageSummary = remaining.Count == 0
+                    ? $"Fully covered ({needed.Count}/{needed.Count} periods)"
+                    : $"Partial — remaining: {string.Join(", ", remaining.OrderBy(p => p))}";
+            }
+            else
+            {
+                assignmentsCoverageSummary = assignments.Count > 0 ? "Assigned" : "";
+            }
         }
         catch (Exception ex)
         {
@@ -500,6 +581,21 @@
         {
             isSending = false;
         }
+    }
+
+    // Phase A: parse PeriodsNeeded / PeriodsCovered CSV to a case-insensitive
+    // HashSet. Matches SubOutreachService.ParsePeriodSet semantics so UI and
+    // service agree on coverage math.
+    private static HashSet<string> ParsePeriodsLocal(string? csv)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(csv)) return result;
+        foreach (var raw in csv.Split(','))
+        {
+            var p = raw.Trim().ToUpperInvariant();
+            if (p.Length > 0) result.Add(p);
+        }
+        return result;
     }
 
     // Phase 9b: periods 1..DaySessionLastPeriod are DAY session; higher numbers

@@ -17,15 +17,19 @@
 @inject NavigationManager Navigation
 @inject ILogger<AbsenceRequest> Logger
 
-<PageTitle>Request Time Off - @AppConstants.Branding.ShortName</PageTitle>
+<PageTitle>Substitute Request - @AppConstants.Branding.ShortName</PageTitle>
 
 <div class="absence-request-page">
 
     <header class="absence-request-header">
-        <h1>Request Time Off</h1>
+        <h1>Substitute Request</h1>
         <p class="header-subtitle">
-            Submit an absence request, then go to <a href="/employee/my-sub-requests">My Sub Requests</a>
-            to find a substitute. Your request goes to the campus admin for final approval after a sub accepts.
+            Submit a request for substitute coverage, then go to <a href="/employee/my-sub-requests">My Sub Requests</a>
+            to invite a sub. Once a sub accepts, the request goes to the campus admin for final approval.
+        </p>
+        <p class="header-note">
+            <strong>Note:</strong> this form <em>does not</em> submit a time-off request to HR.
+            PTO / sick / personal leave is tracked in Ascender — submit your leave there separately.
         </p>
     </header>
 
@@ -34,7 +38,14 @@
         <div class="success-panel" role="status">
             <h2>Request Created</h2>
             <p>
-                Your request (#@submittedRequestId) for
+                @if (!string.IsNullOrEmpty(SelectedTeacherName()))
+                {
+                    <span>Request (#@submittedRequestId) for <strong>@SelectedTeacherName()</strong> on </span>
+                }
+                else
+                {
+                    <span>Your request (#@submittedRequestId) for </span>
+                }
                 <strong>@form.StartDate.ToString("MMM d")@(form.StartDate != form.EndDate ? $" – {form.EndDate:MMM d, yyyy}" : $", {form.StartDate.Year}")</strong>
                 is awaiting a substitute.
             </p>
@@ -75,6 +86,68 @@
         else
         {
             <form class="absence-form" @onsubmit="SubmitAsync" @onsubmit:preventDefault="true">
+
+                @if (canSubmitOnBehalf && teacherOptions.Count > 0)
+                {
+                    <div class="form-row onbehalf-row">
+                        <label for="on-behalf-of"><strong>Submitting on behalf of</strong></label>
+                        <select id="on-behalf-of" @bind="onBehalfOfEmployeeId" @bind:after="OnOnBehalfOfChanged">
+                            <option value="">— Myself (@employeeName) —</option>
+                            @foreach (var t in teacherOptions)
+                            {
+                                <option value="@t.EmployeeId">@t.DisplayName (@t.CampusCode)</option>
+                            }
+                        </select>
+                        @if (onBehalfOfEmployeeId.HasValue)
+                        {
+                            <p class="form-hint">
+                                You are submitting this request on behalf of <strong>@SelectedTeacherName()</strong>.
+                                The request will be tagged "Created by @currentUserName for @SelectedTeacherName()" in the supervisor list.
+                            </p>
+                        }
+                    </div>
+                }
+
+                @if (canSubmitOnBehalf || isReceptionRoleUser)
+                {
+                    <div class="form-row">
+                        <label for="request-type">Sub Pool</label>
+                        <select id="request-type" @bind="form.RequestType">
+                            <option value="TEACHER">Teacher / Classroom coverage</option>
+                            <option value="RECEPTION">Reception / Front desk coverage</option>
+                        </select>
+                        <p class="form-hint">
+                            Determines which sub pool the request draws from. Reception
+                            requests never show teacher subs and vice versa.
+                        </p>
+                    </div>
+                }
+
+                @if (canSubmitOnBehalf)
+                {
+                    @* Phase A ext: Emergency Fill is supervisor-gated per design
+                       decision. canSubmitOnBehalf covers Supervisor variants +
+                       Admin + CampusAdmin — exactly the target set. *@
+                    <div class="form-row emergency-row @(form.IsEmergency ? "emergency-row-active" : "")">
+                        <label class="emergency-check">
+                            <input type="checkbox" @bind="form.IsEmergency" />
+                            <span class="emergency-label">
+                                <strong>Emergency Fill</strong> — same-day must-fill position
+                            </span>
+                        </label>
+                        @if (form.IsEmergency)
+                        {
+                            <div class="emergency-callout">
+                                <strong>When submitted, this request will:</strong>
+                                <ul>
+                                    <li>Broadcast to every eligible substitute simultaneously (first to accept wins)</li>
+                                    <li>Use a <strong>30-minute</strong> response window on each emailed link</li>
+                                    <li>Show an URGENT banner on the sub's email and on the outreach panel</li>
+                                </ul>
+                            </div>
+                        }
+                    </div>
+                }
 
                 <div class="form-row">
                     <label for="absence-type">Absence Type</label>
@@ -220,6 +293,7 @@
     private int employeeId;
     private string employeeName = "";
     private string currentUserEmail = "";
+    private string currentUserName = "";
     private int campusId;
     private string campusDisplay = "";
 
@@ -232,12 +306,48 @@
 
     private List<OtherAbsence> otherAbsences = new();
 
+    // Migration 042: supervisor / campus admin can submit on behalf of an
+    // absentee. canSubmitOnBehalf gates the picker UI; teacherOptions is the
+    // list of available targets (active employees at the supervisor's campus,
+    // excluding self and substitutes); onBehalfOfEmployeeId carries the picked
+    // target (null = submitting for self, normal flow).
+    private bool canSubmitOnBehalf = false;
+    private List<TeacherOption> teacherOptions = new();
+    private int? onBehalfOfEmployeeId = null;
+
+    // Phase D4B: reception sub pool. Picker visible when submitter is in
+    // Reception role, Supervisor, or Admin (since they may submit on behalf
+    // of either type). Default chosen in OnInitializedAsync based on role.
+    private bool isReceptionRoleUser = false;
+
     protected override async Task OnInitializedAsync()
     {
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
-        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
-                        ?? authState.User.FindFirst(ClaimTypes.Email)?.Value
+        var user = authState.User;
+        currentUserEmail = user.FindFirst("preferred_username")?.Value
+                        ?? user.FindFirst(ClaimTypes.Email)?.Value
                         ?? "";
+        currentUserName = user.FindFirst("name")?.Value
+                       ?? user.Identity?.Name
+                       ?? currentUserEmail;
+
+        // Mirrors UserContextService.IsSupervisor — any supervisor variant or admin.
+        canSubmitOnBehalf =
+            user.IsInRole(AppConstants.Roles.Supervisor)
+         || user.IsInRole(AppConstants.Roles.SupervisorStopSix)
+         || user.IsInRole(AppConstants.Roles.SupervisorMcCart)
+         || user.IsInRole(AppConstants.Roles.Admin)
+         || user.IsInRole(AppConstants.Roles.CampusAdmin);
+
+        // Phase D4B: detect Reception role so the submitter can pick
+        // RECEPTION as the RequestType for their own absence (or for an
+        // on-behalf submission where the absentee is reception staff).
+        isReceptionRoleUser = user.IsInRole(AppConstants.Roles.Reception);
+
+        // Default the picker to RECEPTION when the submitter themselves
+        // is reception staff submitting for self; supervisor/admin picks
+        // explicitly.
+        form.RequestType = isReceptionRoleUser ? "RECEPTION" : "TEACHER";
 
         await LoadEmployeeAsync();
     }
@@ -270,6 +380,32 @@
             var today = DateOnly.FromDateTime(DateTime.Today);
             form.StartDate = today;
             form.EndDate = today;
+
+            // Load teacher picker options if this user can submit on behalf.
+            // Scope: active non-substitute employees at the same campus, excluding self.
+            if (canSubmitOnBehalf)
+            {
+                teacherOptions = await context.TcEmployees
+                    .AsNoTracking()
+                    .Include(e => e.Staff)
+                    .Include(e => e.HomeCampus)
+                    .Where(e => e.IsActive
+                             && e.EmployeeId != employeeId
+                             && e.EmployeeType != EmployeeType.Substitute
+                             && e.HomeCampusId == campusId)
+                    .OrderBy(e => e.Staff!.LastName)
+                    .ThenBy(e => e.Staff!.FirstName)
+                    .Select(e => new TeacherOption
+                    {
+                        EmployeeId  = e.EmployeeId,
+                        DisplayName = e.Staff != null
+                            ? (e.Staff.FirstName + " " + e.Staff.LastName)
+                            : (e.DisplayName ?? e.Email ?? ("Employee " + e.EmployeeId)),
+                        CampusCode  = e.HomeCampus != null ? e.HomeCampus.CampusCode : "",
+                        HomeCampusId = e.HomeCampusId
+                    })
+                    .ToListAsync();
+            }
 
             await LoadOtherAbsencesAsync();
         }
@@ -390,10 +526,33 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
 
+            // Resolve the absentee + campus. When submitting on behalf of another
+            // employee (supervisor flow), the absentee is the picked teacher and
+            // the campus follows them (not the supervisor). CreatedByEmployeeId
+            // records the supervisor as the actor.
+            int targetEmployeeId = employeeId;
+            int targetCampusId   = campusId;
+            int? createdByForAudit = null;
+
+            if (onBehalfOfEmployeeId.HasValue && canSubmitOnBehalf)
+            {
+                var target = teacherOptions.FirstOrDefault(t => t.EmployeeId == onBehalfOfEmployeeId.Value);
+                if (target == null)
+                {
+                    submitError = "Selected teacher is no longer available. Please refresh.";
+                    isSubmitting = false;
+                    return;
+                }
+                targetEmployeeId = target.EmployeeId;
+                targetCampusId   = target.HomeCampusId;
+                createdByForAudit = employeeId;
+            }
+
             var request = new TcSubRequest
             {
-                RequestingEmployeeId = employeeId,
-                CampusId = campusId,
+                RequestingEmployeeId = targetEmployeeId,
+                CreatedByEmployeeId  = createdByForAudit,
+                CampusId = targetCampusId,
                 StartDate = form.StartDate,
                 EndDate = form.EndDate,
                 AbsenceType = form.AbsenceType,
@@ -402,6 +561,14 @@
                 SessionType = form.SessionType,
                 SubjectArea = string.IsNullOrWhiteSpace(form.SubjectArea) ? null : form.SubjectArea,
                 SpecialInstructions = string.IsNullOrWhiteSpace(form.SpecialInstructions) ? null : form.SpecialInstructions.Trim(),
+                // Phase D4B: scopes the candidate sub pool when SubOutreachPanel
+                // builds its candidate query. NULL is treated as TEACHER.
+                RequestType = string.IsNullOrWhiteSpace(form.RequestType) ? "TEACHER" : form.RequestType,
+                // Phase A ext: Emergency Fill — supervisor-gated. The checkbox
+                // is only rendered when canSubmitOnBehalf (supervisor/admin/
+                // campus-admin), so a form POST from a non-privileged user
+                // will always arrive with IsEmergency=false.
+                IsEmergency = canSubmitOnBehalf && form.IsEmergency,
                 Status = SubRequestStatus.AwaitingSub,
                 CreatedDate = DateTime.Now,
                 ModifiedDate = DateTime.Now
@@ -418,6 +585,7 @@
                 {
                     request.SubRequestId,
                     request.RequestingEmployeeId,
+                    request.CreatedByEmployeeId,
                     request.CampusId,
                     StartDate = request.StartDate.ToString("yyyy-MM-dd"),
                     EndDate = request.EndDate.ToString("yyyy-MM-dd"),
@@ -426,14 +594,20 @@
                     request.PeriodsNeeded,
                     request.SubjectArea,
                     HasSpecialInstructions = !string.IsNullOrWhiteSpace(request.SpecialInstructions),
-                    Status = request.Status.ToString()
+                    Status = request.Status.ToString(),
+                    OnBehalf = request.CreatedByEmployeeId.HasValue
                 },
-                deltaSummary: $"Absence request #{request.SubRequestId} submitted for "
-                            + $"{request.StartDate:MMM d}–{request.EndDate:MMM d} "
-                            + $"({request.AbsenceType}, {request.PeriodsNeeded})",
+                deltaSummary: request.CreatedByEmployeeId.HasValue
+                    ? $"Absence request #{request.SubRequestId} submitted by {currentUserName} "
+                    + $"on behalf of {SelectedTeacherName()} for "
+                    + $"{request.StartDate:MMM d}–{request.EndDate:MMM d} "
+                    + $"({request.AbsenceType}, {request.PeriodsNeeded})"
+                    : $"Absence request #{request.SubRequestId} submitted for "
+                    + $"{request.StartDate:MMM d}–{request.EndDate:MMM d} "
+                    + $"({request.AbsenceType}, {request.PeriodsNeeded})",
                 source: AuditSource.AdminUi,
-                employeeId: employeeId,
-                campusId: campusId);
+                employeeId: targetEmployeeId,
+                campusId: targetCampusId);
 
             submittedRequestId = request.SubRequestId;
         }
@@ -456,10 +630,26 @@
             StartDate = DateOnly.FromDateTime(DateTime.Today),
             EndDate = DateOnly.FromDateTime(DateTime.Today),
             SessionType = "DAY",
-            AbsenceType = AbsenceType.PTO
+            AbsenceType = AbsenceType.PTO,
+            IsEmergency = false
         };
         submittedRequestId = null;
         submitError = "";
+        onBehalfOfEmployeeId = null;
+    }
+
+    private async Task OnOnBehalfOfChanged()
+    {
+        // When the on-behalf target changes, refresh the conflict banner so it
+        // reflects the absentee's date overlaps, not the supervisor's.
+        await LoadOtherAbsencesAsync();
+    }
+
+    private string SelectedTeacherName()
+    {
+        if (!onBehalfOfEmployeeId.HasValue) return "";
+        var t = teacherOptions.FirstOrDefault(x => x.EmployeeId == onBehalfOfEmployeeId.Value);
+        return t?.DisplayName ?? "";
     }
 
     private class AbsenceForm
@@ -472,6 +662,12 @@
         public string? SubjectArea { get; set; }
         public string? AbsenceReason { get; set; }
         public string? SpecialInstructions { get; set; }
+        // Phase D4B: scopes the candidate sub pool. TEACHER (default) or RECEPTION.
+        public string RequestType { get; set; } = "TEACHER";
+        // Phase A ext: Emergency Fill — only bound when the submitter is a
+        // supervisor/admin/campus-admin (the checkbox is gated by
+        // canSubmitOnBehalf in the razor template).
+        public bool IsEmergency { get; set; }
     }
 
     private class OtherAbsence
@@ -481,5 +677,13 @@
         public DateOnly StartDate { get; set; }
         public DateOnly EndDate { get; set; }
         public SubRequestStatus Status { get; set; }
+    }
+
+    private class TeacherOption
+    {
+        public int EmployeeId { get; set; }
+        public string DisplayName { get; set; } = "";
+        public string CampusCode { get; set; } = "";
+        public int HomeCampusId { get; set; }
     }
 }

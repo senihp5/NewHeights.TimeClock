@@ -37,4 +37,13 @@ public class SubOutreachOptions
     /// the app has time to warm up.
     /// </summary>
     public int InitialDelayMinutes { get; set; } = 5;
+
+    /// <summary>
+    /// Phase A ext: token lifetime for Emergency Fill requests (TcSubRequest.
+    /// IsEmergency=true). Default 30 minutes — aggressive enough to force a
+    /// same-day decision but long enough a sub checking email mid-commute can
+    /// still respond. Paired with the broadcast dispatch model (every
+    /// candidate receives the request at once) so the first to accept wins.
+    /// </summary>
+    public int EmergencyTokenValidityMinutes { get; set; } = 30;
 }

@@ -32,12 +32,25 @@ public interface ISubOutreachService
         long subRequestId, IList<int> subEmployeeIds, OutreachMode mode, string sentByEmail);
 
     /// <summary>
-    /// Validates the token, marks the outreach ACCEPTED, transitions the parent
-    /// request to SubConfirmed with AssignedSubEmployeeId populated, fires a
-    /// confirmation email, audits SUB_ACCEPTED + SUB_CONFIRMATION_SENT.
-    /// Throws if token is invalid / expired / already responded.
+    /// Validates the token, marks the outreach ACCEPTED, writes a
+    /// TcSubRequestAssignment row for the accepted periods, and transitions
+    /// the parent request. Phase A (migration 048) allows partial acceptance:
+    /// if <paramref name="selectedPeriods"/> is non-null, only those periods
+    /// are claimed; remaining uncovered periods cascade to the next sub. If
+    /// null, the sub claims all currently-remaining periods (the legacy
+    /// "accept everything" behavior).
+    ///
+    /// Status transitions:
+    ///   all periods covered → SubConfirmed (+ SUB_FULLY_COVERED audit,
+    ///                         AssignedSubEmployeeId stamped on first-accept)
+    ///   periods remaining   → PartiallyAssigned (+ SUB_PARTIAL_ACCEPTED audit,
+    ///                         cascade fires for next queued sub)
+    ///
+    /// Throws if token is invalid / expired / already responded, or if
+    /// selectedPeriods contains values not currently in the remaining set
+    /// (e.g. another sub already claimed them).
     /// </summary>
-    Task<TcSubOutreach> ProcessAcceptAsync(string token);
+    Task<TcSubOutreach> ProcessAcceptAsync(string token, IReadOnlyCollection<string>? selectedPeriods = null);
 
     /// <summary>
     /// Marks the outreach DECLINED. If there's a next queued row in the auto-
@@ -101,6 +114,22 @@ public class SubOutreachService : ISubOutreachService
     // Min clamp = 1 hour so a misconfigured 0 doesn't expire tokens before the email
     // even reaches the sub. See SubOutreachOptions for default.
     private int TokenValidityHours => Math.Max(1, _options.TokenValidityHours);
+
+    // Phase A ext: emergency requests use a compressed window so same-day
+    // must-fills don't sit in a 2-hour queue. Min clamp = 5 minutes.
+    private int EmergencyTokenValidityMinutes => Math.Max(5, _options.EmergencyTokenValidityMinutes);
+
+    /// <summary>
+    /// Compute token expiry relative to now based on whether the request is
+    /// flagged as Emergency Fill. Used by SendOutreachAsync + the cascade
+    /// advancer so every dispatch path respects the flag consistently.
+    /// </summary>
+    private DateTime ComputeTokenExpiry(TcSubRequest request)
+    {
+        return request.IsEmergency
+            ? DateTime.Now.AddMinutes(EmergencyTokenValidityMinutes)
+            : DateTime.Now.AddHours(TokenValidityHours);
+    }
 
     // SMS body limits. ACS splits >160 chars into multi-segment messages (billed per
     // segment). We aim for <=320 chars so outreach fits in 2 segments at worst.
@@ -197,8 +226,13 @@ public class SubOutreachService : ISubOutreachService
             .Select(o => (int?)o.SequenceOrder)
             .MaxAsync() ?? 0;
 
-        var tokenExpiresAt = DateTime.Now.AddHours(TokenValidityHours);
+        var tokenExpiresAt = ComputeTokenExpiry(request);
         var outreachRows = new List<TcSubOutreach>();
+
+        // Phase A ext: Emergency Fill requests broadcast to every candidate at
+        // once (first-to-accept wins). Non-emergency keeps the existing cascade
+        // pattern where only the first sub gets pinged and the rest are queued.
+        bool broadcastAll = request.IsEmergency;
 
         for (int i = 0; i < orderedSubs.Count; i++)
         {
@@ -219,8 +253,10 @@ public class SubOutreachService : ISubOutreachService
                 CreatedDate = DateTime.Now
             };
 
-            // First in the list sends immediately; rest are queued (auto-cascade).
-            if (i == 0)
+            // Emergency: every row sends immediately (broadcast). Normal: first
+            // in list sends immediately; rest are queued for sequential cascade.
+            bool sendNow = broadcastAll || i == 0;
+            if (sendNow)
             {
                 var dispatch = await TryDispatchOutreachAsync(row, request, sub);
                 row.MessageSentAt = DateTime.Now;
@@ -259,7 +295,7 @@ public class SubOutreachService : ISubOutreachService
 
     // ── Accept ───────────────────────────────────────────────────────────
 
-    public async Task<TcSubOutreach> ProcessAcceptAsync(string token)
+    public async Task<TcSubOutreach> ProcessAcceptAsync(string token, IReadOnlyCollection<string>? selectedPeriods = null)
     {
         if (string.IsNullOrWhiteSpace(token))
             throw new ArgumentException("token is required.", nameof(token));
@@ -269,6 +305,7 @@ public class SubOutreachService : ISubOutreachService
         var outreach = await context.TcSubOutreach
             .Include(o => o.SubRequest).ThenInclude(r => r!.RequestingEmployee).ThenInclude(e => e!.Staff)
             .Include(o => o.SubRequest).ThenInclude(r => r!.Campus)
+            .Include(o => o.SubRequest).ThenInclude(r => r!.Assignments)
             .Include(o => o.SubEmployee).ThenInclude(e => e!.Staff)
             .FirstOrDefaultAsync(o => o.ResponseToken == token);
 
@@ -281,17 +318,98 @@ public class SubOutreachService : ISubOutreachService
             throw new InvalidOperationException(
                 "This link has expired. Please contact your campus manager.");
 
+        var request = outreach.SubRequest!;
+
+        // Compute the remaining-periods set as of this accept. If the request
+        // has no PeriodsNeeded at all, treat the full acceptance as a single
+        // opaque "whole request" covering the empty string — legacy behavior
+        // where the request wasn't period-scoped.
+        var needed   = ParsePeriodSet(request.PeriodsNeeded);
+        var covered  = request.Assignments
+            .SelectMany(a => ParsePeriodSet(a.PeriodsCovered))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var remaining = needed.Except(covered, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Determine which periods this sub is claiming.
+        HashSet<string> accepted;
+        if (selectedPeriods == null || selectedPeriods.Count == 0)
+        {
+            // Legacy "accept everything" path — take all remaining.
+            accepted = new HashSet<string>(remaining, StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            accepted = new HashSet<string>(
+                selectedPeriods.Select(p => p.Trim().ToUpperInvariant()).Where(p => p.Length > 0),
+                StringComparer.OrdinalIgnoreCase);
+
+            // Guard: only allow periods that are still remaining. If the sub
+            // picked one that got claimed between page load and submit,
+            // reject so we never write a conflicting assignment row.
+            var invalid = accepted.Except(remaining, StringComparer.OrdinalIgnoreCase).ToList();
+            if (invalid.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"The following periods are no longer available: {string.Join(", ", invalid)}. Reload the page and try again.");
+            }
+        }
+
+        // Guard: at least one period (or legacy request with no periods).
+        if (needed.Count > 0 && accepted.Count == 0)
+        {
+            throw new InvalidOperationException("Select at least one period to accept.");
+        }
+
+        // Mark outreach accepted regardless — token is single-use (per design
+        // decision 3: sub cannot come back to claim more later).
         outreach.ResponseStatus = "ACCEPTED";
         outreach.RespondedAt = DateTime.Now;
 
-        var request = outreach.SubRequest!;
-        request.AssignedSubEmployeeId = outreach.SubEmployeeId;
-        request.AssignedDate = DateTime.Now;
-        request.Status = SubRequestStatus.SubConfirmed;
+        // Write the assignment row. PeriodsCovered is canonicalized (sorted,
+        // comma-joined, upper). For a legacy no-periods request the stored
+        // value is "" and the row acts as "this sub covers the whole thing."
+        var assignment = new TcSubRequestAssignment
+        {
+            SubRequestId   = request.SubRequestId,
+            SubEmployeeId  = outreach.SubEmployeeId,
+            PeriodsCovered = FormatPeriodSet(accepted),
+            AcceptedAt     = outreach.RespondedAt!.Value,
+            CreatedDate    = DateTime.Now
+        };
+        context.TcSubRequestAssignments.Add(assignment);
+
+        // Recompute coverage after this accept.
+        var newCovered   = covered.Union(accepted, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var newRemaining = needed.Except(newCovered, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        bool fullyCovered = newRemaining.Count == 0;
+
+        // Stamp AssignedSubEmployeeId on first-accept for backward compat with
+        // display code that reads the singular column. Later partial accepts
+        // leave it alone; the join table is the authoritative truth.
+        bool isFirstAssignment = request.Assignments.Count == 0;
+        if (isFirstAssignment)
+        {
+            request.AssignedSubEmployeeId = outreach.SubEmployeeId;
+            request.AssignedDate = DateTime.Now;
+        }
+
+        if (fullyCovered)
+        {
+            request.Status = SubRequestStatus.SubConfirmed;
+            // Clear stall-alert dedup — request is done.
+            request.PartialStallAlertSentAt = null;
+        }
+        else
+        {
+            request.Status = SubRequestStatus.PartiallyAssigned;
+            // Reset stall clock — the request just saw progress.
+            request.PartialStallAlertSentAt = null;
+        }
         request.ModifiedDate = DateTime.Now;
 
         await context.SaveChangesAsync();
 
+        // Audit the existing SUB_ACCEPTED code + the new partial/full code.
         await _audit.LogActionAsync(
             actionCode: AuditActions.SubOutreach.Accepted,
             entityType: AuditEntityTypes.SubOutreach,
@@ -301,14 +419,39 @@ public class SubOutreachService : ISubOutreachService
                 outreach.SubRequestId,
                 outreach.SubEmployeeId,
                 AcceptedAt = outreach.RespondedAt,
+                PeriodsCovered = assignment.PeriodsCovered,
                 RequestStatus = request.Status.ToString()
             },
-            deltaSummary: $"Sub employee {outreach.SubEmployeeId} accepted sub request {outreach.SubRequestId}",
+            deltaSummary: $"Sub employee {outreach.SubEmployeeId} accepted sub request {outreach.SubRequestId} (periods: {(assignment.PeriodsCovered.Length > 0 ? assignment.PeriodsCovered : "all")})",
             source: AuditSource.PublicLink,
             employeeId: outreach.SubEmployeeId);
 
-        // Confirmation — try both channels.
-        var confirm = await TryDispatchConfirmationAsync(outreach, request);
+        await _audit.LogActionAsync(
+            actionCode: fullyCovered
+                ? AuditActions.SubOutreach.FullyCovered
+                : AuditActions.SubOutreach.PartialAccepted,
+            entityType: AuditEntityTypes.SubRequest,
+            entityId: request.SubRequestId.ToString(),
+            newValues: new
+            {
+                request.SubRequestId,
+                Covered = string.Join(",", newCovered.OrderBy(p => p)),
+                Remaining = string.Join(",", newRemaining.OrderBy(p => p)),
+                AcceptingSubEmployeeId = outreach.SubEmployeeId
+            },
+            deltaSummary: fullyCovered
+                ? $"Sub request {request.SubRequestId} fully covered after employee {outreach.SubEmployeeId} accepted {assignment.PeriodsCovered}"
+                : $"Sub request {request.SubRequestId} partially covered ({FormatPeriodSet(newCovered)} of {FormatPeriodSet(needed)}); remaining: {FormatPeriodSet(newRemaining)}",
+            source: AuditSource.PublicLink,
+            employeeId: outreach.SubEmployeeId);
+
+        // Confirmation email to the accepting sub — mentions only the periods
+        // they committed to. Done before cascade so the sub gets their
+        // confirmation before the next sub in line gets a pitch.
+        var acceptedPeriodsDisplay = assignment.PeriodsCovered.Length > 0
+            ? assignment.PeriodsCovered
+            : (request.PeriodsNeeded ?? "—");
+        var confirm = await TryDispatchConfirmationAsync(outreach, request, acceptedPeriodsDisplay);
         if (confirm.AnyDelivered)
         {
             request.ConfirmationSentAt = DateTime.Now;
@@ -328,10 +471,48 @@ public class SubOutreachService : ISubOutreachService
                 employeeId: outreach.SubEmployeeId);
         }
 
-        // Phase 7d: notify supervisor + requesting employee of the acceptance.
+        // Phase 7d: notify supervisor + requesting employee.
         await TryNotifyStakeholdersAsync(outreach, request, "ACCEPTED");
 
+        // Phase A: if the request is only partially covered, fire cascade to
+        // the next queued sub so remaining periods can find coverage. The
+        // dispatch path computes remaining at send time so the next sub's
+        // accept page shows only uncovered periods.
+        if (!fullyCovered)
+        {
+            await AdvanceQueueOrRevertAsync(context, request, request.SubRequestId, outreach.SequenceOrder);
+        }
+
         return outreach;
+    }
+
+    // ── Period-set helpers (Phase A) ─────────────────────────────────────
+
+    /// <summary>
+    /// Parse a comma-separated period list into a case-insensitive set.
+    /// Empty/whitespace entries are skipped. Trimmed and uppercased so
+    /// "P1, p2 , ,P3" → {"P1", "P2", "P3"}.
+    /// </summary>
+    private static HashSet<string> ParsePeriodSet(string? csv)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(csv)) return result;
+        foreach (var raw in csv.Split(','))
+        {
+            var p = raw.Trim().ToUpperInvariant();
+            if (p.Length > 0) result.Add(p);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Canonical CSV form: sorted alphabetically, comma-joined, upper.
+    /// Empty set returns "". Used to persist PeriodsCovered so audit
+    /// diffs and display are stable across accepts.
+    /// </summary>
+    private static string FormatPeriodSet(IEnumerable<string> set)
+    {
+        return string.Join(",", set.Select(p => p.Trim().ToUpperInvariant()).Where(p => p.Length > 0).OrderBy(p => p));
     }
 
     // ── Decline ──────────────────────────────────────────────────────────
@@ -484,9 +665,29 @@ public class SubOutreachService : ISubOutreachService
             return;
         }
 
+        // Phase A: if the request is partially covered, compute remaining
+        // periods so the dispatch email shows only what's still uncovered.
+        // Fresh requests with no assignments use request.PeriodsNeeded as-is.
+        string? periodsOverride = null;
+        if (request.Status == SubRequestStatus.PartiallyAssigned)
+        {
+            var coveredRaw = await context.TcSubRequestAssignments
+                .Where(a => a.SubRequestId == request.SubRequestId)
+                .Select(a => a.PeriodsCovered)
+                .ToListAsync();
+            var needed = ParsePeriodSet(request.PeriodsNeeded);
+            var coveredSet = coveredRaw
+                .SelectMany(c => ParsePeriodSet(c))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var remaining = needed.Except(coveredSet, StringComparer.OrdinalIgnoreCase);
+            periodsOverride = FormatPeriodSet(remaining);
+        }
+
         // Refresh token expiry for this send, then dispatch via both channels.
-        nextQueued.TokenExpiresAt = DateTime.Now.AddHours(TokenValidityHours);
-        var dispatch = await TryDispatchOutreachAsync(nextQueued, request, nextQueued.SubEmployee!);
+        // Phase A ext: ComputeTokenExpiry honors request.IsEmergency so a
+        // mid-cascade send on an emergency request uses the 30-minute window.
+        nextQueued.TokenExpiresAt = ComputeTokenExpiry(request);
+        var dispatch = await TryDispatchOutreachAsync(nextQueued, request, nextQueued.SubEmployee!, periodsOverride);
         nextQueued.MessageSentAt = DateTime.Now;
         nextQueued.OutreachMethod = dispatch.OutreachMethodLabel;
         nextQueued.DeliveryStatus = dispatch.AnyDelivered ? "DELIVERED" : "FAILED";
@@ -624,7 +825,8 @@ public class SubOutreachService : ISubOutreachService
     /// The outreach row is required so the accept link can include its token.
     /// </summary>
     private async Task<ChannelDispatchResult> TryDispatchOutreachAsync(
-        TcSubOutreach outreach, TcSubRequest request, TcEmployee sub)
+        TcSubOutreach outreach, TcSubRequest request, TcEmployee sub,
+        string? periodsOverride = null)
     {
         // SMS eligibility
         var smsEligible = _smsService.IsEnabled
@@ -655,7 +857,7 @@ public class SubOutreachService : ISubOutreachService
             emailAttempted = true;
             try
             {
-                var (subject, html) = BuildOutreachEmail(outreach, request, sub);
+                var (subject, html) = BuildOutreachEmail(outreach, request, sub, periodsOverride);
                 emailDelivered = await _emailService.SendEmailAsync(sub.Email!, subject, html);
                 if (!emailDelivered) emailError = "email-service-returned-false";
             }
@@ -686,7 +888,8 @@ public class SubOutreachService : ISubOutreachService
     }
 
     private async Task<ChannelDispatchResult> TryDispatchConfirmationAsync(
-        TcSubOutreach outreach, TcSubRequest request)
+        TcSubOutreach outreach, TcSubRequest request,
+        string? acceptedPeriodsOverride = null)
     {
         var sub = outreach.SubEmployee;
         if (sub == null)
@@ -721,7 +924,7 @@ public class SubOutreachService : ISubOutreachService
             emailAttempted = true;
             try
             {
-                var (subject, html) = BuildConfirmationEmail(request, sub);
+                var (subject, html) = BuildConfirmationEmail(request, sub, acceptedPeriodsOverride);
                 emailDelivered = await _emailService.SendEmailAsync(sub.Email, subject, html);
                 if (!emailDelivered) emailError = "email-service-returned-false";
             }
@@ -774,7 +977,8 @@ public class SubOutreachService : ISubOutreachService
     // ── Email body builders (refactored from Phase 5; no longer send themselves) ──
 
     private (string subject, string html) BuildOutreachEmail(
-        TcSubOutreach outreach, TcSubRequest request, TcEmployee sub)
+        TcSubOutreach outreach, TcSubRequest request, TcEmployee sub,
+        string? periodsOverride = null)
     {
         var baseUrl = _configuration["AzureCommunication:BaseUrl"]
                    ?? _configuration["App:BaseUrl"]
@@ -788,18 +992,43 @@ public class SubOutreachService : ISubOutreachService
             ? request.StartDate.ToString("dddd, MMM d, yyyy")
             : $"{request.StartDate:ddd MMM d} – {request.EndDate:ddd MMM d, yyyy}";
 
-        var subject = $"New Heights sub assignment — {campusName} ({dateRange})";
+        // Phase A ext: emergency flag drives both the subject-line prefix
+        // (so the sub can see URGENCY in their inbox list) and the red banner
+        // inside the email body.
+        var subject = request.IsEmergency
+            ? $"URGENT — Same-day sub needed — {campusName} ({dateRange})"
+            : $"New Heights sub assignment — {campusName} ({dateRange})";
+
+        // Phase A: when dispatched after a partial accept, periodsOverride
+        // contains only the remaining uncovered periods so the sub sees what
+        // they can actually claim instead of the full original request.
+        var periodsDisplay = !string.IsNullOrWhiteSpace(periodsOverride)
+            ? periodsOverride
+            : (request.PeriodsNeeded ?? "—");
+        var partialNote = !string.IsNullOrWhiteSpace(periodsOverride)
+            ? "<p style='background:#fef9c3;border:1px solid #fde68a;padding:.5rem .75rem;border-radius:4px;font-size:.9rem;'>" +
+              "Note: earlier periods for this request are already covered by another sub. The periods below are what's still open." +
+              "</p>"
+            : "";
+
+        var emergencyBanner = request.IsEmergency
+            ? "<div style='background:#dc2626;color:white;padding:.65rem .9rem;border-radius:6px;margin:0 0 .75rem;font-weight:600;font-size:1rem;'>" +
+              "&#9888;&#65039; URGENT — Same-day fill needed. This link expires in 30 minutes." +
+              "</div>"
+            : "";
 
         var html = $@"
 <div style='font-family: Segoe UI, Arial, sans-serif; max-width: 600px; color: #1f2937;'>
+  {emergencyBanner}
   <h2 style='color: #1d4ed8;'>New Heights Substitute Assignment</h2>
   <p>Hi {System.Net.WebUtility.HtmlEncode(subName)},</p>
   <p>You've been requested to substitute at:</p>
+  {partialNote}
   <table style='border-collapse: collapse; margin: 0.5rem 0;'>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Campus:</td><td>{System.Net.WebUtility.HtmlEncode(campusName)}</td></tr>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Dates:</td><td>{System.Net.WebUtility.HtmlEncode(dateRange)}</td></tr>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Session:</td><td>{System.Net.WebUtility.HtmlEncode(request.SessionType ?? "Day")}</td></tr>
-    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{System.Net.WebUtility.HtmlEncode(request.PeriodsNeeded ?? "—")}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{System.Net.WebUtility.HtmlEncode(periodsDisplay)}</td></tr>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Subject:</td><td>{System.Net.WebUtility.HtmlEncode(request.SubjectArea ?? "—")}</td></tr>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Covering:</td><td>{System.Net.WebUtility.HtmlEncode(teacher)}</td></tr>
   </table>
@@ -819,7 +1048,7 @@ public class SubOutreachService : ISubOutreachService
     }
 
     private static (string subject, string html) BuildConfirmationEmail(
-        TcSubRequest request, TcEmployee sub)
+        TcSubRequest request, TcEmployee sub, string? acceptedPeriodsOverride = null)
     {
         var subName = sub.Staff?.FirstName ?? sub.Staff?.FullName ?? "Substitute";
         var campusName = request.Campus?.CampusName ?? "New Heights";
@@ -829,6 +1058,13 @@ public class SubOutreachService : ISubOutreachService
 
         var subject = $"Confirmed — Sub assignment at {campusName} ({dateRange})";
 
+        // Phase A: if the sub partially accepted, show only the periods they
+        // committed to. Full accepts (or legacy whole-request accepts) fall
+        // back to the request's full PeriodsNeeded.
+        var periodsDisplay = !string.IsNullOrWhiteSpace(acceptedPeriodsOverride)
+            ? acceptedPeriodsOverride
+            : (request.PeriodsNeeded ?? "—");
+
         var html = $@"
 <div style='font-family: Segoe UI, Arial, sans-serif; max-width: 600px; color: #1f2937;'>
   <h2 style='color: #059669;'>You're Confirmed</h2>
@@ -837,7 +1073,7 @@ public class SubOutreachService : ISubOutreachService
   <table style='border-collapse: collapse; margin: 0.5rem 0;'>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Campus:</td><td>{System.Net.WebUtility.HtmlEncode(campusName)}</td></tr>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Dates:</td><td>{System.Net.WebUtility.HtmlEncode(dateRange)}</td></tr>
-    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{System.Net.WebUtility.HtmlEncode(request.PeriodsNeeded ?? "—")}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{System.Net.WebUtility.HtmlEncode(periodsDisplay)}</td></tr>
   </table>
   <p>Please check in with the front receptionist on arrival.</p>
   <p style='color:#6b7280;font-size:0.85rem;'>Questions? Contact your campus manager.</p>
