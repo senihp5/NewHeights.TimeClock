@@ -152,4 +152,10 @@ public static class AuditActions
     {
         public const string Changed = "CONFIG_CHANGED";
     }
+
+    // Q. Attendance Transactions (reception manual override / geofence tightening)
+    public static class Attendance
+    {
+        public const string ManualOverride = "ATTENDANCE_MANUAL_OVERRIDE";
+    }
 }

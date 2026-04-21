@@ -7,6 +7,8 @@
 @using NewHeights.TimeClock.Shared.Constants
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Web.Services
 @using Microsoft.EntityFrameworkCore
 @using System.Security.Claims
 @using Microsoft.AspNetCore.SignalR.Client
@@ -15,6 +17,7 @@
 @inject ILogger<ReceptionDashboard> Logger
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
+@inject IAuditService Audit
 @implements IAsyncDisposable
 
 <PageTitle>Reception - @selectedCampusName</PageTitle>
@@ -282,8 +285,18 @@ else
                         <input type="time" @bind="manualTime" />
                     </div>
                     <div class="form-group">
-                        <label>Notes</label>
-                        <textarea @bind="manualNotes" placeholder="Reason for manual entry..."></textarea>
+                        <label>Reason <span style="color:#b45309;">(required)</span></label>
+                        <textarea @bind="manualNotes"
+                                  maxlength="500"
+                                  rows="3"
+                                  placeholder="Why is a manual entry needed? (e.g., forgot to scan, phone dead, field trip return)"></textarea>
+                        <div style="font-size:0.8rem; color:#6b7280; margin-top:4px;">
+                            @(string.IsNullOrWhiteSpace(manualNotes) ? 0 : manualNotes.Trim().Length) / 500 characters
+                            @if (!string.IsNullOrWhiteSpace(manualNotes) && manualNotes.Trim().Length < 5)
+                            {
+                                <span style="color:#b45309;">&middot; at least 5 characters</span>
+                            }
+                        </div>
                     </div>
                     @if (!string.IsNullOrEmpty(manualEntryError))
                     {
@@ -295,7 +308,8 @@ else
             </div>
             <div class="modal-footer">
                 <button class="btn-cancel" @onclick="CloseManualEntry">Cancel</button>
-                <button class="btn-save" @onclick="SaveManualEntry" disabled="@(selectedPerson == null)">
+                <button class="btn-save" @onclick="SaveManualEntry"
+                        disabled="@(selectedPerson == null || string.IsNullOrWhiteSpace(manualNotes) || manualNotes.Trim().Length < 5)">
                     Save Entry
                 </button>
             </div>
@@ -744,12 +758,22 @@ else
 
         manualEntryError = null;
 
+        // Geofence-tightening policy: every manual override must carry a
+        // typed reason. Client-side UI disables the button below 5 chars;
+        // this is the server-side defense-in-depth check.
+        var trimmedReason = (manualNotes ?? string.Empty).Trim();
+        if (trimmedReason.Length < 5)
+        {
+            manualEntryError = "A reason of at least 5 characters is required for manual entries.";
+            return;
+        }
+
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
-            
+
             var scanDateTime = DateTime.Today.Add(manualTime.ToTimeSpan());
-            
+
             var transaction = new AttendanceTransaction
             {
                 TransactionType = selectedPerson.Type,
@@ -764,15 +788,42 @@ else
                 TerminalId = 0,
                 DataSource = "LOCAL",
                 ValidationStatus = "VALID",
-                Notes = $"[Manual Entry by {currentUserName}] {manualNotes}",
+                Notes = $"[Manual Entry by {currentUserName}] {trimmedReason}",
                 CreatedDate = DateTime.Now
             };
 
             context.AttendanceTransactions.Add(transaction);
             await context.SaveChangesAsync();
 
-            Logger.LogInformation("Manual entry created by {User}: {Person} - {Type} at {Time}",
-                currentUserEmail, selectedPerson.IdNumber, manualScanType, scanDateTime);
+            // Geofence-tightening: separate audit row for every manual override
+            // so the ScanMethod=MANUAL path is searchable and reviewable
+            // independently of the transaction Notes field.
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Attendance.ManualOverride,
+                entityType: AuditEntityTypes.AttendanceTx,
+                entityId: transaction.TransactionId.ToString(),
+                newValues: new
+                {
+                    transaction.TransactionId,
+                    PersonType = selectedPerson.Type,
+                    selectedPerson.IdNumber,
+                    PersonName = $"{selectedPerson.FirstName} {selectedPerson.LastName}",
+                    CampusId = selectedCampusId,
+                    CampusCode = selectedCampusCode,
+                    ScanType = manualScanType,
+                    ScanDateTime = scanDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                    ReasonLength = trimmedReason.Length
+                },
+                reason: trimmedReason,
+                deltaSummary:
+                    $"Manual {manualScanType} recorded for {selectedPerson.FirstName} {selectedPerson.LastName} "
+                    + $"(ID {selectedPerson.IdNumber}) at {scanDateTime:h:mm tt} by {currentUserName}",
+                source: AuditSource.AdminUi,
+                campusId: selectedCampusId);
+
+            Logger.LogInformation(
+                "Manual entry (override) created by {User}: {Person} {Type} at {Time} \u2014 reason: {Reason}",
+                currentUserEmail, selectedPerson.IdNumber, manualScanType, scanDateTime, trimmedReason);
 
             CloseManualEntry();
             await RefreshData();
