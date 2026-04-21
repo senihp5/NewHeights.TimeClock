@@ -539,7 +539,9 @@
             var hourlyEmployee = await context.TcEmployees.AsNoTracking()
                 .FirstOrDefaultAsync(e => e.IsActive &&
                     (e.IdNumber == idNumber || e.IdNumber == paddedId) &&
-                    (e.EmployeeType == EmployeeType.HourlyStaff || e.EmployeeType == EmployeeType.Substitute));
+                    (e.EmployeeType == EmployeeType.HourlyStaff
+                     || e.EmployeeType == EmployeeType.HourlyPartTime
+                     || e.EmployeeType == EmployeeType.Substitute));
 
             if (hourlyEmployee != null)
                 await ProcessHourlyEmployee(staff, hourlyEmployee, context);
@@ -983,9 +985,9 @@
     {
         try
         {
-            var campusCode = selectedCampusName.Contains("Stop Six", StringComparison.OrdinalIgnoreCase) ? "STOP6"
-                           : selectedCampusName.Contains("McCart", StringComparison.OrdinalIgnoreCase) ? "MCCART"
-                           : "DISTRICT";
+            var campusCode = selectedCampusName.Contains("Stop Six", StringComparison.OrdinalIgnoreCase) ? AppConstants.Campus.StopSixCode
+                           : selectedCampusName.Contains("McCart", StringComparison.OrdinalIgnoreCase) ? AppConstants.Campus.McCartCode
+                           : AppConstants.Campus.DistrictCode;
             
             await HubContext.Clients.Group($"Dashboard_{campusCode}").SendAsync("ScanCompleted");
             Logger.LogInformation("Dashboard notified for campus: {Campus}", campusCode);

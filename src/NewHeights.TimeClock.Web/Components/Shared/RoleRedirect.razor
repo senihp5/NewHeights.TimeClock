@@ -28,10 +28,13 @@
         }
         catch { }
 
-        // Hourly employees and substitutes -> Mobile Clock
+        // Hourly employees (full- and part-time) and substitutes -> Mobile Clock.
+        // Keep this role list in lockstep with Program.cs RequireHourly policy.
         if (user.IsInRole("TimeClock.Employee") ||
             user.IsInRole("TimeClock.Employee.StopSix") ||
             user.IsInRole("TimeClock.Employee.McCart") ||
+            user.IsInRole("TimeClock.Employee.StopSix.PT") ||
+            user.IsInRole("TimeClock.Employee.McCart.PT") ||
             user.IsInRole("TimeClock.Substitute"))
         {
             Nav.NavigateTo("/mobile/clock", forceLoad: false);

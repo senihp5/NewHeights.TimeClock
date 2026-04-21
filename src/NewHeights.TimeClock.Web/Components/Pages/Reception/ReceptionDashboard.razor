@@ -65,6 +65,9 @@ else
                 </div>
             </div>
             <div class="header-actions">
+                <a class="btn-icon" href="/" title="Back to Home" style="text-decoration:none;">
+                    🏠
+                </a>
                 <span class="last-updated">@lastRefresh.ToString("h:mm:ss tt")</span>
                 <button class="btn-icon" @onclick="RefreshData" disabled="@isLoading" title="Refresh">
                     🔄

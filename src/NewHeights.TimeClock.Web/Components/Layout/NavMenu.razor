@@ -36,8 +36,14 @@
             <div class="nav-item px-2">
                 <NavLink class="nav-link" href="mobile/clock">Mobile Clock-In</NavLink>
             </div>
+        </AuthorizeView>
+
+        @* My Timesheet / My Sub Timesheet - visible to all authenticated staff.
+           Admins, reception, and salaried viewers need a quick nav link to their
+           own timesheet view, not just hourly employees. *@
+        <AuthorizeView Policy="RequireAnyStaff" Context="myTimeCtx">
             <div class="nav-section">My Time</div>
-            @if (hourlyCtx.User.IsInRole("TimeClock.Substitute"))
+            @if (myTimeCtx.User.IsInRole("TimeClock.Substitute"))
             {
                 <div class="nav-item px-2">
                     <NavLink class="nav-link" href="my/sub-timesheet">My Sub Timesheet</NavLink>
