@@ -366,6 +366,47 @@ main {
     letter-spacing: 0.5px;
 }
 
+/* Collapsible nav section groups.
+   Each <details class="nav-section-group"> wraps a <summary class="nav-section">
+   (the header) and its nav-item children. Click summary to toggle. Arrow twirls
+   from ▸ (closed) to ▾ (open) via a CSS rotate on the ::before pseudo-element. */
+.nav-section-group > summary.nav-section {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    list-style: none;
+    user-select: none;
+    transition: color 0.15s ease;
+}
+
+.nav-section-group > summary.nav-section::-webkit-details-marker {
+    display: none;
+}
+
+.nav-section-group > summary.nav-section::before {
+    content: "\25B8"; /* right-pointing small triangle */
+    display: inline-block;
+    width: 0.7em;
+    font-size: 0.7rem;
+    color: rgba(255,255,255,0.4);
+    transition: transform 0.15s ease;
+}
+
+.nav-section-group[open] > summary.nav-section::before {
+    transform: rotate(90deg);
+}
+
+.nav-section-group > summary.nav-section:hover {
+    color: rgba(255,255,255,0.8);
+}
+
+.nav-section-group > summary.nav-section:focus-visible {
+    outline: 2px solid rgba(255,255,255,0.35);
+    outline-offset: 2px;
+    border-radius: 3px;
+}
+
 
 
 

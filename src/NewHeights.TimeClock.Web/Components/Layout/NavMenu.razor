@@ -20,16 +20,18 @@
         </AuthorizeView>
 
         <AuthorizeView Policy="RequireAnyStaff">
-            <div class="nav-section">Mobile</div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="mobile/checkin">Campus Check-In</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="employee/absence-request">Request Time Off</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="employee/my-sub-requests">My Sub Requests</NavLink>
-            </div>
+            <details class="nav-section-group" open>
+                <summary class="nav-section">Mobile</summary>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="mobile/checkin">Campus Check-In</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="employee/absence-request">Request Time Off</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="employee/my-sub-requests">My Sub Requests</NavLink>
+                </div>
+            </details>
         </AuthorizeView>
 
         <AuthorizeView Policy="RequireHourly" Context="hourlyCtx">
@@ -42,89 +44,109 @@
            Admins, reception, and salaried viewers need a quick nav link to their
            own timesheet view, not just hourly employees. *@
         <AuthorizeView Policy="RequireAnyStaff" Context="myTimeCtx">
-            <div class="nav-section">My Time</div>
-            @if (myTimeCtx.User.IsInRole("TimeClock.Substitute"))
-            {
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="my/sub-timesheet">My Sub Timesheet</NavLink>
-                </div>
-            }
-            else
-            {
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="my/timesheet">My Timesheet</NavLink>
-                </div>
-            }
+            <details class="nav-section-group" open>
+                <summary class="nav-section">My Time</summary>
+                @if (myTimeCtx.User.IsInRole("TimeClock.Substitute"))
+                {
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="my/sub-timesheet">My Sub Timesheet</NavLink>
+                    </div>
+                }
+                else
+                {
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="my/timesheet">My Timesheet</NavLink>
+                    </div>
+                }
+            </details>
         </AuthorizeView>
 
         <AuthorizeView Policy="RequireSupervisor">
-            <div class="nav-section">Supervisor</div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="supervisor/timesheets">Team Timesheets</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="supervisor/sub-timesheets">Sub Timesheets</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="supervisor/sub-requests">Sub Requests</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="supervisor/sub-calendar">Sub Calendar</NavLink>
-            </div>
+            <details class="nav-section-group" open>
+                <summary class="nav-section">Supervisor</summary>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="supervisor/timesheets">Team Timesheets</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="supervisor/sub-timesheets">Sub Timesheets</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="supervisor/sub-requests">Sub Requests</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="supervisor/sub-calendar">Sub Calendar</NavLink>
+                </div>
+            </details>
         </AuthorizeView>
 
-        <AuthorizeView Policy="RequireHR">
-            <div class="nav-section">HR</div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="hr/payroll">Payroll Review</NavLink>
-            </div>
-        </AuthorizeView>
-        <AuthorizeView Policy="RequireSupervisor">
-            <div class="nav-section">Reports</div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="reports/safety">Safety Report</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="reports/timeclock">TimeClock Report</NavLink>
-            </div>
-        </AuthorizeView>
-
+        @* Reception Sub Requests — moved here from the Dashboards section so it
+           groups visually with the Supervisor 'Sub Requests' link. Scoped by
+           RequireReception so reception-only users (non-supervisors) still see
+           it. Flat single-item link, not inside a collapsible group. *@
         <AuthorizeView Policy="RequireReception">
-            <div class="nav-section">Dashboards</div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="reception">Reception</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="safety">Safety</NavLink>
-            </div>
             <div class="nav-item px-2">
                 <NavLink class="nav-link" href="reception/sub-requests">Reception Sub Requests</NavLink>
             </div>
         </AuthorizeView>
 
+        <AuthorizeView Policy="RequireHR">
+            <details class="nav-section-group" open>
+                <summary class="nav-section">HR</summary>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="hr/payroll">Payroll Review</NavLink>
+                </div>
+            </details>
+        </AuthorizeView>
+
+        <AuthorizeView Policy="RequireSupervisor">
+            <details class="nav-section-group" open>
+                <summary class="nav-section">Reports</summary>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="reports/safety">Safety Report</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="reports/timeclock">TimeClock Report</NavLink>
+                </div>
+            </details>
+        </AuthorizeView>
+
+        <AuthorizeView Policy="RequireReception">
+            <details class="nav-section-group" open>
+                <summary class="nav-section">Dashboards</summary>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="reception" Match="NavLinkMatch.All">Reception</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="safety" Match="NavLinkMatch.All">Safety</NavLink>
+                </div>
+            </details>
+        </AuthorizeView>
+
         <AuthorizeView Policy="RequireAdmin">
-            <div class="nav-section">Admin</div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="admin/pay-periods">Pay Periods</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="admin/staff-hours">Staff Hours Windows</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="admin/holidays">Holiday Schedule</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="admin/employees/sync">Employee Sync</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="admin/schedule/import">Schedule Import</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="admin/audit">Audit Log</NavLink>
-            </div>
-            <div class="nav-item px-2">
-                <NavLink class="nav-link" href="admin/sub-pool-management">Sub Pool Management</NavLink>
-            </div>
+            <details class="nav-section-group" open>
+                <summary class="nav-section">Admin</summary>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/pay-periods">Pay Periods</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/staff-hours">Staff Hours Windows</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/holidays">Holiday Schedule</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/employees/sync">Employee Sync</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/schedule/import">Schedule Import</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/audit">Audit Log</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/sub-pool-management">Sub Pool Management</NavLink>
+                </div>
+            </details>
         </AuthorizeView>
 
     </nav>

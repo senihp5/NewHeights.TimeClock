@@ -18,6 +18,13 @@ public class EmployeeSyncResult
     public int Updated { get; set; }
     public int Deactivated { get; set; }
     public int Skipped { get; set; }
+    // Phase D5 / B1: SubstituteAdmin overlay diagnostics. Surfaced in the sync
+    // UI so an admin can see whether the overlay ran, how many members were
+    // returned from Graph, and how many SubRole flips occurred.
+    public int OverlayPromoted { get; set; }
+    public int OverlayDemoted { get; set; }
+    public int? OverlayMembersReturned { get; set; }
+    public bool OverlayConfigured { get; set; }
     public List<string> Warnings { get; set; } = new();
     public List<string> Errors { get; set; } = new();
     public DateTime CompletedAt { get; set; } = DateTime.Now;
@@ -265,9 +272,12 @@ public class EmployeeSyncService : IEmployeeSyncService
         var adminGroupId = _config[configKey];
         if (string.IsNullOrWhiteSpace(adminGroupId))
         {
+            result.OverlayConfigured = false;
             _logger.LogInformation("SubstituteAdmin group not configured ({Key}) — skipping admin-sub overlay", configKey);
             return;
         }
+
+        result.OverlayConfigured = true;
 
         try
         {
@@ -277,12 +287,24 @@ public class EmployeeSyncService : IEmployeeSyncService
                 .Where(id => !string.IsNullOrWhiteSpace(id))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            result.OverlayMembersReturned = adminObjectIds.Count;
             _logger.LogInformation("SubstituteAdmin overlay: {Count} group members", adminObjectIds.Count);
+
+            if (adminObjectIds.Count == 0)
+            {
+                result.Warnings.Add($"SubstituteAdmin overlay: group {adminGroupId} returned 0 transitive members. Verify group ID, transitive membership, and that User.Read.All has admin consent.");
+            }
 
             // All active subs.
             var allSubs = await db.TcEmployees
                 .Where(e => e.IsActive && e.EmployeeType == NewHeights.TimeClock.Shared.Enums.EmployeeType.Substitute)
                 .ToListAsync(ct);
+
+            int subsWithoutObjectId = allSubs.Count(s => string.IsNullOrWhiteSpace(s.EntraObjectId));
+            if (subsWithoutObjectId > 0)
+            {
+                result.Warnings.Add($"SubstituteAdmin overlay: {subsWithoutObjectId} active sub(s) have no EntraObjectId and cannot be matched against the admin group. Run main sync first so new subs get linked.");
+            }
 
             int promoted = 0, demoted = 0;
             foreach (var sub in allSubs)
@@ -297,6 +319,9 @@ public class EmployeeSyncService : IEmployeeSyncService
                     if (isAdmin) promoted++; else demoted++;
                 }
             }
+
+            result.OverlayPromoted = promoted;
+            result.OverlayDemoted = demoted;
 
             if (promoted + demoted > 0)
             {

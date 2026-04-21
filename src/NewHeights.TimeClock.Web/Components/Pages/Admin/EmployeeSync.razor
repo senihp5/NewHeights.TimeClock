@@ -35,6 +35,21 @@
                 <span class="result-badge skipped">&#9135; @_lastResult.Skipped Skipped</span>
                 <span class="result-time">@_lastResult.CompletedAt.ToString("M/d h:mm tt")</span>
             </div>
+            @if (_lastResult.OverlayConfigured)
+            {
+                <div class="result-overlay">
+                    <strong>SubstituteAdmin overlay:</strong>
+                    <span class="result-badge overlay-info">@(_lastResult.OverlayMembersReturned ?? 0) members in group</span>
+                    <span class="result-badge overlay-promoted">&#8593; @_lastResult.OverlayPromoted promoted to RECEPTION</span>
+                    <span class="result-badge overlay-demoted">&#8595; @_lastResult.OverlayDemoted demoted to TEACHER</span>
+                </div>
+            }
+            else
+            {
+                <div class="result-overlay">
+                    <em>SubstituteAdmin overlay: not configured (set GraphSync__EmployeeGroupIds__SubstituteAdmin)</em>
+                </div>
+            }
             @if (_lastResult.Warnings.Any())
             {
                 <details class="result-details">
@@ -159,6 +174,10 @@
     .result-badge.updated     { background: #dbeafe; color: #1e40af; }
     .result-badge.deactivated { background: #fee2e2; color: #991b1b; }
     .result-badge.skipped     { background: #f3f4f6; color: #374151; }
+    .result-badge.overlay-info     { background: #e0f2fe; color: #075985; }
+    .result-badge.overlay-promoted { background: #dcfce7; color: #166534; }
+    .result-badge.overlay-demoted  { background: #fef3c7; color: #854d0e; }
+    .result-overlay { margin: .4rem 0 .5rem; font-size: .85rem; color: #334155; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
     .result-time { font-size: .8rem; color: #6b7280; margin-left: auto; }
     .result-details { font-size: .875rem; margin-top: .5rem; }
     .result-details ul { margin: .25rem 0 0 1rem; padding: 0; }
