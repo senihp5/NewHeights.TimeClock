@@ -38,6 +38,14 @@ public static class AppConstants
 
         // District staff - all-campus read-only view (no edit)
         public const string District    = "TimeClock.District";
+
+        // Teachers — salaried classroom staff. Synced from Entra groups
+        // GraphSync:TeacherGroupIds:StopSix / McCart (see EmployeeSyncService).
+        // Teachers submit their own substitute requests but don't clock in for
+        // payroll, so they're gated into RequireAnyStaff but not RequireHourly.
+        public const string Teacher        = "TimeClock.Teacher";
+        public const string TeacherStopSix = "TimeClock.Teacher.StopSix";
+        public const string TeacherMcCart  = "TimeClock.Teacher.McCart";
     }
 
     public static class Campus
@@ -52,8 +60,12 @@ public static class AppConstants
         public const string OfficeLabelMcCart   = "New Heights - McCart";
         public const string OfficeLabelDistrict = "District Office";
 
-        // Internal campus codes used in DB and geofence
-        public const string StopSixCode  = "STOP6";
+        // Internal campus codes used in DB and geofence. These MUST match the
+        // Attendance_Campuses.CampusCode values on disk. The Stop Six row has
+        // stored "STOPSIX" since the initial schema; the previous "STOP6"
+        // constant caused silent lookup failures across EmployeeSync and
+        // holiday seeding. Normalized 2026-04-20.
+        public const string StopSixCode  = "STOPSIX";
         public const string McCartCode   = "MCCART";
         public const string DistrictCode = "DISTRICT";
 

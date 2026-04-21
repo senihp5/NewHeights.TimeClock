@@ -61,35 +61,54 @@ builder.Services.AddControllersWithViews()
 
 builder.Services.AddAuthorization(options =>
 {
-    // Any authenticated Entra ID user with any TimeClock group
+    // Any authenticated Entra ID user with any TimeClock group.
+    // Teachers (flat + campus variants) added defensively since the exact
+    // role name emitted by their Entra group isn't always uniform — the
+    // RequireAssertion prefix check below catches any TimeClock.Teacher.*
+    // that we haven't explicitly listed.
     options.AddPolicy("RequireAnyStaff", policy =>
-        policy.RequireRole(
-            "TimeClock.AllStaff",
-            "TimeClock.Employee",
-            "TimeClock.Employee.StopSix",
-            "TimeClock.Employee.McCart",
-            "TimeClock.Employee.StopSix.PT",
-            "TimeClock.Employee.McCart.PT",
-            "TimeClock.Substitute",
-            "TimeClock.Supervisor",
-            "TimeClock.Supervisor.StopSix",
-            "TimeClock.Supervisor.McCart",
-            "TimeClock.HR",
-            "TimeClock.CampusAdmin",
-            "TimeClock.Reception",
-            "TimeClock.District",
-            "TimeClock.Admin"));
+    {
+        policy.RequireAssertion(ctx =>
+            ctx.User.IsInRole("TimeClock.AllStaff")
+         || ctx.User.IsInRole("TimeClock.Employee")
+         || ctx.User.IsInRole("TimeClock.Employee.StopSix")
+         || ctx.User.IsInRole("TimeClock.Employee.McCart")
+         || ctx.User.IsInRole("TimeClock.Employee.StopSix.PT")
+         || ctx.User.IsInRole("TimeClock.Employee.McCart.PT")
+         || ctx.User.IsInRole("TimeClock.Substitute")
+         || ctx.User.IsInRole("TimeClock.Supervisor")
+         || ctx.User.IsInRole("TimeClock.Supervisor.StopSix")
+         || ctx.User.IsInRole("TimeClock.Supervisor.McCart")
+         || ctx.User.IsInRole("TimeClock.HR")
+         || ctx.User.IsInRole("TimeClock.CampusAdmin")
+         || ctx.User.IsInRole("TimeClock.Reception")
+         || ctx.User.IsInRole("TimeClock.District")
+         || ctx.User.IsInRole("TimeClock.Admin")
+         // Defensive: any TimeClock.Teacher* role passes. Catches the flat
+         // "TimeClock.Teacher" as well as campus variants or any future
+         // subcampus-scoped teacher groups we haven't explicitly named yet.
+         || ctx.User.Claims.Any(c =>
+             c.Type == System.Security.Claims.ClaimTypes.Role
+             && c.Value.StartsWith("TimeClock.Teacher", StringComparison.OrdinalIgnoreCase)));
+    });
 
-    // Hourly employees and substitutes — can clock in for payroll
+    // Hourly employees and substitutes — can clock in for payroll.
+    // Reception is intentionally NOT listed: a receptionist who also punches
+    // the clock should be in an Employee / Employee.*.PT Entra group in
+    // addition to Reception. RequireAssertion catches any TimeClock.Employee*
+    // variant (e.g. new campus-scoped PT groups) without needing a code
+    // change each time a new role is introduced.
     options.AddPolicy("RequireHourly", policy =>
-        policy.RequireRole(
-            "TimeClock.Employee",
-            "TimeClock.Employee.StopSix",
-            "TimeClock.Employee.McCart",
-            "TimeClock.Employee.StopSix.PT",
-            "TimeClock.Employee.McCart.PT",
-            "TimeClock.Substitute",
-            "TimeClock.Admin"));
+    {
+        policy.RequireAssertion(ctx =>
+            ctx.User.IsInRole("TimeClock.Substitute")
+         || ctx.User.IsInRole("TimeClock.Admin")
+         // Any TimeClock.Employee* role qualifies — covers the flat Employee,
+         // campus variants (StopSix / McCart), and PT variants (.PT suffix).
+         || ctx.User.Claims.Any(c =>
+             c.Type == System.Security.Claims.ClaimTypes.Role
+             && c.Value.StartsWith("TimeClock.Employee", StringComparison.OrdinalIgnoreCase)));
+    });
 
     // Campus-scoped supervisors + admin â€" team timesheets, HR
     options.AddPolicy("RequireSupervisor", policy =>
@@ -234,6 +253,16 @@ builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.Configure<TimesheetReminderOptions>(
     builder.Configuration.GetSection("TimesheetReminder"));
 builder.Services.AddHostedService<TimesheetReminderService>();
+
+// Phase A (migration 048): partial-accept stall alerts. Hourly tick, nudges
+// the requesting employee's supervisor once when a PartiallyAssigned request
+// hasn't seen progress in ThresholdHours (default 24h). Dedup via
+// TC_SubRequests.PartialStallAlertSentAt — reset to NULL whenever a new
+// partial accept lands so fresh activity restarts the stall clock.
+// Toggle via appsettings "PartialStallAlert:Enabled".
+builder.Services.Configure<PartialStallAlertOptions>(
+    builder.Configuration.GetSection("PartialStallAlert"));
+builder.Services.AddHostedService<PartialStallAlertService>();
 
 // Auto-Checkout Background Service (runs daily at 9:30 PM CST)
 builder.Services.AddHostedService<AutoCheckoutService>();
