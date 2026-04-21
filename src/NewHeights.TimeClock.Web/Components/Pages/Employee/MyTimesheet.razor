@@ -3,6 +3,7 @@
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireHourly")]
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Shared.Constants
 @using NewHeights.TimeClock.Shared.Enums
 @using NewHeights.TimeClock.Data
@@ -15,6 +16,7 @@
 @inject IPayPeriodService PayPeriodService
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
+@inject IAuditService Audit
 @inject ILogger<MyTimesheet> Logger
 
 <PageTitle>Weekly Time Sheet - @AppConstants.Branding.ShortName</PageTitle>
@@ -168,8 +170,28 @@
                                                             </td>
                                                             <td>
                                                                 <span class="punch-time-in">@pair.InTime</span>
+                                                                @if (!weeklyTimesheet.IsSubmitted && pair.InPunchId.HasValue)
+                                                                {
+                                                                    <button type="button" class="btn-inline-edit"
+                                                                            style="border:none;background:transparent;cursor:pointer;color:#2563eb;font-size:0.85rem;margin:0 0.25rem;"
+                                                                            title="Edit clock-in time"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="() => OpenEditPunch(pair.InPunchId.Value, pair.InPunchDateTime!.Value, pair.WorkDate, isInside: true)">
+                                                                        ✎
+                                                                    </button>
+                                                                }
                                                                 <span class="punch-arrow">→</span>
                                                                 <span class="punch-time-out">@pair.OutTime</span>
+                                                                @if (!weeklyTimesheet.IsSubmitted && pair.OutPunchId.HasValue)
+                                                                {
+                                                                    <button type="button" class="btn-inline-edit"
+                                                                            style="border:none;background:transparent;cursor:pointer;color:#2563eb;font-size:0.85rem;margin:0 0.25rem;"
+                                                                            title="Edit clock-out time"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="() => OpenEditPunch(pair.OutPunchId.Value, pair.OutPunchDateTime!.Value, pair.WorkDate, isInside: false)">
+                                                                        ✎
+                                                                    </button>
+                                                                }
                                                             </td>
                                                             <td>
                                                                 <span class="punch-time-rounded">@pair.RoundedIn</span>
@@ -438,6 +460,67 @@
     </div>
 }
 
+@* Phase A2: Employee inline Edit Time modal. Only adjusts the TIME of an
+   existing punch the employee already made. Add/missing/delete still go
+   through the Request Correction flow. Save stamps IsModified + flags the
+   day as an exception for supervisor review. *@
+@if (showEditPunchModal)
+{
+    <div class="modal-overlay" @onclick="CloseEditPunchModal">
+        <div class="modal-content" @onclick:stopPropagation="true" style="max-width:460px;">
+            <div class="modal-header">
+                <h2>✏️ Edit @(editPunchIsIn ? "Clock-In" : "Clock-Out") Time</h2>
+                <button class="modal-close" @onclick="CloseEditPunchModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin:0 0 0.5rem 0;color:#6b7280;font-size:0.9rem;">
+                    @editPunchWorkDate.ToString("dddd, MMM d") &middot; current time
+                    <strong>@editPunchOriginalTime.ToString("h:mm tt")</strong>
+                </p>
+
+                <div class="form-group">
+                    <label>New time</label>
+                    <input type="time" @bind="editPunchNewTime" step="60" />
+                </div>
+
+                <div class="form-group">
+                    <label>Reason <span style="color:#b45309;">(required)</span></label>
+                    <textarea @bind="editPunchReason"
+                              rows="3"
+                              maxlength="500"
+                              placeholder="Why is this change needed? (e.g., scanner delay, scanned at wrong time, entered wrong IN/OUT)"></textarea>
+                    <div style="font-size:0.8rem;color:#6b7280;margin-top:4px;">
+                        @(string.IsNullOrWhiteSpace(editPunchReason) ? 0 : editPunchReason.Trim().Length) / 500
+                        @if (!string.IsNullOrWhiteSpace(editPunchReason) && editPunchReason.Trim().Length < 5)
+                        {
+                            <span style="color:#b45309;">&middot; at least 5 characters</span>
+                        }
+                    </div>
+                </div>
+
+                <div style="background:#fef3c7;border:1px solid #fde68a;color:#78350f;padding:0.6rem 0.75rem;border-radius:6px;font-size:0.85rem;">
+                    This change will flag the day for supervisor review. Your edit
+                    will be part of the audit log and must be approved as part of
+                    the regular timesheet approval.
+                </div>
+
+                @if (!string.IsNullOrEmpty(editPunchError))
+                {
+                    <div class="form-error" style="margin-top:0.5rem;">@editPunchError</div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" @onclick="CloseEditPunchModal">Cancel</button>
+                <button class="btn-submit-correction"
+                        @onclick="SaveEditPunchAsync"
+                        disabled="@(isSavingEditPunch || string.IsNullOrWhiteSpace(editPunchReason) || editPunchReason.Trim().Length < 5)">
+                    @(isSavingEditPunch ? "Saving..." : "Save Change")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
 <style>
     /* ── Drill-down styles ───────────────────────────────────────── */
     .day-row { transition: background-color 0.15s; }
@@ -561,6 +644,17 @@
     private string correctionPunchType = "In";
     private TimeOnly correctionTime = new(8, 0);
     private long correctionOriginalPunchId = 0;
+
+    // Phase A2: inline Edit Time modal state
+    private bool showEditPunchModal = false;
+    private long editPunchId = 0;
+    private DateTime editPunchOriginalTime;
+    private TimeOnly editPunchNewTime;
+    private DateOnly editPunchWorkDate;
+    private bool editPunchIsIn;
+    private string editPunchReason = "";
+    private string editPunchError = "";
+    private bool isSavingEditPunch = false;
     private string correctionReason = "";
     private string correctionError = "";
     private bool isSubmittingCorrection = false;
@@ -748,7 +842,12 @@
                     RoundedOut = outP?.RoundedTime?.ToString("h:mm tt") ?? outP?.PunchTime.ToString("h:mm tt") ?? "—",
                     Hours = outP != null ? hours.ToString("F2") : "—",
                     IsManual = inP.IsManual || (outP?.IsManual ?? false),
-                    IsModified = inP.IsModified || (outP?.IsModified ?? false)
+                    IsModified = inP.IsModified || (outP?.IsModified ?? false),
+                    InPunchId = inP.PunchId,
+                    OutPunchId = outP?.PunchId,
+                    InPunchDateTime = inP.PunchTime,
+                    OutPunchDateTime = outP?.PunchTime,
+                    WorkDate = day.Date
                 });
 
                 unmatched.Remove(inP);
@@ -769,7 +868,12 @@
                     RoundedOut = outP.RoundedTime?.ToString("h:mm tt") ?? outP.PunchTime.ToString("h:mm tt"),
                     Hours = "—",
                     IsManual = outP.IsManual,
-                    IsModified = outP.IsModified
+                    IsModified = outP.IsModified,
+                    InPunchId = null,
+                    OutPunchId = outP.PunchId,
+                    InPunchDateTime = null,
+                    OutPunchDateTime = outP.PunchTime,
+                    WorkDate = day.Date
                 });
                 unmatched.Remove(outP);
             }
@@ -915,6 +1019,27 @@
             context.TcCorrectionRequests.Add(request);
             await context.SaveChangesAsync();
 
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Correction.Submitted,
+                entityType: AuditEntityTypes.Correction,
+                entityId: request.RequestId.ToString(),
+                newValues: new
+                {
+                    request.RequestId,
+                    request.EmployeeId,
+                    RequestType = request.RequestType.ToString(),
+                    WorkDate = request.WorkDate.ToString("yyyy-MM-dd"),
+                    RequestedPunchType = request.RequestedPunchType?.ToString(),
+                    RequestedDateTime = request.RequestedDateTime?.ToString("yyyy-MM-dd HH:mm:ss"),
+                    OriginalPunchId = request.OriginalPunchId,
+                    Status = request.Status.ToString()
+                },
+                reason: request.Reason,
+                deltaSummary:
+                    $"Employee {employeeId} submitted {request.RequestType} correction request for {request.WorkDate:MMM d}",
+                source: AuditSource.AdminUi,
+                employeeId: employeeId);
+
             Logger.LogInformation("Correction request submitted: Employee={EmployeeId}, Date={Date}, Type={Type}",
                 employeeId, correctionDate, correctionType);
 
@@ -929,6 +1054,136 @@
         finally
         {
             isSubmittingCorrection = false;
+        }
+    }
+
+    // ── Phase A2: employee inline Edit Time ────────────────────────────────
+
+    /// <summary>
+    /// Open the time-edit modal for a single existing TcTimePunch. Only used
+    /// to adjust the TIME of a punch the employee already made. Add / missing
+    /// / delete corrections go through the Request Correction flow.
+    /// </summary>
+    private void OpenEditPunch(long punchId, DateTime currentTime, DateOnly workDate, bool isInside)
+    {
+        editPunchId = punchId;
+        editPunchOriginalTime = currentTime;
+        editPunchNewTime = TimeOnly.FromDateTime(currentTime);
+        editPunchWorkDate = workDate;
+        editPunchIsIn = isInside;
+        editPunchReason = "";
+        editPunchError = "";
+        showEditPunchModal = true;
+    }
+
+    private void CloseEditPunchModal()
+    {
+        showEditPunchModal = false;
+        editPunchId = 0;
+        editPunchReason = "";
+        editPunchError = "";
+    }
+
+    private async Task SaveEditPunchAsync()
+    {
+        if (isSavingEditPunch || editPunchId <= 0) return;
+
+        var trimmedReason = (editPunchReason ?? string.Empty).Trim();
+        if (trimmedReason.Length < 5)
+        {
+            editPunchError = "A reason of at least 5 characters is required.";
+            return;
+        }
+
+        isSavingEditPunch = true;
+        editPunchError = "";
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var punch = await context.TcTimePunches
+                .FirstOrDefaultAsync(p => p.PunchId == editPunchId && p.EmployeeId == employeeId);
+            if (punch == null)
+            {
+                editPunchError = "Punch not found or not yours. Refresh and try again.";
+                return;
+            }
+
+            // Defense-in-depth: don't allow edits of punches from a submitted /
+            // locked pay period even if the button was somehow shown.
+            if (weeklyTimesheet.IsSubmitted)
+            {
+                editPunchError = "This timesheet is already submitted. Ask your supervisor to open it.";
+                return;
+            }
+
+            var originalDt = punch.PunchDateTime;
+            var newDt = editPunchWorkDate.ToDateTime(editPunchNewTime);
+
+            if (newDt == originalDt)
+            {
+                editPunchError = "The new time is the same as the current time.";
+                return;
+            }
+
+            // Preserve the very first original if this punch has been edited before.
+            if (!punch.OriginalPunchDateTime.HasValue)
+                punch.OriginalPunchDateTime = originalDt;
+
+            punch.PunchDateTime = newDt;
+            punch.RoundedDateTime = newDt; // employee edits bypass the ceiling rounding
+            punch.IsModified = true;
+            punch.ModifiedBy = currentUserEmail;
+            punch.ModifiedReason = $"[Employee Self-Edit] {trimmedReason}";
+
+            // Flag the day as exception for supervisor review.
+            var timecard = await context.TcDailyTimecards
+                .FirstOrDefaultAsync(t => t.EmployeeId == employeeId && t.WorkDate == editPunchWorkDate);
+            if (timecard != null)
+            {
+                timecard.HasException = true;
+                timecard.ExceptionNotes = $"Employee edited {(editPunchIsIn ? "IN" : "OUT")} punch at "
+                                        + $"{DateTime.Now:MMM d h:mm tt}: {trimmedReason}";
+                timecard.ModifiedDate = DateTime.Now;
+            }
+
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Punch.Modified,
+                entityType: AuditEntityTypes.Punch,
+                entityId: punch.PunchId.ToString(),
+                oldValues: new { OriginalPunchDateTime = originalDt.ToString("yyyy-MM-dd HH:mm:ss") },
+                newValues: new
+                {
+                    punch.PunchId,
+                    punch.EmployeeId,
+                    PunchType = punch.PunchType.ToString(),
+                    NewPunchDateTime = newDt.ToString("yyyy-MM-dd HH:mm:ss"),
+                    Source = "EMPLOYEE_SELF_EDIT",
+                    WorkDate = editPunchWorkDate.ToString("yyyy-MM-dd")
+                },
+                reason: trimmedReason,
+                deltaSummary:
+                    $"Employee {employeeId} edited {punch.PunchType} time from "
+                    + $"{originalDt:h:mm tt} to {newDt:h:mm tt} on {editPunchWorkDate:MMM d}. Day flagged as exception.",
+                source: AuditSource.AdminUi,
+                employeeId: employeeId,
+                punchId: punch.PunchId);
+
+            await TimesheetService.RecalculateDailyTimecardAsync(employeeId, editPunchWorkDate);
+
+            showEditPunchModal = false;
+            await LoadTimesheet();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving employee inline edit for punch {PunchId}", editPunchId);
+            editPunchError = "Could not save the change. Please try again.";
+        }
+        finally
+        {
+            isSavingEditPunch = false;
         }
     }
 
@@ -954,5 +1209,14 @@
         public string Hours { get; set; } = "";
         public bool IsManual { get; set; }
         public bool IsModified { get; set; }
+
+        // Populated for Phase A2 employee inline Edit Time. Null when that
+        // side of the pair is missing. WorkDate is carried so the edit handler
+        // knows which daily timecard to flag as exception.
+        public long? InPunchId { get; set; }
+        public long? OutPunchId { get; set; }
+        public DateTime? InPunchDateTime { get; set; }
+        public DateTime? OutPunchDateTime { get; set; }
+        public DateOnly WorkDate { get; set; }
     }
 }

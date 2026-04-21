@@ -3,6 +3,7 @@
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireSupervisor")]
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Shared.Constants
 @using NewHeights.TimeClock.Shared.Enums
 @using NewHeights.TimeClock.Data
@@ -17,6 +18,7 @@
 @inject NavigationManager Navigation
 @inject ILogger<SupervisorTimesheetView> Logger
 @inject IEmailService EmailService
+@inject IAuditService Audit
 
 <PageTitle>Review Time Sheet - @employeeName</PageTitle>
 
@@ -775,6 +777,31 @@
             };
 
             context.TcTimePunches.Add(newPunch);
+            await context.SaveChangesAsync();
+
+            // Audit the supervisor-initiated punch add. PUNCH_MODIFIED action
+            // with source AdminUi makes it searchable alongside employee-submitted
+            // corrections.
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Punch.Modified,
+                entityType: AuditEntityTypes.Punch,
+                entityId: newPunch.PunchId.ToString(),
+                newValues: new
+                {
+                    newPunch.PunchId,
+                    newPunch.EmployeeId,
+                    newPunch.CampusId,
+                    PunchType = newPunch.PunchType.ToString(),
+                    newPunch.PunchDateTime,
+                    ScanMethod = newPunch.ScanMethod,
+                    Source = "SUPERVISOR_CORRECTION"
+                },
+                reason: correctionReason,
+                deltaSummary:
+                    $"Supervisor correction: added {newPunch.PunchType} at {newPunch.PunchDateTime:MMM d h:mm tt} for employee {EmployeeId} by {currentUserEmail}",
+                source: AuditSource.AdminUi,
+                employeeId: EmployeeId,
+                punchId: newPunch.PunchId);
 
             // Recalculate daily timecard
             await TimesheetService.RecalculateDailyTimecardAsync(EmployeeId, editingDay.Date);
@@ -788,10 +815,9 @@
                 {
                     timecard.HasException = false;
                     timecard.ExceptionNotes = $"Resolved by {currentUserName}: {correctionReason}";
+                    await context.SaveChangesAsync();
                 }
             }
-
-            await context.SaveChangesAsync();
 
             Logger.LogInformation("Supervisor {Supervisor} added correction for {Employee} on {Date}: {Type} at {Time}",
                 currentUserEmail, EmployeeId, editingDay.Date, newPunchType, newPunchTime);
@@ -898,6 +924,8 @@
             entity.ReviewedBy = currentUserEmail;
             entity.ReviewedDate = DateTime.Now;
 
+            TcTimePunch? newPunch = null;
+
             // If the request includes a punch to add, create the TcTimePunch
             if (request.RequestType == CorrectionRequestType.MissedPunch ||
                 request.RequestType == CorrectionRequestType.AddPunch)
@@ -907,7 +935,7 @@
                     var employee = await context.TcEmployees.FindAsync(EmployeeId);
                     var punchDt = request.RequestedDateTime.Value;
 
-                    var newPunch = new TcTimePunch
+                    newPunch = new TcTimePunch
                     {
                         EmployeeId = EmployeeId,
                         CampusId = employee?.HomeCampusId ?? 0,
@@ -929,6 +957,54 @@
             }
 
             await context.SaveChangesAsync();
+
+            // Audit: CORRECTION_APPROVED row tagged with the supervisor.
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Correction.Approved,
+                entityType: AuditEntityTypes.Correction,
+                entityId: entity.RequestId.ToString(),
+                newValues: new
+                {
+                    entity.RequestId,
+                    entity.EmployeeId,
+                    RequestType = entity.RequestType.ToString(),
+                    WorkDate = entity.WorkDate.ToString("yyyy-MM-dd"),
+                    RequestedPunchType = entity.RequestedPunchType?.ToString(),
+                    RequestedDateTime = entity.RequestedDateTime?.ToString("yyyy-MM-dd HH:mm:ss"),
+                    ReviewedBy = entity.ReviewedBy,
+                    ReviewedDate = entity.ReviewedDate?.ToString("yyyy-MM-dd HH:mm:ss"),
+                    CreatedPunchId = newPunch?.PunchId
+                },
+                reason: entity.Reason,
+                deltaSummary:
+                    $"Correction #{entity.RequestId} ({entity.RequestType}) for employee {EmployeeId} "
+                    + $"approved by {currentUserEmail}"
+                    + (newPunch != null ? $"; punch #{newPunch.PunchId} created" : ""),
+                source: AuditSource.AdminUi,
+                employeeId: EmployeeId);
+
+            // If a punch was applied as a result, also emit CORRECTION_APPLIED.
+            if (newPunch != null)
+            {
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.Correction.Applied,
+                    entityType: AuditEntityTypes.Punch,
+                    entityId: newPunch.PunchId.ToString(),
+                    newValues: new
+                    {
+                        newPunch.PunchId,
+                        newPunch.EmployeeId,
+                        newPunch.CampusId,
+                        PunchType = newPunch.PunchType.ToString(),
+                        newPunch.PunchDateTime,
+                        SourceCorrectionId = entity.RequestId
+                    },
+                    deltaSummary:
+                        $"Applied correction #{entity.RequestId}: new {newPunch.PunchType} punch at {newPunch.PunchDateTime:MMM d h:mm tt}",
+                    source: AuditSource.AdminUi,
+                    employeeId: EmployeeId,
+                    punchId: newPunch.PunchId);
+            }
 
             // Recalculate daily timecard
             await TimesheetService.RecalculateDailyTimecardAsync(EmployeeId, request.WorkDate);
@@ -952,11 +1028,33 @@
             var entity = await context.TcCorrectionRequests.FindAsync(request.RequestId);
             if (entity == null) return;
 
+            var oldStatus = entity.Status;
             entity.Status = CorrectionRequestStatus.Denied;
             entity.ReviewedBy = currentUserEmail;
             entity.ReviewedDate = DateTime.Now;
 
             await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Correction.Denied,
+                entityType: AuditEntityTypes.Correction,
+                entityId: entity.RequestId.ToString(),
+                oldValues: new { Status = oldStatus.ToString() },
+                newValues: new
+                {
+                    entity.RequestId,
+                    entity.EmployeeId,
+                    RequestType = entity.RequestType.ToString(),
+                    WorkDate = entity.WorkDate.ToString("yyyy-MM-dd"),
+                    Status = entity.Status.ToString(),
+                    ReviewedBy = entity.ReviewedBy,
+                    ReviewedDate = entity.ReviewedDate?.ToString("yyyy-MM-dd HH:mm:ss")
+                },
+                reason: entity.Reason,
+                deltaSummary:
+                    $"Correction #{entity.RequestId} ({entity.RequestType}) for employee {EmployeeId} denied by {currentUserEmail}",
+                source: AuditSource.AdminUi,
+                employeeId: EmployeeId);
 
             Logger.LogInformation("Supervisor {Sup} denied correction {Id} for employee {Emp}",
                 currentUserEmail, request.RequestId, EmployeeId);
