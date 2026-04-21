@@ -50,6 +50,10 @@ public class TimeClockDbContext : DbContext
     // Added in migration 043 (Phase D3 TimesheetReminderService).
     public DbSet<TcTimesheetReminderLog> TcTimesheetReminderLogs { get; set; } = null!;
 
+    // Added in migration 045 (Phase D5 — sub pool management).
+    public DbSet<TcSubSpecialty> TcSubSpecialties { get; set; } = null!;
+    public DbSet<TcSubSpecialtyAssignment> TcSubSpecialtyAssignments { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -156,6 +160,9 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.Email).HasMaxLength(200);
             entity.Property(e => e.Phone).HasMaxLength(20);
             entity.Property(e => e.EntraObjectId).HasMaxLength(100);
+            entity.Property(e => e.SubRole).HasMaxLength(20);
+            entity.Property(e => e.ExcludedFromSubPoolBy).HasMaxLength(100);
+            entity.Property(e => e.ExcludedFromSubPoolReason).HasMaxLength(500);
 
             entity.HasOne(e => e.Staff).WithMany().HasForeignKey(e => e.StaffDcid).OnDelete(DeleteBehavior.Restrict).IsRequired(false);
             entity.HasOne(e => e.HomeCampus).WithMany(c => c.Employees).HasForeignKey(e => e.HomeCampusId).OnDelete(DeleteBehavior.Restrict);
@@ -293,6 +300,9 @@ public class TimeClockDbContext : DbContext
 
             // Phase 5 scheduling columns (migration 035a).
             entity.Property(e => e.SessionType).HasMaxLength(10);
+
+            // Migration 044: Phase D4B reception pool.
+            entity.Property(e => e.RequestType).HasMaxLength(20);
 
             entity.HasOne(e => e.RequestingEmployee).WithMany(emp => emp.SubRequests).HasForeignKey(e => e.RequestingEmployeeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
@@ -455,6 +465,34 @@ public class TimeClockDbContext : DbContext
             entity.HasIndex(e => new { e.PayPeriodId, e.EmployeeId, e.ReminderType })
                   .IsUnique();
             entity.HasIndex(e => e.SentAt);
+        });
+
+        // Migration 045 (Phase D5): specialty catalog + M-to-M assignments.
+        modelBuilder.Entity<TcSubSpecialty>(entity =>
+        {
+            entity.ToTable("TC_SubSpecialty");
+            entity.HasKey(e => e.SpecialtyId);
+            entity.Property(e => e.SpecialtyName).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Description).HasMaxLength(200);
+            entity.HasIndex(e => e.SpecialtyName).IsUnique();
+        });
+
+        modelBuilder.Entity<TcSubSpecialtyAssignment>(entity =>
+        {
+            entity.ToTable("TC_SubSpecialtyAssignment");
+            entity.HasKey(e => e.AssignmentId);
+            entity.Property(e => e.AssignedBy).HasMaxLength(100);
+
+            entity.HasOne(e => e.Employee)
+                  .WithMany()
+                  .HasForeignKey(e => e.EmployeeId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Specialty)
+                  .WithMany(s => s.Assignments)
+                  .HasForeignKey(e => e.SpecialtyId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => new { e.EmployeeId, e.SpecialtyId }).IsUnique();
         });
         modelBuilder.Entity<AttendanceTransaction>(entity =>
         {

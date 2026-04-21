@@ -134,6 +134,15 @@ public static class AuditActions
         public const string Reassigned          = "SUB_REASSIGNED";
     }
 
+    // N2. Substitute — Pool Management (Phase D5)
+    public static class SubPool
+    {
+        public const string Excluded            = "SUB_POOL_EXCLUDED";
+        public const string Restored            = "SUB_POOL_RESTORED";
+        public const string SpecialtyAssigned   = "SUB_SPECIALTY_ASSIGNED";
+        public const string SpecialtyUnassigned = "SUB_SPECIALTY_UNASSIGNED";
+    }
+
     // O. Substitute — Timecards
     public static class SubTimecard
     {

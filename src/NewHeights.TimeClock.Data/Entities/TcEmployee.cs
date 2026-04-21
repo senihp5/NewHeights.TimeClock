@@ -38,6 +38,28 @@ public class TcEmployee
     /// </summary>
     public bool SmsOptedOut { get; set; } = false;
 
+    /// <summary>
+    /// Migration 044 (Phase D4B): strict-isolation sub pool. Values:
+    ///   TEACHER    — classroom / teacher coverage
+    ///   RECEPTION  — front-desk / reception coverage
+    /// Only meaningful when EmployeeType = Substitute. NULL is treated as
+    /// TEACHER by application code for backward compatibility with the
+    /// legacy sub pool that existed before this migration.
+    /// </summary>
+    public string? SubRole { get; set; }
+
+    /// <summary>
+    /// Migration 045 (Phase D5): supervisor-managed exclusion. When true,
+    /// SubOutreachPanel will skip this sub when listing candidates, even
+    /// though they remain in the Entra group + active in TcEmployees.
+    /// Used when a sub didn't meet expectations but HR doesn't want to
+    /// remove them from the group entirely.
+    /// </summary>
+    public bool ExcludedFromSubPool { get; set; } = false;
+    public string? ExcludedFromSubPoolBy { get; set; }
+    public DateTime? ExcludedFromSubPoolDate { get; set; }
+    public string? ExcludedFromSubPoolReason { get; set; }
+
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime ModifiedDate { get; set; } = DateTime.Now;
 

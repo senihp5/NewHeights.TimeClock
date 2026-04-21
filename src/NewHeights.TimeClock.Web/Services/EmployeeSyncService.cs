@@ -207,6 +207,14 @@ public class EmployeeSyncService : IEmployeeSyncService
 
         if (toDeactivate.Any()) await db.SaveChangesAsync(ct);
 
+        // Phase D5 / B1: admin-sub overlay. After the main sync completes, read
+        // the SubstituteAdmin Entra group (if configured) and flip SubRole =
+        // 'RECEPTION' on the corresponding TcEmployees rows. Subs in the main
+        // Substitute group but NOT in this admin group are left as TEACHER
+        // (or legacy NULL). Overlay fires after deactivation so we don't
+        // thrash SubRole on rows we're about to deactivate.
+        await ApplyAdminSubOverlayAsync(db, result, ct);
+
         result.CompletedAt = DateTime.Now;
         _logger.LogInformation("Sync complete: +{Added} updated:{Updated} deactivated:{Deact} skipped:{Skip} warnings:{Warn} errors:{Err}",
             result.Added, result.Updated, result.Deactivated, result.Skipped, result.Warnings.Count, result.Errors.Count);
@@ -234,6 +242,78 @@ public class EmployeeSyncService : IEmployeeSyncService
             ct: ct);
 
         return result;
+    }
+
+    /// <summary>
+    /// Phase D5 / B1: read the SubstituteAdmin Entra group (config key
+    /// GraphSync:EmployeeGroupIds:SubstituteAdmin) and flip SubRole='RECEPTION'
+    /// on TcEmployees rows for any sub that's a member. Subs in the main
+    /// Substitute group but not in this admin group are reset to SubRole=NULL
+    /// (treated as TEACHER by application code) so flipping a sub OUT of the
+    /// admin group propagates correctly on the next sync.
+    ///
+    /// Uses transitive membership (admin sub group may be nested). Errors are
+    /// logged + added to result.Warnings; main sync result is not failed by
+    /// overlay errors.
+    /// </summary>
+    private async Task ApplyAdminSubOverlayAsync(
+        TimeClockDbContext db,
+        EmployeeSyncResult result,
+        CancellationToken ct)
+    {
+        const string configKey = "GraphSync:EmployeeGroupIds:SubstituteAdmin";
+        var adminGroupId = _config[configKey];
+        if (string.IsNullOrWhiteSpace(adminGroupId))
+        {
+            _logger.LogInformation("SubstituteAdmin group not configured ({Key}) — skipping admin-sub overlay", configKey);
+            return;
+        }
+
+        try
+        {
+            var members = await _graph.GetTransitiveMembersAsync(adminGroupId, ct);
+            var adminObjectIds = members
+                .Select(m => m.ObjectId)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            _logger.LogInformation("SubstituteAdmin overlay: {Count} group members", adminObjectIds.Count);
+
+            // All active subs.
+            var allSubs = await db.TcEmployees
+                .Where(e => e.IsActive && e.EmployeeType == NewHeights.TimeClock.Shared.Enums.EmployeeType.Substitute)
+                .ToListAsync(ct);
+
+            int promoted = 0, demoted = 0;
+            foreach (var sub in allSubs)
+            {
+                bool isAdmin = !string.IsNullOrWhiteSpace(sub.EntraObjectId)
+                            && adminObjectIds.Contains(sub.EntraObjectId);
+                var desired = isAdmin ? "RECEPTION" : null;
+                if (!string.Equals(sub.SubRole, desired, StringComparison.OrdinalIgnoreCase))
+                {
+                    sub.SubRole = desired;
+                    sub.ModifiedDate = DateTime.Now;
+                    if (isAdmin) promoted++; else demoted++;
+                }
+            }
+
+            if (promoted + demoted > 0)
+            {
+                await db.SaveChangesAsync(ct);
+                _logger.LogInformation("SubstituteAdmin overlay: promoted {Promoted} / demoted {Demoted}",
+                    promoted, demoted);
+            }
+            else
+            {
+                _logger.LogInformation("SubstituteAdmin overlay: no SubRole changes needed");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SubstituteAdmin overlay failed — main sync result unaffected");
+            result.Warnings.Add($"SubstituteAdmin overlay failed: {ex.Message}");
+        }
     }
 
     private async Task SyncOneUserAsync(

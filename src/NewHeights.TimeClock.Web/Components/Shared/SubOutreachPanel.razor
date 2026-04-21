@@ -111,6 +111,15 @@
                                     {
                                         <span class="sms-opt-out" title="This sub has opted out of SMS. Email still works.">no SMS</span>
                                     }
+                                    @if (specialtyByEmployeeId.TryGetValue(c.EmployeeId, out var specialties) && specialties.Count > 0)
+                                    {
+                                        <div style="margin-top:4px;">
+                                            @foreach (var s in specialties)
+                                            {
+                                                <span style="display:inline-block; margin-right:4px; padding:1px 8px; background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; border-radius:10px; font-size:0.75rem;" title="Specialty">@s</span>
+                                            }
+                                        </div>
+                                    }
                                 </td>
                                 <td class="email-cell">
                                     @if (string.IsNullOrWhiteSpace(c.Email))
@@ -251,6 +260,8 @@
     [Parameter] public EventCallback OnOutreachSent { get; set; }
 
     private List<SubCandidate> candidates = new();
+    // Phase D5: specialty tag display per candidate (admin subs only carry these).
+    private Dictionary<int, List<string>> specialtyByEmployeeId = new();
     private List<TcSubOutreach> history = new();
     private OutreachMode mode = OutreachMode.Manual;
     private int? manualSelectedId = null;
@@ -283,17 +294,43 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
 
-            // Candidates: active substitutes at the request's campus.
+            // Candidates: active substitutes at the request's campus, filtered
+            // by SubRole/RequestType per Phase D4B strict isolation. A
+            // RequestType=RECEPTION absence only matches subs with
+            // SubRole=RECEPTION; any other request (TEACHER or NULL legacy)
+            // matches subs with SubRole=TEACHER or NULL (legacy default).
+            bool isReceptionRequest = string.Equals(Request.RequestType, "RECEPTION",
+                StringComparison.OrdinalIgnoreCase);
+
             var subs = await context.TcEmployees
                 .AsNoTracking()
                 .Include(e => e.Staff)
                 .Where(e => e.EmployeeType == EmployeeType.Substitute
                          && e.IsActive
+                         && !e.ExcludedFromSubPool
                          && (e.HomeCampusId == Request.CampusId
-                             || e.EmployeeType == EmployeeType.Substitute))
+                             || e.EmployeeType == EmployeeType.Substitute)
+                         && (isReceptionRequest
+                             ? e.SubRole == "RECEPTION"
+                             : (e.SubRole == null || e.SubRole == "TEACHER")))
                 .OrderBy(e => e.Staff!.LastName)
                 .ThenBy(e => e.Staff!.FirstName)
                 .ToListAsync();
+
+            // Phase D5: load specialty assignments for the candidate set
+            // (admin subs only — TEACHER subs don't carry specialties in this
+            // phase). Render as chips on the candidate row.
+            var subIdsForSpecialty = subs.Select(s => s.EmployeeId).ToList();
+            specialtyByEmployeeId = (await context.TcSubSpecialtyAssignments
+                .AsNoTracking()
+                .Include(a => a.Specialty)
+                .Where(a => subIdsForSpecialty.Contains(a.EmployeeId)
+                         && a.Specialty.IsActive)
+                .ToListAsync())
+                .GroupBy(a => a.EmployeeId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.Select(a => a.Specialty.SpecialtyName).OrderBy(n => n).ToList());
 
             // Conflicts: SubConfirmed SubRequests with overlapping date range.
             // Phase 9b: project CampusId + PeriodsNeeded so we can classify each
@@ -324,7 +361,7 @@
                 .Select(s => new SubCandidate
                 {
                     EmployeeId = s.EmployeeId,
-                    FullName   = s.Staff?.FullName ?? s.Email ?? $"Employee {s.EmployeeId}",
+                    FullName   = s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {s.EmployeeId}",
                     Email      = s.Email,
                     Phone      = s.Phone,
                     SmsOptedOut = s.SmsOptedOut,

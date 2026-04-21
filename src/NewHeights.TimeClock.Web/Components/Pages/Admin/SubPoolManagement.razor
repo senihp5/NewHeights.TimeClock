@@ -1,0 +1,453 @@
+@page "/admin/sub-pool-management"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@using System.Security.Claims
+@attribute [Authorize(Policy = "RequireSupervisor")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<SubPoolManagement> Logger
+
+<PageTitle>Sub Pool Management</PageTitle>
+
+<div style="padding: 1.25rem;">
+    <header style="margin-bottom: 1.5rem;">
+        <h1 style="margin:0;">Sub Pool Management</h1>
+        <p style="color:#64748b; margin:.35rem 0 0; font-size:.9rem;">
+            Exclude individual subs from outreach without removing them from
+            Entra. Manage admin-sub specialties (Admissions, etc.). Specialties
+            display only on RECEPTION subs.
+        </p>
+    </header>
+
+    @if (isLoading)
+    {
+        <div>Loading…</div>
+    }
+    else
+    {
+        <section style="margin-bottom:2rem;">
+            <h2 style="margin:0 0 .75rem;">Active Subs (@activeSubs.Count)</h2>
+            <table style="width:100%; border-collapse:collapse; background:white; border:1px solid #e2e8f0;">
+                <thead style="background:#f8fafc; text-align:left;">
+                    <tr>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Name</th>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Role</th>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Email</th>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Specialties</th>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in activeSubs)
+                    {
+                        var isAdminSub = string.Equals(s.SubRole, "RECEPTION", StringComparison.OrdinalIgnoreCase);
+                        <tr>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
+                                <strong>@(s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {s.EmployeeId}")</strong>
+                            </td>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
+                                @if (isAdminSub)
+                                {
+                                    <span style="display:inline-block; padding:2px 10px; background:#0369a1; color:white; border-radius:12px; font-size:0.78rem; font-weight:500;">RECEPTION</span>
+                                }
+                                else
+                                {
+                                    <span style="display:inline-block; padding:2px 10px; background:#475569; color:white; border-radius:12px; font-size:0.78rem; font-weight:500;">TEACHER</span>
+                                }
+                            </td>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; color:#475569; font-size:.85rem;">
+                                @(s.Email ?? "—")
+                            </td>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
+                                @if (isAdminSub)
+                                {
+                                    var assigned = currentAssignmentsByEmployee.GetValueOrDefault(s.EmployeeId, new());
+                                    @if (assigned.Count == 0)
+                                    {
+                                        <span style="color:#94a3b8; font-size:.85rem;">none</span>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var sid in assigned)
+                                        {
+                                            var name = specialtyCatalog.FirstOrDefault(x => x.SpecialtyId == sid)?.SpecialtyName ?? "?";
+                                            <span style="display:inline-block; margin-right:4px; padding:1px 8px; background:#dbeafe; color:#1e40af; border:1px solid #93c5fd; border-radius:10px; font-size:0.78rem;">@name</span>
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    <span style="color:#cbd5e1; font-size:.85rem;">n/a</span>
+                                }
+                            </td>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right;">
+                                @if (isAdminSub)
+                                {
+                                    <button type="button" style="margin-right:.5rem; padding:.35rem .75rem; background:#1e40af; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
+                                            @onclick="() => OpenSpecialtyEditor(s.EmployeeId)">
+                                        Edit Specialties
+                                    </button>
+                                }
+                                <button type="button" style="padding:.35rem .75rem; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
+                                        @onclick="() => OpenExcludeModal(s.EmployeeId)">
+                                    Exclude
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+
+        @if (excludedSubs.Count > 0)
+        {
+            <section style="margin-bottom:2rem;">
+                <h2 style="margin:0 0 .75rem;">Excluded Subs (@excludedSubs.Count)</h2>
+                <p style="color:#64748b; font-size:.85rem; margin:0 0 .5rem;">
+                    These subs remain in the Entra group but will not appear as outreach candidates.
+                </p>
+                <table style="width:100%; border-collapse:collapse; background:#fef2f2; border:1px solid #fecaca;">
+                    <thead style="background:#fee2e2; text-align:left;">
+                        <tr>
+                            <th style="padding:.5rem .75rem;">Name</th>
+                            <th style="padding:.5rem .75rem;">Excluded By</th>
+                            <th style="padding:.5rem .75rem;">When</th>
+                            <th style="padding:.5rem .75rem;">Reason</th>
+                            <th style="padding:.5rem .75rem; text-align:right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var s in excludedSubs)
+                        {
+                            <tr>
+                                <td style="padding:.5rem .75rem;"><strong>@(s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? "—")</strong></td>
+                                <td style="padding:.5rem .75rem; font-size:.85rem;">@(s.ExcludedFromSubPoolBy ?? "—")</td>
+                                <td style="padding:.5rem .75rem; font-size:.85rem;">@(s.ExcludedFromSubPoolDate?.ToString("MMM d, yyyy h:mm tt") ?? "—")</td>
+                                <td style="padding:.5rem .75rem; font-size:.85rem;">@(s.ExcludedFromSubPoolReason ?? "—")</td>
+                                <td style="padding:.5rem .75rem; text-align:right;">
+                                    <button type="button" style="padding:.35rem .75rem; background:#16a34a; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
+                                            @onclick="() => RestoreSubAsync(s.EmployeeId)">
+                                        Restore to Pool
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </section>
+        }
+    }
+</div>
+
+@if (excludeModalOpen)
+{
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000;" @onclick="CloseExcludeModal">
+        <div style="background:white; padding:1.5rem; border-radius:8px; max-width:500px; width:90%;" @onclick:stopPropagation>
+            <h3 style="margin-top:0;">Exclude from Sub Pool</h3>
+            <p style="color:#475569;">@excludeTargetName will not appear as a candidate for any future outreach until restored. They remain in the Entra group.</p>
+            <label for="exclude-reason" style="display:block; font-weight:600; margin-bottom:.25rem;">Reason (required)</label>
+            <textarea id="exclude-reason" @bind="excludeReason" rows="3" maxlength="500"
+                      style="width:100%; padding:.5rem; border:1px solid #cbd5e1; border-radius:4px; font-family:inherit;"
+                      placeholder="e.g. did not show up for last 2 assignments"></textarea>
+            <div style="margin-top:1rem; display:flex; justify-content:flex-end; gap:.5rem;">
+                <button type="button" style="padding:.5rem 1rem; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;" @onclick="CloseExcludeModal">Cancel</button>
+                <button type="button" style="padding:.5rem 1rem; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer;"
+                        disabled="@string.IsNullOrWhiteSpace(excludeReason)"
+                        @onclick="ConfirmExcludeAsync">Confirm Exclude</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (specialtyModalOpen)
+{
+    <div style="position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000;" @onclick="CloseSpecialtyEditor">
+        <div style="background:white; padding:1.5rem; border-radius:8px; max-width:500px; width:90%;" @onclick:stopPropagation>
+            <h3 style="margin-top:0;">Specialties — @specialtyTargetName</h3>
+            <p style="color:#475569;">Toggle which specialties this admin sub is qualified for.</p>
+            @foreach (var sp in specialtyCatalog.Where(s => s.IsActive).OrderBy(s => s.SortOrder).ThenBy(s => s.SpecialtyName))
+            {
+                <label style="display:block; padding:.4rem 0;">
+                    <input type="checkbox"
+                           checked="@workingSpecialtyIds.Contains(sp.SpecialtyId)"
+                           @onchange="(e) => ToggleSpecialty(sp.SpecialtyId, (bool?)e.Value == true)" />
+                    <strong>@sp.SpecialtyName</strong>
+                    @if (!string.IsNullOrWhiteSpace(sp.Description))
+                    {
+                        <span style="color:#64748b; font-size:.85rem;"> — @sp.Description</span>
+                    }
+                </label>
+            }
+            <div style="margin-top:1rem; display:flex; justify-content:flex-end; gap:.5rem;">
+                <button type="button" style="padding:.5rem 1rem; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;" @onclick="CloseSpecialtyEditor">Cancel</button>
+                <button type="button" style="padding:.5rem 1rem; background:#1e40af; color:white; border:none; border-radius:4px; cursor:pointer;" @onclick="ConfirmSpecialtyAsync">Save</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool isLoading = true;
+    private string currentUserEmail = "";
+
+    private List<TcEmployee> activeSubs = new();
+    private List<TcEmployee> excludedSubs = new();
+    private List<TcSubSpecialty> specialtyCatalog = new();
+    private Dictionary<int, HashSet<int>> currentAssignmentsByEmployee = new();
+
+    // Exclude modal state
+    private bool excludeModalOpen = false;
+    private int? excludeTargetEmployeeId = null;
+    private string excludeTargetName = "";
+    private string excludeReason = "";
+
+    // Specialty editor modal state
+    private bool specialtyModalOpen = false;
+    private int? specialtyTargetEmployeeId = null;
+    private string specialtyTargetName = "";
+    private HashSet<int> workingSpecialtyIds = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
+                        ?? authState.User.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "";
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            var allSubs = await ctx.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .Where(e => e.EmployeeType == EmployeeType.Substitute && e.IsActive)
+                .OrderBy(e => e.Staff!.LastName)
+                .ThenBy(e => e.Staff!.FirstName)
+                .ToListAsync();
+
+            activeSubs   = allSubs.Where(s => !s.ExcludedFromSubPool).ToList();
+            excludedSubs = allSubs.Where(s =>  s.ExcludedFromSubPool).ToList();
+
+            specialtyCatalog = await ctx.TcSubSpecialties
+                .AsNoTracking()
+                .OrderBy(s => s.SortOrder).ThenBy(s => s.SpecialtyName)
+                .ToListAsync();
+
+            var subIds = allSubs.Select(s => s.EmployeeId).ToList();
+            currentAssignmentsByEmployee = (await ctx.TcSubSpecialtyAssignments
+                .AsNoTracking()
+                .Where(a => subIds.Contains(a.EmployeeId))
+                .ToListAsync())
+                .GroupBy(a => a.EmployeeId)
+                .ToDictionary(g => g.Key, g => g.Select(a => a.SpecialtyId).ToHashSet());
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    // ── Exclusion ────────────────────────────────────────────────────
+
+    private void OpenExcludeModal(int employeeId)
+    {
+        var s = activeSubs.FirstOrDefault(x => x.EmployeeId == employeeId);
+        if (s == null) return;
+        excludeTargetEmployeeId = employeeId;
+        excludeTargetName = s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {employeeId}";
+        excludeReason = "";
+        excludeModalOpen = true;
+    }
+
+    private void CloseExcludeModal()
+    {
+        excludeModalOpen = false;
+        excludeTargetEmployeeId = null;
+        excludeReason = "";
+    }
+
+    private async Task ConfirmExcludeAsync()
+    {
+        if (!excludeTargetEmployeeId.HasValue || string.IsNullOrWhiteSpace(excludeReason)) return;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var sub = await ctx.TcEmployees.FindAsync(excludeTargetEmployeeId.Value);
+            if (sub == null) { CloseExcludeModal(); return; }
+
+            sub.ExcludedFromSubPool = true;
+            sub.ExcludedFromSubPoolBy = currentUserEmail;
+            sub.ExcludedFromSubPoolDate = DateTime.Now;
+            sub.ExcludedFromSubPoolReason = excludeReason.Trim();
+            sub.ModifiedDate = DateTime.Now;
+            await ctx.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.SubPool.Excluded,
+                entityType: AuditEntityTypes.Employee,
+                entityId: sub.EmployeeId.ToString(),
+                newValues: new
+                {
+                    sub.EmployeeId,
+                    ExcludedBy = sub.ExcludedFromSubPoolBy,
+                    sub.ExcludedFromSubPoolDate,
+                    sub.ExcludedFromSubPoolReason
+                },
+                reason: sub.ExcludedFromSubPoolReason,
+                deltaSummary: $"Sub {excludeTargetName} excluded from outreach pool by {currentUserEmail}: {sub.ExcludedFromSubPoolReason}",
+                source: AuditSource.AdminUi,
+                employeeId: sub.EmployeeId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error excluding sub {EmployeeId}", excludeTargetEmployeeId);
+        }
+        finally
+        {
+            CloseExcludeModal();
+            await LoadAsync();
+        }
+    }
+
+    private async Task RestoreSubAsync(int employeeId)
+    {
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var sub = await ctx.TcEmployees.FindAsync(employeeId);
+            if (sub == null) return;
+
+            var name = sub.DisplayName ?? sub.Email ?? $"Employee {employeeId}";
+            sub.ExcludedFromSubPool = false;
+            sub.ExcludedFromSubPoolBy = null;
+            sub.ExcludedFromSubPoolDate = null;
+            sub.ExcludedFromSubPoolReason = null;
+            sub.ModifiedDate = DateTime.Now;
+            await ctx.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.SubPool.Restored,
+                entityType: AuditEntityTypes.Employee,
+                entityId: sub.EmployeeId.ToString(),
+                newValues: new { sub.EmployeeId, RestoredBy = currentUserEmail },
+                deltaSummary: $"Sub {name} restored to outreach pool by {currentUserEmail}",
+                source: AuditSource.AdminUi,
+                employeeId: sub.EmployeeId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error restoring sub {EmployeeId}", employeeId);
+        }
+        finally
+        {
+            await LoadAsync();
+        }
+    }
+
+    // ── Specialty editor ─────────────────────────────────────────────
+
+    private void OpenSpecialtyEditor(int employeeId)
+    {
+        var s = activeSubs.FirstOrDefault(x => x.EmployeeId == employeeId);
+        if (s == null) return;
+        specialtyTargetEmployeeId = employeeId;
+        specialtyTargetName = s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {employeeId}";
+        workingSpecialtyIds = currentAssignmentsByEmployee.GetValueOrDefault(employeeId, new()).ToHashSet();
+        specialtyModalOpen = true;
+    }
+
+    private void CloseSpecialtyEditor()
+    {
+        specialtyModalOpen = false;
+        specialtyTargetEmployeeId = null;
+        workingSpecialtyIds = new();
+    }
+
+    private void ToggleSpecialty(int specialtyId, bool isChecked)
+    {
+        if (isChecked) workingSpecialtyIds.Add(specialtyId);
+        else workingSpecialtyIds.Remove(specialtyId);
+    }
+
+    private async Task ConfirmSpecialtyAsync()
+    {
+        if (!specialtyTargetEmployeeId.HasValue) return;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var existing = await ctx.TcSubSpecialtyAssignments
+                .Where(a => a.EmployeeId == specialtyTargetEmployeeId.Value)
+                .ToListAsync();
+
+            var existingIds = existing.Select(a => a.SpecialtyId).ToHashSet();
+            var added   = workingSpecialtyIds.Except(existingIds).ToList();
+            var removed = existingIds.Except(workingSpecialtyIds).ToList();
+
+            // Remove unchecked ones.
+            foreach (var rem in existing.Where(a => removed.Contains(a.SpecialtyId)))
+                ctx.TcSubSpecialtyAssignments.Remove(rem);
+
+            // Add newly checked ones.
+            foreach (var addId in added)
+                ctx.TcSubSpecialtyAssignments.Add(new TcSubSpecialtyAssignment
+                {
+                    EmployeeId = specialtyTargetEmployeeId.Value,
+                    SpecialtyId = addId,
+                    AssignedBy = currentUserEmail,
+                    AssignedDate = DateTime.Now
+                });
+
+            await ctx.SaveChangesAsync();
+
+            // Audit one row per change so individual assignments are filterable.
+            foreach (var addId in added)
+            {
+                var name = specialtyCatalog.FirstOrDefault(x => x.SpecialtyId == addId)?.SpecialtyName ?? "?";
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.SubPool.SpecialtyAssigned,
+                    entityType: AuditEntityTypes.Employee,
+                    entityId: specialtyTargetEmployeeId.Value.ToString(),
+                    newValues: new { EmployeeId = specialtyTargetEmployeeId.Value, SpecialtyId = addId, SpecialtyName = name },
+                    deltaSummary: $"Specialty '{name}' assigned to {specialtyTargetName} by {currentUserEmail}",
+                    source: AuditSource.AdminUi,
+                    employeeId: specialtyTargetEmployeeId.Value);
+            }
+            foreach (var remId in removed)
+            {
+                var name = specialtyCatalog.FirstOrDefault(x => x.SpecialtyId == remId)?.SpecialtyName ?? "?";
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.SubPool.SpecialtyUnassigned,
+                    entityType: AuditEntityTypes.Employee,
+                    entityId: specialtyTargetEmployeeId.Value.ToString(),
+                    newValues: new { EmployeeId = specialtyTargetEmployeeId.Value, SpecialtyId = remId, SpecialtyName = name },
+                    deltaSummary: $"Specialty '{name}' removed from {specialtyTargetName} by {currentUserEmail}",
+                    source: AuditSource.AdminUi,
+                    employeeId: specialtyTargetEmployeeId.Value);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving specialties for {EmployeeId}", specialtyTargetEmployeeId);
+        }
+        finally
+        {
+            CloseSpecialtyEditor();
+            await LoadAsync();
+        }
+    }
+}
