@@ -211,8 +211,11 @@ builder.Services.AddHostedService<StaleTokenExpiryService>();
 
 // Phase 9c: escalate stale AwaitingSub requests to campus admin via email + SMS.
 // Runs on ScanIntervalHours cadence (default 4h). Disabled via appsettings flag.
+// ISubRequestEscalator is the per-request escalation primitive, called by both
+// the background service (scheduled) and the admin "Escalate Now" button.
 builder.Services.Configure<SubRequestEscalationOptions>(
     builder.Configuration.GetSection("SubRequestEscalation"));
+builder.Services.AddScoped<ISubRequestEscalator, SubRequestEscalator>();
 builder.Services.AddHostedService<SubRequestEscalationService>();
 
 // Email Service

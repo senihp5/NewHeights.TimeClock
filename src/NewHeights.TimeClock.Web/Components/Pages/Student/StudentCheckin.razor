@@ -194,17 +194,22 @@
                 .AsNoTracking()
                 .FirstOrDefaultAsync(s => s.Email == signedInEmail && s.IsActive);
 
-            campusList = await ctx.Campuses
+            // Student-facing picker: exclude the District Office campus (no
+            // students attend there). Keys are TimeClock CampusId (1, 2, 5);
+            // not the PowerSchool 9-digit school id.
+            var campusesForStudents = await ctx.Campuses
                 .AsNoTracking()
+                .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
                 .OrderBy(c => c.CampusName)
-                .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
+                .ToListAsync();
 
-            if (campusList.Count > 0)
+            campusList = campusesForStudents.ToDictionary(c => c.CampusId, c => c.CampusName);
+
+            if (campusesForStudents.Count > 0)
             {
-                // Prefer the PS-linked StopSix id if set, else first campus.
-                selectedCampusId = campusList.ContainsKey(AppConstants.Campus.StopSixPowerSchoolId)
-                    ? AppConstants.Campus.StopSixPowerSchoolId
-                    : campusList.Keys.First();
+                var stopSix = campusesForStudents.FirstOrDefault(
+                    c => c.CampusCode == AppConstants.Campus.StopSixCode);
+                selectedCampusId = stopSix?.CampusId ?? campusesForStudents[0].CampusId;
             }
 
             if (student != null)

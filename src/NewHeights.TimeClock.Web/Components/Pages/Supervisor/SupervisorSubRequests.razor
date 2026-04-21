@@ -14,6 +14,7 @@
 @inject IAuditService Audit
 @inject IUserContextService UserContextSvc
 @inject ISubOutreachService OutreachService
+@inject ISubRequestEscalator EscalatorSvc
 @inject NavigationManager Navigation
 @inject ILogger<SupervisorSubRequests> Logger
 
@@ -199,7 +200,27 @@
                         <div style="background:#fffbeb; border:1px solid #fde68a; color:#92400e; padding:.5rem .75rem; border-radius:6px; margin:.5rem 0; font-size:.9rem;">
                             <strong>Awaiting sub assignment by the teacher.</strong>
                             Admin can dispatch outreach below to override if the teacher hasn't acted.
+                            @if (req.EscalatedAt.HasValue)
+                            {
+                                <div style="margin-top:.35rem;font-size:.85rem;color:#78350f;">
+                                    Last escalated to supervisor: @req.EscalatedAt.Value.ToString("MMM d h:mm tt")
+                                </div>
+                            }
+                            <div style="margin-top:.5rem;">
+                                <button type="button"
+                                        style="background:#b45309;color:#fff;border:1px solid #b45309;padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-size:.85rem;font-weight:500;"
+                                        @onclick="() => EscalateNowAsync(req)"
+                                        disabled="@(escalatingRequestId == req.SubRequestId)">
+                                    @(escalatingRequestId == req.SubRequestId ? "Escalating\u2026" : "Escalate to supervisor now")
+                                </button>
+                            </div>
                         </div>
+                        @if (escalateFeedbackRequestId == req.SubRequestId && !string.IsNullOrEmpty(escalateFeedback))
+                        {
+                            <div style="@(escalateFeedbackIsError ? "background:#fef2f2;border:1px solid #fecaca;color:#991b1b;" : "background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;") padding:.5rem .75rem;border-radius:6px;margin:.25rem 0 .5rem;font-size:.88rem;">
+                                @escalateFeedback
+                            </div>
+                        }
                     }
                     <SubOutreachPanel Request="@req"
                                       CurrentUserEmail="@currentUserEmail"
@@ -302,6 +323,12 @@
     private long? denyingRequestId = null;
     private string denyReason = "";
     private bool isDenying = false;
+
+    // Escalate Now state (Phase 9c manual lever)
+    private long? escalatingRequestId = null;
+    private long? escalateFeedbackRequestId = null;
+    private string escalateFeedback = "";
+    private bool escalateFeedbackIsError = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -536,6 +563,71 @@
         actionError = "";
         denyingRequestId = requestId;
         denyReason = "";
+    }
+
+    /// <summary>
+    /// Phase 9c manual lever: admin clicks "Escalate to supervisor now" on an
+    /// AwaitingSub row. Delegates to ISubRequestEscalator, which is the same
+    /// primitive used by the scheduled background scan — guarantees identical
+    /// email/SMS content, audit semantics, and EscalatedAt stamp rules.
+    /// </summary>
+    private async Task EscalateNowAsync(TcSubRequest req)
+    {
+        if (escalatingRequestId != null) return;
+        if (string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            escalateFeedbackRequestId = req.SubRequestId;
+            escalateFeedback = "Your session lost its user context \u2014 refresh and try again.";
+            escalateFeedbackIsError = true;
+            return;
+        }
+
+        escalatingRequestId = req.SubRequestId;
+        escalateFeedbackRequestId = req.SubRequestId;
+        escalateFeedback = "";
+        try
+        {
+            var result = await EscalatorSvc.EscalateOneAsync(
+                req.SubRequestId, triggerSource: "manual", triggerByEmail: currentUserEmail);
+
+            if (!result.Success)
+            {
+                escalateFeedbackIsError = true;
+                escalateFeedback = result.SkipReason switch
+                {
+                    "no-supervisor-linked" =>
+                        "Cannot escalate \u2014 the teacher has no supervisor linked in Entra. Run EmployeeSync after populating the manager attribute.",
+                    "request-not-found" =>
+                        "Request not found \u2014 it may have been updated by another admin.",
+                    _ when result.SkipReason?.StartsWith("not-awaitingsub") == true =>
+                        "Cannot escalate \u2014 this request is no longer AwaitingSub. Refresh the list.",
+                    _ => $"Escalation skipped: {result.SkipReason ?? "unknown reason"}"
+                };
+            }
+            else
+            {
+                escalateFeedbackIsError = false;
+                var channels = new List<string>();
+                if (result.EmailSent) channels.Add("email");
+                if (result.SmsDelivered) channels.Add("SMS");
+                else if (result.SmsAttempted) channels.Add("SMS (failed)");
+                var chanText = channels.Count == 0 ? "no channels delivered" : string.Join(" + ", channels);
+                escalateFeedback =
+                    $"Escalated to {result.SupervisorDisplay ?? "supervisor"} via {chanText}.";
+            }
+
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "EscalateNowAsync failed for request {Id}", req.SubRequestId);
+            escalateFeedbackIsError = true;
+            escalateFeedback = "Could not escalate. Please try again; check logs for details.";
+        }
+        finally
+        {
+            escalatingRequestId = null;
+        }
     }
 
     private void CancelDeny()
