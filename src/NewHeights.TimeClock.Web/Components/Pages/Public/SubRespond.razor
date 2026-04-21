@@ -1,11 +1,15 @@
 @page "/sub/respond/{Token}"
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
 @using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
 @using NewHeights.TimeClock.Web.Services
 @attribute [AllowAnonymous]
 @rendermode InteractiveServer
 @inject ISubOutreachService OutreachService
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ILogger<SubRespond> Logger
 
 <PageTitle>Sub Assignment - @AppConstants.Branding.ShortName</PageTitle>
@@ -49,6 +53,23 @@
                 </p>
             </div>
         }
+        else if (allPeriodsCovered)
+        {
+            <div class="info-panel covered-panel">
+                <h2>Shift Covered &mdash; Thank You!</h2>
+                <p>
+                    Thanks for responding, @(subFirstName).
+                    @(coveredSource == "confirmed"
+                        ? "Another sub already accepted this assignment"
+                        : "Every period on this request has already been picked up by other subs")
+                    since this link was sent &mdash; no action needed from you.
+                </p>
+                <p class="subtle">
+                    We appreciate you being on call. If your availability changes or you'd
+                    still like to substitute this week, reach out to your campus manager.
+                </p>
+            </div>
+        }
         else if (accepted)
         {
             <div class="success-panel">
@@ -57,6 +78,7 @@
                     Thanks @(subFirstName)! You're scheduled at
                     <strong>@(campusName)</strong> for <strong>@(dateRangeDisplay)</strong>.
                 </p>
+                <p>Periods confirmed: <strong>@(acceptedPeriodsDisplay)</strong></p>
                 <p>A confirmation email has been sent to you with the full details.</p>
                 <p class="subtle">Please check in with the front receptionist on arrival.</p>
             </div>
@@ -81,7 +103,6 @@
                     <div><span class="detail-label">Campus:</span> <strong>@(campusName)</strong></div>
                     <div><span class="detail-label">Dates:</span> @(dateRangeDisplay)</div>
                     <div><span class="detail-label">Session:</span> @(sessionDisplay)</div>
-                    <div><span class="detail-label">Periods:</span> @(periodsDisplay)</div>
                     @if (!string.IsNullOrWhiteSpace(subjectAreaDisplay))
                     {
                         <div><span class="detail-label">Subject:</span> @(subjectAreaDisplay)</div>
@@ -97,6 +118,49 @@
                     </div>
                 }
 
+                @* Phase A: if request has enumerable periods, show a checkbox list
+                   of currently-remaining periods. Otherwise render the legacy
+                   "single accept button" treating the whole request as one unit. *@
+                @if (remainingPeriods.Any())
+                {
+                    <div class="periods-panel">
+                        <p class="periods-lead">
+                            Select the period(s) you'd like to cover.
+                            @if (alreadyCoveredPeriods.Any())
+                            {
+                                <em>Periods already covered by another sub aren't shown.</em>
+                            }
+                        </p>
+                        <div class="period-checkboxes">
+                            @foreach (var p in remainingPeriods)
+                            {
+                                <label class="period-checkbox">
+                                    <input type="checkbox"
+                                           checked="@selectedPeriods.Contains(p)"
+                                           @onchange="(e) => ToggleSelection(p, (bool?)e.Value == true)" />
+                                    <span>@p</span>
+                                </label>
+                            }
+                        </div>
+                        @if (alreadyCoveredPeriods.Any())
+                        {
+                            <p class="covered-note">
+                                Already covered: <strong>@(string.Join(", ", alreadyCoveredPeriods))</strong>
+                            </p>
+                        }
+                        <div class="period-quick-actions">
+                            <button type="button" class="btn-link" @onclick="SelectAll">Select all</button>
+                            <button type="button" class="btn-link" @onclick="SelectNone">Clear</button>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <p style="color:#6b7280; font-style:italic;">
+                        This request doesn't specify individual periods — accepting covers the full absence.
+                    </p>
+                }
+
                 @if (!string.IsNullOrEmpty(actionError))
                 {
                     <div class="error-inline" role="alert">@actionError</div>
@@ -105,8 +169,12 @@
                 <div class="respond-actions">
                     <button type="button" class="btn-accept"
                             @onclick="AcceptAsync"
-                            disabled="@isSubmitting">
-                        @(isSubmitting && activeAction == "accept" ? "Confirming…" : "Accept Assignment")
+                            disabled="@(isSubmitting || (remainingPeriods.Any() && selectedPeriods.Count == 0))">
+                        @(isSubmitting && activeAction == "accept"
+                            ? "Confirming…"
+                            : (remainingPeriods.Any()
+                                ? $"Accept Selected ({selectedPeriods.Count})"
+                                : "Accept Assignment"))
                     </button>
                     <button type="button" class="btn-decline"
                             @onclick="DeclineAsync"
@@ -125,6 +193,25 @@
     </div>
 </div>
 
+<style>
+    /* Phase A ext: Shift Covered state gets a warmer visual than the generic
+       info panel. Blue gradient + gold accent to match the site brand. */
+    .covered-panel { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 1px solid #93c5fd; border-left: 5px solid #1e3a5f; border-radius: 8px; padding: 1.25rem 1.5rem; }
+    .covered-panel h2 { color: #1e3a5f; margin-top: 0; }
+    .covered-panel p { color: #1e293b; }
+    .covered-panel .subtle { color: #475569; font-size: .9rem; margin-top: .6rem; }
+    .periods-panel { margin: 1rem 0; padding: 1rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
+    .periods-lead { margin: 0 0 .6rem; color: #334155; font-size: .92rem; }
+    .period-checkboxes { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .period-checkbox { display: inline-flex; align-items: center; gap: .35rem; padding: .4rem .75rem; background: white; border: 1px solid #cbd5e1; border-radius: 18px; cursor: pointer; font-weight: 500; user-select: none; }
+    .period-checkbox:has(input:checked) { background: #dbeafe; border-color: #1d4ed8; color: #1e3a8a; }
+    .period-checkbox input { margin: 0; cursor: pointer; }
+    .covered-note { margin: .75rem 0 0; color: #64748b; font-size: .85rem; }
+    .period-quick-actions { margin-top: .6rem; display: flex; gap: .75rem; }
+    .btn-link { background: none; border: none; padding: 0; color: #1d4ed8; cursor: pointer; font-size: .85rem; text-decoration: underline; }
+    .btn-link:hover { color: #1e3a8a; }
+</style>
+
 @code {
     [Parameter] public string Token { get; set; } = "";
 
@@ -136,21 +223,32 @@
 
     private bool accepted = false;
     private bool declined = false;
+    private bool allPeriodsCovered = false;
 
     private bool isSubmitting = false;
     private string activeAction = "";
     private string actionError = "";
 
-    // Data for display.
+    // Display data
     private string campusName = "";
     private string subFirstName = "";
     private string dateRangeDisplay = "";
     private string sessionDisplay = "";
-    private string periodsDisplay = "";
     private string subjectAreaDisplay = "";
     private string teacherName = "";
     private string specialInstructions = "";
     private DateTime? tokenExpiresAt;
+
+    // Phase A state
+    private List<string> remainingPeriods = new();
+    private List<string> alreadyCoveredPeriods = new();
+    private HashSet<string> selectedPeriods = new(StringComparer.OrdinalIgnoreCase);
+    private string acceptedPeriodsDisplay = "";
+    // Phase A ext: which path triggered the "Shift Covered" state so the
+    // thank-you copy can be tailored. "confirmed" = request reached SubConfirmed
+    // (whole-request accept by another sub). "periods" = all periods were
+    // claimed across multiple partial accepts.
+    private string coveredSource = "";
 
     protected override async Task OnInitializedAsync()
     {
@@ -163,9 +261,14 @@
         isInvalid = false;
         isExpired = false;
         alreadyResponded = false;
+        allPeriodsCovered = false;
         accepted = false;
         declined = false;
         actionError = "";
+        selectedPeriods = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        remainingPeriods = new List<string>();
+        alreadyCoveredPeriods = new List<string>();
+        coveredSource = "";
 
         try
         {
@@ -200,6 +303,22 @@
             }
 
             PopulateDetails(outreach);
+
+            // Phase A: load the assignment picture for this request so the UI
+            // shows only uncovered periods. If the request has no PeriodsNeeded
+            // string, we treat it as a legacy single-unit request (no checkbox
+            // list — one big Accept).
+            await LoadPeriodsAsync(outreach.SubRequestId);
+
+            // "Shift Covered" terminal state fires when either:
+            //   (a) coveredSource == "periods"   — enumerable request, every
+            //       period claimed across multiple partial accepts
+            //   (b) coveredSource == "confirmed" — whole-request accept by
+            //       another sub drove Status to SubConfirmed
+            if (!string.IsNullOrEmpty(coveredSource))
+            {
+                allPeriodsCovered = true;
+            }
         }
         catch (Exception ex)
         {
@@ -212,17 +331,67 @@
         }
     }
 
+    private async Task LoadPeriodsAsync(long subRequestId)
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        var request = await ctx.TcSubRequests
+            .AsNoTracking()
+            .Include(r => r.Assignments)
+            .FirstOrDefaultAsync(r => r.SubRequestId == subRequestId);
+        if (request == null) return;
+
+        var needed = ParsePeriods(request.PeriodsNeeded).ToList();
+
+        if (needed.Count == 0)
+        {
+            // Legacy / no-period request. Not period-scoped, so the only way
+            // it's "covered" is if Status already reached SubConfirmed
+            // (another sub accepted the whole thing).
+            if (request.Status == SubRequestStatus.SubConfirmed)
+            {
+                coveredSource = "confirmed";
+            }
+            return;
+        }
+
+        var covered = request.Assignments
+            .SelectMany(a => ParsePeriods(a.PeriodsCovered))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        remainingPeriods = needed.Where(p => !covered.Contains(p)).ToList();
+        alreadyCoveredPeriods = needed.Where(p => covered.Contains(p)).ToList();
+
+        // Default: pre-select every available period so the common case
+        // ("I'll take it all") is one click. Sub unchecks what they can't.
+        selectedPeriods = new HashSet<string>(remainingPeriods, StringComparer.OrdinalIgnoreCase);
+
+        if (remainingPeriods.Count == 0 && alreadyCoveredPeriods.Count > 0)
+        {
+            coveredSource = "periods";
+        }
+    }
+
+    private static IEnumerable<string> ParsePeriods(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) yield break;
+        foreach (var raw in csv.Split(','))
+        {
+            var p = raw.Trim().ToUpperInvariant();
+            if (p.Length > 0) yield return p;
+        }
+    }
+
     private void PopulateDetails(TcSubOutreach outreach)
     {
         var sub = outreach.SubEmployee;
         var request = outreach.SubRequest;
         var teacher = request?.RequestingEmployee;
 
-        subFirstName = sub?.Staff?.FirstName ?? sub?.Staff?.FullName ?? "there";
+        subFirstName = sub?.Staff?.FirstName ?? sub?.Staff?.FullName ?? sub?.DisplayName ?? "there";
         campusName = request?.Campus?.CampusName ?? "New Heights";
-        teacherName = teacher?.Staff?.FullName ?? teacher?.Email ?? "—";
+        teacherName = teacher?.Staff?.FullName ?? teacher?.DisplayName ?? teacher?.Email ?? "—";
         sessionDisplay = request?.SessionType ?? "Day";
-        periodsDisplay = string.IsNullOrWhiteSpace(request?.PeriodsNeeded) ? "—" : request!.PeriodsNeeded!;
         subjectAreaDisplay = request?.SubjectArea ?? "";
         specialInstructions = request?.SpecialInstructions ?? "";
 
@@ -234,6 +403,16 @@
         }
     }
 
+    private void ToggleSelection(string period, bool isChecked)
+    {
+        if (isChecked) selectedPeriods.Add(period);
+        else selectedPeriods.Remove(period);
+    }
+
+    private void SelectAll() => selectedPeriods = new HashSet<string>(remainingPeriods, StringComparer.OrdinalIgnoreCase);
+
+    private void SelectNone() => selectedPeriods.Clear();
+
     private async Task AcceptAsync()
     {
         if (isSubmitting) return;
@@ -242,7 +421,17 @@
         actionError = "";
         try
         {
-            await OutreachService.ProcessAcceptAsync(Token);
+            // If the request has enumerable periods, submit the checked subset.
+            // For legacy no-periods requests, pass null so the service does a
+            // whole-request accept.
+            IReadOnlyCollection<string>? selectedList = remainingPeriods.Count > 0
+                ? selectedPeriods.ToList()
+                : null;
+
+            await OutreachService.ProcessAcceptAsync(Token, selectedList);
+            acceptedPeriodsDisplay = selectedList != null && selectedList.Count > 0
+                ? string.Join(", ", selectedList.OrderBy(p => p))
+                : "all periods";
             accepted = true;
         }
         catch (InvalidOperationException ex)

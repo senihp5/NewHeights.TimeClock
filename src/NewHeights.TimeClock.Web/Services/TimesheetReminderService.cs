@@ -100,6 +100,11 @@ public class TimesheetReminderService : BackgroundService
         var dbFactory = sp.GetRequiredService<IDbContextFactory<TimeClockDbContext>>();
         var payPeriodService = sp.GetRequiredService<IPayPeriodService>();
         var emailService = sp.GetRequiredService<IEmailService>();
+        // Phase A ext: SMS fan-out alongside email. _smsService.IsEnabled gates
+        // all sends — until ACS toll-free verification approves, IsEnabled=false
+        // and sms calls are no-ops. Once approved, flip the config and SMS
+        // starts flowing without a code change.
+        var smsService = sp.GetRequiredService<ISmsService>();
 
         // Resolve the current pay period from the DB (not the estimated
         // fallback). If estimated, skip — we can't reliably attach a dedup row
@@ -123,7 +128,7 @@ public class TimesheetReminderService : BackgroundService
         if (hoursToDeadline > 24 && hoursToDeadline <= 48)
         {
             await FireEmployeeReminders(
-                dbFactory, emailService, period,
+                dbFactory, emailService, smsService, period,
                 reminderType: "EMPLOYEE_48H",
                 deadlineDateOnly: period.EmployeeDeadline,
                 stoppingToken);
@@ -133,7 +138,7 @@ public class TimesheetReminderService : BackgroundService
         if (hoursToDeadline > 0 && hoursToDeadline <= 24)
         {
             await FireEmployeeReminders(
-                dbFactory, emailService, period,
+                dbFactory, emailService, smsService, period,
                 reminderType: "EMPLOYEE_24H",
                 deadlineDateOnly: period.EmployeeDeadline,
                 stoppingToken);
@@ -143,7 +148,7 @@ public class TimesheetReminderService : BackgroundService
         if (hoursToDeadline <= 0)
         {
             await FireSupervisorReminders(
-                dbFactory, emailService, period,
+                dbFactory, emailService, smsService, period,
                 deadlineDateOnly: period.EmployeeDeadline,
                 stoppingToken);
         }
@@ -152,6 +157,7 @@ public class TimesheetReminderService : BackgroundService
     private async Task FireEmployeeReminders(
         IDbContextFactory<TimeClockDbContext> dbFactory,
         IEmailService emailService,
+        ISmsService smsService,
         PayPeriodInfo period,
         string reminderType,
         DateOnly deadlineDateOnly,
@@ -209,11 +215,13 @@ public class TimesheetReminderService : BackgroundService
                 ? (emp.Supervisor.Staff.FirstName + " " + emp.Supervisor.Staff.LastName)
                 : (emp.Supervisor?.DisplayName ?? "your supervisor");
 
-            bool delivered = false;
+            bool emailDelivered = false;
+            bool smsAttempted = false;
+            bool smsDelivered = false;
             string? errorMsg = null;
             try
             {
-                delivered = await emailService.SendTimesheetReminderAsync(
+                emailDelivered = await emailService.SendTimesheetReminderAsync(
                     emp.Email!, employeeName, supervisorName, deadlineDateOnly);
             }
             catch (Exception ex)
@@ -224,18 +232,47 @@ public class TimesheetReminderService : BackgroundService
                     emp.EmployeeId, reminderType);
             }
 
-            // Write the dedup row either way so we don't spin on a broken inbox.
+            // Phase A ext: parallel SMS fan-out. No-op while _smsService.IsEnabled
+            // is false (ACS toll-free verification pending); flips on automatically
+            // once the config gate is flipped without touching this service.
+            if (smsService.IsEnabled
+             && !emp.SmsOptedOut
+             && !string.IsNullOrWhiteSpace(emp.Phone))
+            {
+                smsAttempted = true;
+                try
+                {
+                    var smsBody = BuildEmployeeReminderSms(employeeName, deadlineDateOnly, reminderType);
+                    var result = await smsService.SendAsync(emp.Phone!, smsBody);
+                    smsDelivered = result.Delivered;
+                    if (!smsDelivered && string.IsNullOrEmpty(errorMsg))
+                        errorMsg = $"sms:{result.ErrorReason ?? "unknown"}";
+                }
+                catch (Exception ex)
+                {
+                    if (string.IsNullOrEmpty(errorMsg)) errorMsg = $"sms:{ex.Message}";
+                    _logger.LogWarning(ex,
+                        "Employee reminder SMS failed. EmployeeId={EmpId}, Type={Type}",
+                        emp.EmployeeId, reminderType);
+                }
+            }
+
+            bool anyDelivered = emailDelivered || smsDelivered;
+
+            // Write the dedup row either way so we don't spin on a broken inbox
+            // (or a disabled SMS service). Delivery status SENT when ANY channel
+            // lands, FAILED when both attempted and both missed.
             db.TcTimesheetReminderLogs.Add(new TcTimesheetReminderLog
             {
                 PayPeriodId = period.PayPeriodId,
                 EmployeeId = emp.EmployeeId,
                 ReminderType = reminderType,
                 SentAt = DateTime.Now,
-                DeliveryStatus = delivered ? "SENT" : "FAILED",
+                DeliveryStatus = anyDelivered ? "SENT" : "FAILED",
                 ErrorMessage = errorMsg
             });
 
-            if (delivered) sent++;
+            if (anyDelivered) sent++;
         }
 
         await db.SaveChangesAsync(ct);
@@ -248,6 +285,7 @@ public class TimesheetReminderService : BackgroundService
     private async Task FireSupervisorReminders(
         IDbContextFactory<TimeClockDbContext> dbFactory,
         IEmailService emailService,
+        ISmsService smsService,
         PayPeriodInfo period,
         DateOnly deadlineDateOnly,
         CancellationToken ct)
@@ -300,11 +338,12 @@ public class TimesheetReminderService : BackgroundService
                 ? (sup.Staff.FirstName + " " + sup.Staff.LastName)
                 : (sup.DisplayName ?? sup.Email ?? "Supervisor");
 
-            bool delivered = false;
+            bool emailDelivered = false;
+            bool smsDelivered = false;
             string? errorMsg = null;
             try
             {
-                delivered = await emailService.SendSupervisorReminderAsync(
+                emailDelivered = await emailService.SendSupervisorReminderAsync(
                     sup.Email!, supName, pendingCount, deadlineDateOnly);
             }
             catch (Exception ex)
@@ -315,17 +354,42 @@ public class TimesheetReminderService : BackgroundService
                     sup.EmployeeId);
             }
 
+            // Phase A ext: parallel SMS. Gated by _smsService.IsEnabled so this
+            // is a no-op until ACS toll-free verification is approved.
+            if (smsService.IsEnabled
+             && !sup.SmsOptedOut
+             && !string.IsNullOrWhiteSpace(sup.Phone))
+            {
+                try
+                {
+                    var smsBody = BuildSupervisorReminderSms(supName, pendingCount, deadlineDateOnly);
+                    var result = await smsService.SendAsync(sup.Phone!, smsBody);
+                    smsDelivered = result.Delivered;
+                    if (!smsDelivered && string.IsNullOrEmpty(errorMsg))
+                        errorMsg = $"sms:{result.ErrorReason ?? "unknown"}";
+                }
+                catch (Exception ex)
+                {
+                    if (string.IsNullOrEmpty(errorMsg)) errorMsg = $"sms:{ex.Message}";
+                    _logger.LogWarning(ex,
+                        "Supervisor reminder SMS failed. EmployeeId={EmpId}",
+                        sup.EmployeeId);
+                }
+            }
+
+            bool anyDelivered = emailDelivered || smsDelivered;
+
             db.TcTimesheetReminderLogs.Add(new TcTimesheetReminderLog
             {
                 PayPeriodId = period.PayPeriodId,
                 EmployeeId = sup.EmployeeId,
                 ReminderType = reminderType,
                 SentAt = DateTime.Now,
-                DeliveryStatus = delivered ? "SENT" : "FAILED",
+                DeliveryStatus = anyDelivered ? "SENT" : "FAILED",
                 ErrorMessage = errorMsg
             });
 
-            if (delivered) sent++;
+            if (anyDelivered) sent++;
         }
 
         await db.SaveChangesAsync(ct);
@@ -333,5 +397,31 @@ public class TimesheetReminderService : BackgroundService
         _logger.LogInformation(
             "TimesheetReminderService: {Type} sent {Sent} / skipped {Skipped} / supervisors {Count}",
             reminderType, sent, skipped, supervisors.Count);
+    }
+
+    // Phase A ext: SMS body builders. Kept short + actionable — 160-char
+    // single-segment ACS messages wherever possible. URL intentionally points
+    // at the timesheet landing rather than a specific period so the same
+    // template works for the 48h / 24h / deadline-day variants.
+    private static string BuildEmployeeReminderSms(
+        string employeeName, DateOnly deadlineDateOnly, string reminderType)
+    {
+        var firstName = employeeName.Split(' ').FirstOrDefault() ?? employeeName;
+        var deadlineLabel = deadlineDateOnly.ToString("MMM d");
+        var urgency = reminderType == "EMPLOYEE_24H"
+            ? $"timesheet due tomorrow ({deadlineLabel})"
+            : $"timesheet deadline is {deadlineLabel}";
+
+        return $"New Heights: Hi {firstName}, reminder — your {urgency}. Submit via the TimeClock app. Reply STOP to opt out.";
+    }
+
+    private static string BuildSupervisorReminderSms(
+        string supervisorName, int pendingCount, DateOnly deadlineDateOnly)
+    {
+        var firstName = supervisorName.Split(' ').FirstOrDefault() ?? supervisorName;
+        var deadlineLabel = deadlineDateOnly.ToString("MMM d");
+        var people = pendingCount == 1 ? "1 direct report" : $"{pendingCount} direct reports";
+
+        return $"New Heights: Hi {firstName}, {people} still have pending timesheets. Deadline was {deadlineLabel}. Please follow up. Reply STOP to opt out.";
     }
 }

@@ -1329,15 +1329,29 @@ public class SubOutreachService : ISubOutreachService
         string smsBody, subject, color, headline, body;
         if (isApproved)
         {
+            // Phase A ext: remind the teacher that this app only tracks the
+            // substitute — actual time-off / PTO / sick leave must still be
+            // filed in Ascender. Included in both SMS (short form) and email
+            // (prominent yellow callout) so the teacher can't miss it.
             smsBody  = hadAssignedSub
-                ? $"New Heights: Your absence for {dates} at {campusName} is approved. {subName} is confirmed as your sub."
-                : $"New Heights: Your absence for {dates} at {campusName} is approved.";
+                ? $"New Heights: Your absence for {dates} at {campusName} is approved. {subName} is confirmed. REMINDER: submit your time-off request in Ascender."
+                : $"New Heights: Your absence for {dates} at {campusName} is approved. REMINDER: submit your time-off request in Ascender.";
             subject  = $"Absence approved \u2014 {campusName} ({dates})";
             color    = "#059669";
             headline = "Your Absence is Approved";
             body     = $"<p>Your absence request for <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> has been <strong>approved</strong>.</p>";
             if (hadAssignedSub)
                 body += $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> is confirmed as your sub.</p>";
+            body += @"
+<div style='margin-top:1rem; padding:.85rem 1rem; background:#fffbeb; border:1px solid #fde68a; border-left:4px solid #f5b81c; border-radius:6px;'>
+  <strong style='color:#92400e;'>Reminder: file your time-off request in Ascender</strong>
+  <p style='margin:.35rem 0 0; color:#78350f;'>
+    This approval covers your substitute assignment in the TimeClock system. To
+    officially record your leave with HR — PTO, sick, personal, vacation, or
+    professional development — please log in to <strong>Ascender</strong> and
+    submit a separate time-off request for these dates.
+  </p>
+</div>";
         }
         else
         {
