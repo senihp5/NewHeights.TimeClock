@@ -141,6 +141,12 @@ public static class AuditActions
         public const string Restored            = "SUB_POOL_RESTORED";
         public const string SpecialtyAssigned   = "SUB_SPECIALTY_ASSIGNED";
         public const string SpecialtyUnassigned = "SUB_SPECIALTY_UNASSIGNED";
+        // D5 followup: supervisors can manually flip SubRole on a sub without
+        // waiting for the Entra overlay. Distinct codes so audit reports can
+        // tell manual overrides apart from the overlay-driven SUBRole flips
+        // that happen silently inside ApplyAdminSubOverlayAsync.
+        public const string RoleManualSet       = "SUB_ROLE_MANUAL_SET";
+        public const string RoleManualUnset     = "SUB_ROLE_MANUAL_UNSET";
     }
 
     // O. Substitute — Timecards

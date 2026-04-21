@@ -14,6 +14,8 @@
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IAuditService Audit
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IGraphService Graph
+@inject IConfiguration Config
 @inject ILogger<SubPoolManagement> Logger
 
 <PageTitle>Sub Pool Management</PageTitle>
@@ -26,6 +28,27 @@
             Entra. Manage admin-sub specialties (Admissions, etc.). Specialties
             display only on RECEPTION subs.
         </p>
+        @if (adminGroupConfigured && adminGroupFetchError == null)
+        {
+            <p style="margin:.4rem 0 0; font-size:.82rem; color:#075985;">
+                SubstituteAdmin Entra group returned <strong>@adminGroupMemberCount</strong> transitive member(s).
+                The &#9989; column marks subs whose EntraObjectId matches. Use <strong>Set RECEPTION</strong> to manually promote.
+            </p>
+        }
+        else if (!adminGroupConfigured)
+        {
+            <p style="margin:.4rem 0 0; font-size:.82rem; color:#854d0e;">
+                SubstituteAdmin Entra group is not configured
+                (set <code>GraphSync__EmployeeGroupIds__SubstituteAdmin</code>).
+                You can still use <strong>Set RECEPTION</strong> to manually promote admin subs.
+            </p>
+        }
+        else
+        {
+            <p style="margin:.4rem 0 0; font-size:.82rem; color:#b91c1c;">
+                Could not fetch SubstituteAdmin group members: @adminGroupFetchError
+            </p>
+        }
     </header>
 
     @if (isLoading)
@@ -41,6 +64,7 @@
                     <tr>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Name</th>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Role</th>
+                        <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:center;" title="In SubstituteAdmin Entra group?">Admin Group</th>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Email</th>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">Specialties</th>
                         <th style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right;">Actions</th>
@@ -50,6 +74,8 @@
                     @foreach (var s in activeSubs)
                     {
                         var isAdminSub = string.Equals(s.SubRole, "RECEPTION", StringComparison.OrdinalIgnoreCase);
+                        var inAdminGroup = !string.IsNullOrWhiteSpace(s.EntraObjectId)
+                                        && adminGroupMemberObjectIds.Contains(s.EntraObjectId);
                         <tr>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0;">
                                 <strong>@(s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {s.EmployeeId}")</strong>
@@ -62,6 +88,24 @@
                                 else
                                 {
                                     <span style="display:inline-block; padding:2px 10px; background:#475569; color:white; border-radius:12px; font-size:0.78rem; font-weight:500;">TEACHER</span>
+                                }
+                            </td>
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:center;">
+                                @if (!adminGroupConfigured)
+                                {
+                                    <span style="color:#cbd5e1;" title="SubstituteAdmin group not configured">—</span>
+                                }
+                                else if (string.IsNullOrWhiteSpace(s.EntraObjectId))
+                                {
+                                    <span style="color:#b45309; font-size:.85rem;" title="Sub has no EntraObjectId — cannot match against group">!</span>
+                                }
+                                else if (inAdminGroup)
+                                {
+                                    <span style="color:#16a34a; font-weight:600;" title="Member of SubstituteAdmin Entra group">&#10003;</span>
+                                }
+                                else
+                                {
+                                    <span style="color:#cbd5e1;" title="Not a member of SubstituteAdmin Entra group">—</span>
                                 }
                             </td>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; color:#475569; font-size:.85rem;">
@@ -89,12 +133,25 @@
                                     <span style="color:#cbd5e1; font-size:.85rem;">n/a</span>
                                 }
                             </td>
-                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right;">
+                            <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right; white-space:nowrap;">
                                 @if (isAdminSub)
                                 {
-                                    <button type="button" style="margin-right:.5rem; padding:.35rem .75rem; background:#1e40af; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
+                                    <button type="button" style="margin-right:.4rem; padding:.35rem .6rem; background:#64748b; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
+                                            title="Flip this sub back to TEACHER. The next sync may re-promote them if they remain in the admin group."
+                                            @onclick="() => ManualSetTeacherAsync(s.EmployeeId)">
+                                        Unset RECEPTION
+                                    </button>
+                                    <button type="button" style="margin-right:.4rem; padding:.35rem .75rem; background:#1e40af; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
                                             @onclick="() => OpenSpecialtyEditor(s.EmployeeId)">
                                         Edit Specialties
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button type="button" style="margin-right:.4rem; padding:.35rem .6rem; background:#0369a1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
+                                            title="Manually flip this sub to RECEPTION without waiting for the Entra overlay. The next sync will keep them RECEPTION if they are in the SubstituteAdmin group."
+                                            @onclick="() => ManualSetReceptionAsync(s.EmployeeId)">
+                                        Set RECEPTION
                                     </button>
                                 }
                                 <button type="button" style="padding:.35rem .75rem; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
@@ -204,6 +261,17 @@
     private List<TcSubSpecialty> specialtyCatalog = new();
     private Dictionary<int, HashSet<int>> currentAssignmentsByEmployee = new();
 
+    // D5 followup: SubstituteAdmin Entra group membership, fetched once on load.
+    // adminGroupConfigured  — config key present (env var bound)
+    // adminGroupMemberObjectIds — ObjectIds of transitive members; empty set when
+    //                             the group returned 0 or the fetch failed
+    // adminGroupMemberCount — shown in the header info line
+    // adminGroupFetchError  — non-null when Graph threw; surfaces the message
+    private bool adminGroupConfigured = false;
+    private HashSet<string> adminGroupMemberObjectIds = new(StringComparer.OrdinalIgnoreCase);
+    private int adminGroupMemberCount = 0;
+    private string? adminGroupFetchError = null;
+
     // Exclude modal state
     private bool excludeModalOpen = false;
     private int? excludeTargetEmployeeId = null;
@@ -255,10 +323,50 @@
                 .ToListAsync())
                 .GroupBy(a => a.EmployeeId)
                 .ToDictionary(g => g.Key, g => g.Select(a => a.SpecialtyId).ToHashSet());
+
+            await RefreshAdminGroupMembersAsync();
         }
         finally
         {
             isLoading = false;
+        }
+    }
+
+    /// <summary>
+    /// Fetches transitive members of the SubstituteAdmin Entra group once per
+    /// page load so the table can show which rows are in the group. Swallows
+    /// exceptions into <c>adminGroupFetchError</c> so Graph outages don't
+    /// break the whole page — the manual Set/Unset RECEPTION buttons still
+    /// work without the column.
+    /// </summary>
+    private async Task RefreshAdminGroupMembersAsync()
+    {
+        adminGroupConfigured = false;
+        adminGroupMemberObjectIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        adminGroupMemberCount = 0;
+        adminGroupFetchError = null;
+
+        const string configKey = "GraphSync:EmployeeGroupIds:SubstituteAdmin";
+        var adminGroupId = Config[configKey];
+        if (string.IsNullOrWhiteSpace(adminGroupId))
+        {
+            return;
+        }
+
+        adminGroupConfigured = true;
+        try
+        {
+            var members = await Graph.GetTransitiveMembersAsync(adminGroupId);
+            adminGroupMemberObjectIds = members
+                .Select(m => m.ObjectId)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            adminGroupMemberCount = adminGroupMemberObjectIds.Count;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to fetch SubstituteAdmin transitive members on SubPoolManagement page load");
+            adminGroupFetchError = ex.Message;
         }
     }
 
@@ -352,6 +460,75 @@
         catch (Exception ex)
         {
             Logger.LogError(ex, "Error restoring sub {EmployeeId}", employeeId);
+        }
+        finally
+        {
+            await LoadAsync();
+        }
+    }
+
+    // ── Manual SubRole override ──────────────────────────────────────
+    //
+    // The Entra overlay (EmployeeSyncService.ApplyAdminSubOverlayAsync)
+    // normally flips SubRole automatically from Entra group membership.
+    // These two methods let a supervisor do it by hand when:
+    //  - The SubstituteAdmin group ID hasn't been configured yet
+    //  - Graph returned 0 members (permission / consent / group-ID issue)
+    //  - Patrick wants to pre-promote someone before the next sync runs
+    //  - An overlay-driven flip needs to be unwound without waiting for
+    //    the next sync to remove the user from the Entra group.
+    //
+    // Note: the next sync WILL re-assert whatever Entra says. A manual
+    // flip isn't sticky across syncs unless the Entra group is also updated.
+
+    private async Task ManualSetReceptionAsync(int employeeId)
+    {
+        await SetRoleCoreAsync(employeeId, newRole: "RECEPTION");
+    }
+
+    private async Task ManualSetTeacherAsync(int employeeId)
+    {
+        await SetRoleCoreAsync(employeeId, newRole: null);
+    }
+
+    private async Task SetRoleCoreAsync(int employeeId, string? newRole)
+    {
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var sub = await ctx.TcEmployees.FindAsync(employeeId);
+            if (sub == null) return;
+
+            // No-op guard — don't write an audit row if nothing actually changed.
+            if (string.Equals(sub.SubRole, newRole, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var oldRole = sub.SubRole;
+            sub.SubRole = newRole;
+            sub.ModifiedDate = DateTime.Now;
+            await ctx.SaveChangesAsync();
+
+            var name = sub.Staff?.FullName ?? sub.DisplayName ?? sub.Email ?? $"Employee {employeeId}";
+            var actionCode = newRole == "RECEPTION"
+                ? AuditActions.SubPool.RoleManualSet
+                : AuditActions.SubPool.RoleManualUnset;
+            var summary = newRole == "RECEPTION"
+                ? $"Manually set {name} SubRole to RECEPTION (was {oldRole ?? "NULL"}) by {currentUserEmail}"
+                : $"Manually unset {name} SubRole to TEACHER (was {oldRole ?? "NULL"}) by {currentUserEmail}";
+
+            await Audit.LogActionAsync(
+                actionCode: actionCode,
+                entityType: AuditEntityTypes.Employee,
+                entityId: sub.EmployeeId.ToString(),
+                oldValues: new { sub.EmployeeId, OldSubRole = oldRole },
+                newValues: new { sub.EmployeeId, NewSubRole = newRole, ChangedBy = currentUserEmail },
+                deltaSummary: summary,
+                source: AuditSource.AdminUi,
+                employeeId: sub.EmployeeId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Manual SubRole flip failed for employee {EmployeeId} -> {Role}", employeeId, newRole ?? "NULL");
         }
         finally
         {
