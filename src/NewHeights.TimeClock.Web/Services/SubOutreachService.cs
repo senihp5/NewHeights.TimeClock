@@ -91,11 +91,16 @@ public class SubOutreachService : ISubOutreachService
     private readonly IEmailService _emailService;
     private readonly ISmsService _smsService;
     private readonly IConfiguration _configuration;
+    private readonly SubOutreachOptions _options;
     private readonly ILogger<SubOutreachService> _logger;
 
     // Tokens: 48 random bytes base64-encoded = 64 chars. Crypto random, URL-safe.
     private const int TokenByteLength = 48;
-    private const int TokenValidityHours = 48;
+
+    // Phase D2: token lifetime is now bound from config (SubOutreach:TokenValidityHours).
+    // Min clamp = 1 hour so a misconfigured 0 doesn't expire tokens before the email
+    // even reaches the sub. See SubOutreachOptions for default.
+    private int TokenValidityHours => Math.Max(1, _options.TokenValidityHours);
 
     // SMS body limits. ACS splits >160 chars into multi-segment messages (billed per
     // segment). We aim for <=320 chars so outreach fits in 2 segments at worst.
@@ -107,6 +112,7 @@ public class SubOutreachService : ISubOutreachService
         IEmailService emailService,
         ISmsService smsService,
         IConfiguration configuration,
+        Microsoft.Extensions.Options.IOptions<SubOutreachOptions> options,
         ILogger<SubOutreachService> logger)
     {
         _dbFactory = dbFactory;
@@ -114,6 +120,7 @@ public class SubOutreachService : ISubOutreachService
         _emailService = emailService;
         _smsService = smsService;
         _configuration = configuration;
+        _options = options.Value;
         _logger = logger;
     }
 
@@ -856,9 +863,9 @@ public class SubOutreachService : ISubOutreachService
             using var context = await _dbFactory.CreateDbContextAsync();
 
             var sub = outreach.SubEmployee;
-            var subName = sub?.Staff?.FullName ?? sub?.Email ?? "The substitute";
+            var subName = sub?.Staff?.FullName ?? sub?.DisplayName ?? sub?.Email ?? "The substitute";
             var teacher = request.RequestingEmployee;
-            var teacherName = teacher?.Staff?.FullName ?? teacher?.Email ?? "the teacher";
+            var teacherName = teacher?.Staff?.FullName ?? teacher?.DisplayName ?? teacher?.Email ?? "the teacher";
             var campusName = request.Campus?.CampusName ?? "New Heights";
             var dates = request.StartDate == request.EndDate
                 ? request.StartDate.ToString("MMM d")
@@ -1041,9 +1048,9 @@ public class SubOutreachService : ISubOutreachService
 
             var teacher = request.RequestingEmployee;
             var sub = request.AssignedSubEmployee;
-            var teacherShort = teacher?.Staff?.FirstName ?? teacher?.Staff?.FullName ?? "Teacher";
-            var teacherFull  = teacher?.Staff?.FullName ?? teacher?.Email ?? "the teacher";
-            var subName = sub?.Staff?.FullName ?? sub?.Email ?? "a substitute";
+            var teacherShort = teacher?.Staff?.FirstName ?? teacher?.Staff?.FullName ?? teacher?.DisplayName ?? "Teacher";
+            var teacherFull  = teacher?.Staff?.FullName ?? teacher?.DisplayName ?? teacher?.Email ?? "the teacher";
+            var subName = sub?.Staff?.FullName ?? sub?.DisplayName ?? sub?.Email ?? "a substitute";
             var campusName = request.Campus?.CampusName ?? "New Heights";
             var dates = request.StartDate == request.EndDate
                 ? request.StartDate.ToString("MMM d")

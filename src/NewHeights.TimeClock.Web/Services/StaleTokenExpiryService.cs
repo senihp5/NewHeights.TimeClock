@@ -1,12 +1,19 @@
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace NewHeights.TimeClock.Web.Services;
 
 /// <summary>
-/// Phase 7a background job. Every 4 hours, walks TcSubOutreach for rows whose
+/// Phase 7a background job. Periodically walks TcSubOutreach for rows whose
 /// token has expired without a response and marks them EXPIRED. When a row
 /// expires inside an auto-cascade queue, ISubOutreachService also advances to
 /// the next queued sub (sending email/SMS to them + auditing SUB_REASSIGNED).
+///
+/// Phase D2 (2026-04-21): tick interval and initial delay are now bound from
+/// SubOutreachOptions. Defaults: 15-minute scan cadence, 5-minute initial
+/// delay. Must be tighter than SubOutreachOptions.TokenValidityHours or
+/// cascade advancement is bottlenecked by the scan cadence instead of the
+/// token lifetime.
 ///
 /// Pattern copied from AutoCheckoutService: BackgroundService with a single-
 /// ExecuteAsync loop, uses IServiceScopeFactory to resolve the scoped
@@ -15,32 +22,33 @@ namespace NewHeights.TimeClock.Web.Services;
 public class StaleTokenExpiryService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly SubOutreachOptions _options;
     private readonly ILogger<StaleTokenExpiryService> _logger;
-
-    // Fire every 4 hours. Tight enough that auto-cascade advances promptly when
-    // a token expires, loose enough to avoid DB chatter for the ~13-sub roster.
-    private static readonly TimeSpan RunInterval = TimeSpan.FromHours(4);
-
-    // First run 5 minutes after startup, not immediately — lets the app warm up.
-    private static readonly TimeSpan InitialDelay = TimeSpan.FromMinutes(5);
 
     public StaleTokenExpiryService(
         IServiceScopeFactory scopeFactory,
+        IOptions<SubOutreachOptions> options,
         ILogger<StaleTokenExpiryService> logger)
     {
         _scopeFactory = scopeFactory;
+        _options = options.Value;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Clamp to sane minimums: 1 minute floor on scan cadence, 1 minute
+        // floor on initial delay. Protects against a config typo setting 0.
+        var initialDelay = TimeSpan.FromMinutes(Math.Max(1, _options.InitialDelayMinutes));
+        var runInterval  = TimeSpan.FromMinutes(Math.Max(1, _options.ScanIntervalMinutes));
+
         _logger.LogInformation(
-            "StaleTokenExpiryService started. Initial delay {InitialDelay}, thereafter every {Interval}.",
-            InitialDelay, RunInterval);
+            "StaleTokenExpiryService started. Initial delay {InitialDelay}, scan interval {Interval}, token validity {Validity}h.",
+            initialDelay, runInterval, _options.TokenValidityHours);
 
         try
         {
-            await Task.Delay(InitialDelay, stoppingToken);
+            await Task.Delay(initialDelay, stoppingToken);
         }
         catch (TaskCanceledException)
         {
@@ -65,7 +73,7 @@ public class StaleTokenExpiryService : BackgroundService
 
             try
             {
-                await Task.Delay(RunInterval, stoppingToken);
+                await Task.Delay(runInterval, stoppingToken);
             }
             catch (TaskCanceledException)
             {

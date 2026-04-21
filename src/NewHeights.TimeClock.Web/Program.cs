@@ -207,6 +207,11 @@ builder.Services.AddScoped<ISmsService, AzureSmsService>();
 builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
 
 // Stale outreach token expiry job — runs every 4 hours (Phase 7a)
+// Phase D2: sub outreach cascade timing (token validity + scan cadence).
+// Defaults to 2h token validity + 15min scan interval. Override via
+// appsettings section "SubOutreach" without redeploy.
+builder.Services.Configure<SubOutreachOptions>(
+    builder.Configuration.GetSection("SubOutreach"));
 builder.Services.AddHostedService<StaleTokenExpiryService>();
 
 // Phase 9c: escalate stale AwaitingSub requests to campus admin via email + SMS.
