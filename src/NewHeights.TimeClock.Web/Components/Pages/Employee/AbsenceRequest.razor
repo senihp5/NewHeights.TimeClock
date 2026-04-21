@@ -49,14 +49,59 @@
                 <strong>@form.StartDate.ToString("MMM d")@(form.StartDate != form.EndDate ? $" – {form.EndDate:MMM d, yyyy}" : $", {form.StartDate.Year}")</strong>
                 is awaiting a substitute.
             </p>
-            <p>
-                <strong>Next step:</strong> go to
-                <a href="/employee/my-sub-requests">My Sub Requests</a>
-                to invite a substitute (manually or via auto-cascade).
-                Once a sub accepts, the request will be sent to the campus admin for final approval.
-            </p>
+
+            @if (canSubmitOnBehalf && submittedRequestEntity != null)
+            {
+                @* Supervisor/admin flow: outreach panel is rendered right here so
+                   the submitter can pick subs and send in the same visit — no
+                   redirect to a separate page. Teachers get the legacy link. *@
+                <p style="margin: 0.5rem 0 1rem; color:#334155;">
+                    <strong>Next step:</strong> pick substitutes below and click Send.
+                    @if (submittedRequestEntity.IsEmergency)
+                    {
+                        <span style="color:#b91c1c; font-weight:600;">
+                            Emergency Fill — every selected sub will be emailed simultaneously
+                            with a 30-minute response window.
+                        </span>
+                    }
+                    else
+                    {
+                        <span>
+                            In auto-cascade mode the first sub is contacted immediately;
+                            the next advances automatically on decline or expiry.
+                        </span>
+                    }
+                </p>
+
+                <SubOutreachPanel Request="@submittedRequestEntity"
+                                  CurrentUserEmail="@currentUserEmail"
+                                  OnOutreachSent="OnInlineOutreachSent" />
+
+                @if (inlineOutreachSent)
+                {
+                    <div style="margin-top:1rem; padding:.75rem 1rem; background:#f0fdf4; border:1px solid #86efac; border-left:4px solid #16a34a; border-radius:6px; color:#065f46;">
+                        <strong>Outreach sent.</strong>
+                        You'll see the sub's accept/decline on
+                        <a href="/supervisor/sub-requests" style="color:#065f46; text-decoration:underline;">Sub Requests</a>
+                        as it happens. Partial acceptance and cascade are handled automatically.
+                    </div>
+                }
+            }
+            else
+            {
+                <p>
+                    <strong>Next step:</strong> go to
+                    <a href="/employee/my-sub-requests">My Sub Requests</a>
+                    to invite a substitute (manually or via auto-cascade).
+                    Once a sub accepts, the request will be sent to the campus admin for final approval.
+                </p>
+            }
+
             <div class="success-actions">
-                <a class="btn-primary" href="/employee/my-sub-requests">Find a Sub</a>
+                @if (!canSubmitOnBehalf)
+                {
+                    <a class="btn-primary" href="/employee/my-sub-requests">Find a Sub</a>
+                }
                 <button type="button" class="btn-secondary" @onclick="ResetForm">Submit Another</button>
                 <a class="btn-secondary" href="/">Back to Home</a>
             </div>
@@ -89,16 +134,36 @@
 
                 @if (canSubmitOnBehalf && teacherOptions.Count > 0)
                 {
-                    <div class="form-row onbehalf-row">
-                        <label for="on-behalf-of"><strong>Submitting on behalf of</strong></label>
+                    <div class="form-row onbehalf-row @(isAdminOnBehalfOnlyMode ? "onbehalf-required" : "")">
+                        <label for="on-behalf-of">
+                            <strong>Submitting on behalf of</strong>
+                            @if (isAdminOnBehalfOnlyMode)
+                            {
+                                <span style="color:#b91c1c; margin-left:.35rem; font-size:.85rem;">(required — admin mode)</span>
+                            }
+                        </label>
                         <select id="on-behalf-of" @bind="onBehalfOfEmployeeId" @bind:after="OnOnBehalfOfChanged">
-                            <option value="">— Myself (@employeeName) —</option>
+                            @if (!isAdminOnBehalfOnlyMode)
+                            {
+                                <option value="">— Myself (@employeeName) —</option>
+                            }
+                            else
+                            {
+                                <option value="">— Select an employee —</option>
+                            }
                             @foreach (var t in teacherOptions)
                             {
                                 <option value="@t.EmployeeId">@t.DisplayName (@t.CampusCode)</option>
                             }
                         </select>
-                        @if (onBehalfOfEmployeeId.HasValue)
+                        @if (isAdminOnBehalfOnlyMode && !onBehalfOfEmployeeId.HasValue)
+                        {
+                            <p class="form-hint" style="color:#b91c1c;">
+                                You don't have an employee record in the TimeClock system, so self-submission
+                                is disabled. Pick a teacher above to create a request on their behalf.
+                            </p>
+                        }
+                        else if (onBehalfOfEmployeeId.HasValue)
                         {
                             <p class="form-hint">
                                 You are submitting this request on behalf of <strong>@SelectedTeacherName()</strong>.
@@ -294,8 +359,16 @@
     private string employeeName = "";
     private string currentUserEmail = "";
     private string currentUserName = "";
+    private string currentUserEntraOid = "";
     private int campusId;
     private string campusDisplay = "";
+
+    // Admins (and some IT-only supervisors) aren't in the Substitute/Hourly
+    // Entra sync groups, so they have no TC_Employees row of their own.
+    // When that happens AND they're supervisor-level, we let them into this
+    // page in "on-behalf-only" mode — the form is usable but requires picking
+    // someone from the teacher dropdown (submitting for yourself is disabled).
+    private bool isAdminOnBehalfOnlyMode = false;
 
     private bool isLoading = true;
     private bool isSubmitting = false;
@@ -303,6 +376,12 @@
     private string submitError = "";
 
     private long? submittedRequestId = null;
+    // Phase A ext: supervisor/admin flow renders SubOutreachPanel inline on
+    // the success screen so picking subs + sending outreach happens right on
+    // this page, no redirect. Requires the entity to be loaded with Campus +
+    // RequestingEmployee navs so the panel can render candidate context.
+    private TcSubRequest? submittedRequestEntity = null;
+    private bool inlineOutreachSent = false;
 
     private List<OtherAbsence> otherAbsences = new();
 
@@ -330,6 +409,11 @@
         currentUserName = user.FindFirst("name")?.Value
                        ?? user.Identity?.Name
                        ?? currentUserEmail;
+        // Mirrors UserContextService — "oid" is the short claim name; the
+        // long form is Microsoft's fully-qualified objectidentifier.
+        currentUserEntraOid = user.FindFirst("oid")?.Value
+                           ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                           ?? "";
 
         // Mirrors UserContextService.IsSupervisor — any supervisor variant or admin.
         canSubmitOnBehalf =
@@ -360,13 +444,77 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
 
-            var employee = await context.TcEmployees
-                .Include(e => e.Staff)
-                .Include(e => e.HomeCampus)
-                .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
+            // Multi-step lookup: EntraObjectId is the most stable match, so
+            // try that first. Email is a fallback for legacy rows synced
+            // before we captured the oid claim. Case-insensitive email match
+            // guards against collation surprises.
+            TcEmployee? employee = null;
+
+            if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+            {
+                employee = await context.TcEmployees
+                    .Include(e => e.Staff)
+                    .Include(e => e.HomeCampus)
+                    .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid && e.IsActive);
+            }
+
+            if (employee == null && !string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                var emailLower = currentUserEmail.Trim().ToLower();
+                employee = await context.TcEmployees
+                    .Include(e => e.Staff)
+                    .Include(e => e.HomeCampus)
+                    .FirstOrDefaultAsync(e => e.Email != null
+                                           && e.Email.ToLower() == emailLower
+                                           && e.IsActive);
+            }
 
             if (employee == null)
             {
+                // Admins + IT-only supervisors aren't in the Substitute / Hourly
+                // sync groups so they don't have TC_Employees rows. Rather than
+                // hard-blocking the page, let supervisor-level users through in
+                // on-behalf-only mode — they can still create requests for other
+                // staff using the picker below. Everyone else hits the original
+                // terminal error.
+                if (canSubmitOnBehalf)
+                {
+                    isAdminOnBehalfOnlyMode = true;
+                    employeeId = 0;
+                    employeeName = string.IsNullOrWhiteSpace(currentUserName)
+                        ? "Admin user"
+                        : currentUserName;
+                    campusId = 0;
+                    campusDisplay = "(select a teacher below — admin mode)";
+
+                    // Load ALL active non-sub employees across campuses for the
+                    // picker, since the admin isn't scoped to one campus.
+                    teacherOptions = await context.TcEmployees
+                        .AsNoTracking()
+                        .Include(e => e.Staff)
+                        .Include(e => e.HomeCampus)
+                        .Where(e => e.IsActive
+                                 && e.EmployeeType != EmployeeType.Substitute)
+                        .OrderBy(e => e.Staff!.LastName)
+                        .ThenBy(e => e.Staff!.FirstName)
+                        .Select(e => new TeacherOption
+                        {
+                            EmployeeId  = e.EmployeeId,
+                            DisplayName = e.Staff != null
+                                ? (e.Staff.FirstName + " " + e.Staff.LastName)
+                                : (e.DisplayName ?? e.Email ?? ("Employee " + e.EmployeeId)),
+                            CampusCode  = e.HomeCampus != null ? e.HomeCampus.CampusCode : "",
+                            HomeCampusId = e.HomeCampusId
+                        })
+                        .ToListAsync();
+
+                    // Default both dates to today.
+                    var todayAdmin = DateOnly.FromDateTime(DateTime.Today);
+                    form.StartDate = todayAdmin;
+                    form.EndDate = todayAdmin;
+                    return;
+                }
+
                 loadError = "Your employee record was not found. Contact your supervisor.";
                 return;
             }
@@ -502,6 +650,9 @@
     {
         if (form.EndDate < form.StartDate) return false;
         if (form.Periods.Count == 0) return false;
+        // Admin-on-behalf-only mode: must pick a teacher from the dropdown.
+        // Self-submit is disabled because admin has no TC_Employees row.
+        if (isAdminOnBehalfOnlyMode && !onBehalfOfEmployeeId.HasValue) return false;
         return true;
     }
 
@@ -518,6 +669,13 @@
         if (form.EndDate < form.StartDate)
         {
             submitError = "End date must be on or after the start date.";
+            return;
+        }
+        // Admin-on-behalf-only safety check: the picker is required because
+        // admin has no TC_Employees row of their own to submit for.
+        if (isAdminOnBehalfOnlyMode && !onBehalfOfEmployeeId.HasValue)
+        {
+            submitError = "Select a teacher from the \"Submitting on behalf of\" picker — admins cannot submit a request for themselves.";
             return;
         }
 
@@ -545,7 +703,11 @@
                 }
                 targetEmployeeId = target.EmployeeId;
                 targetCampusId   = target.HomeCampusId;
-                createdByForAudit = employeeId;
+                // Admin mode: employeeId == 0 means the submitter has no
+                // TcEmployees row — CreatedByEmployeeId must be NULL, not 0,
+                // to satisfy the FK. Audit row's UserEmail still captures
+                // who the actor was.
+                createdByForAudit = employeeId > 0 ? (int?)employeeId : null;
             }
 
             var request = new TcSubRequest
@@ -610,6 +772,20 @@
                 campusId: targetCampusId);
 
             submittedRequestId = request.SubRequestId;
+
+            // Phase A ext: rehydrate the request with navigations SubOutreachPanel
+            // needs (Campus + RequestingEmployee.Staff) so the inline outreach
+            // flow doesn't have to reload. Non-supervisor path ignores this but
+            // the load is cheap and keeps the success UI uniform.
+            if (canSubmitOnBehalf)
+            {
+                submittedRequestEntity = await context.TcSubRequests
+                    .AsNoTracking()
+                    .Include(r => r.Campus)
+                    .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                    .FirstOrDefaultAsync(r => r.SubRequestId == request.SubRequestId);
+                inlineOutreachSent = false;
+            }
         }
         catch (Exception ex)
         {
@@ -634,8 +810,21 @@
             IsEmergency = false
         };
         submittedRequestId = null;
+        submittedRequestEntity = null;
+        inlineOutreachSent = false;
         submitError = "";
         onBehalfOfEmployeeId = null;
+    }
+
+    /// <summary>
+    /// Phase A ext: invoked by the inline SubOutreachPanel after the supervisor
+    /// sends outreach. Flips the green "outreach sent" confirmation strip
+    /// under the panel so the submitter has clear feedback on the same page.
+    /// </summary>
+    private void OnInlineOutreachSent()
+    {
+        inlineOutreachSent = true;
+        StateHasChanged();
     }
 
     private async Task OnOnBehalfOfChanged()

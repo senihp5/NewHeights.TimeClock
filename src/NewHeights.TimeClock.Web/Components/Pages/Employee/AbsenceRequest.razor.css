@@ -10,8 +10,8 @@
    ============================================================ */
 
 .absence-request-page {
-    padding: 1.5rem;
-    max-width: 820px;
+    padding: 2rem 1.75rem 2.5rem;
+    max-width: 880px;
     margin: 0 auto;
     font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
     color: #1f2937;
@@ -23,10 +23,10 @@
     position: relative;
     background: linear-gradient(135deg, #1e3a5f 0%, #152840 100%);
     color: #fff;
-    padding: 1.25rem 1.5rem 1.4rem;
-    border-radius: 10px;
-    margin-bottom: 1.25rem;
-    box-shadow: 0 6px 16px -6px rgba(21, 40, 64, 0.35);
+    padding: 1.5rem 1.75rem 1.65rem;
+    border-radius: 12px;
+    margin-bottom: 1.75rem;
+    box-shadow: 0 8px 20px -8px rgba(21, 40, 64, 0.4);
     overflow: hidden;
 }
 
@@ -40,9 +40,10 @@
 
 .absence-request-header h1 {
     margin: 0;
-    font-size: 1.55rem;
+    font-size: 1.7rem;
     color: #fff;
     letter-spacing: 0.01em;
+    line-height: 1.2;
 }
 
 .header-subtitle {
@@ -90,31 +91,31 @@
 .employee-info-bar {
     display: flex;
     flex-wrap: wrap;
-    gap: 1.5rem;
+    gap: 2rem;
     background: #f8fafc;
-    padding: 0.75rem 1rem;
-    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    border-radius: 10px;
     border: 1px solid #e2e8f0;
-    margin-bottom: 1rem;
+    margin-bottom: 1.5rem;
 }
 
 .info-item {
     display: flex;
     align-items: baseline;
-    gap: 0.4rem;
+    gap: 0.55rem;
 }
 
 .info-label {
     font-weight: 600;
     color: #475569;
-    font-size: 0.82rem;
+    font-size: 0.78rem;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
 }
 
 .info-value {
     color: #0f172a;
-    font-size: 0.98rem;
+    font-size: 1rem;
     font-weight: 500;
 }
 
@@ -123,40 +124,41 @@
 .absence-form {
     background: #fff;
     border: 1px solid #e2e8f0;
-    border-radius: 10px;
-    padding: 1.5rem;
-    box-shadow: 0 2px 6px -2px rgba(21, 40, 64, 0.08);
+    border-radius: 12px;
+    padding: 2rem 2rem 1.75rem;
+    box-shadow: 0 4px 12px -4px rgba(21, 40, 64, 0.1);
 }
 
 .form-row {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    margin-bottom: 1.15rem;
+    gap: 0.55rem;
+    margin-bottom: 1.65rem;
 }
 
 .form-row > label {
     font-weight: 600;
     color: #1e3a5f;
-    font-size: 0.88rem;
+    font-size: 0.95rem;
+    letter-spacing: 0.005em;
 }
 
 .form-row.two-col {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 1rem;
+    gap: 1.5rem;
 }
 
 .form-row.two-col > div {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.55rem;
 }
 
 .form-row.two-col label {
     font-weight: 600;
     color: #1e3a5f;
-    font-size: 0.88rem;
+    font-size: 0.95rem;
 }
 
 .form-row select,
@@ -164,14 +166,15 @@
 .form-row input[type="date"],
 .form-row textarea {
     width: 100%;
-    padding: 0.55rem 0.7rem;
+    padding: 0.7rem 0.85rem;
     border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    font-size: 0.95rem;
+    border-radius: 8px;
+    font-size: 1rem;
     color: #0f172a;
     background: #fff;
     font-family: inherit;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    line-height: 1.4;
 }
 
 .form-row select:hover,
@@ -210,6 +213,15 @@
     border-left: 4px solid #1e3a5f;
     padding: 0.85rem 1rem;
     border-radius: 6px;
+}
+
+/* Admin-only mode: the submitter has no TC_Employees row of their own, so
+   the teacher picker is mandatory. Visual treatment makes the "required"
+   state obvious without screaming. */
+.form-row.onbehalf-row.onbehalf-required {
+    background: #fef2f2;
+    border-color: #fecaca;
+    border-left-color: #dc2626;
 }
 
 /* ── Emergency Fill callout ───────────────────────────────────── */
@@ -300,20 +312,31 @@
 .success-panel {
     background: #f0fdf4;
     border: 1px solid #86efac;
-    border-left: 4px solid #16a34a;
+    border-left: 5px solid #16a34a;
     color: #065f46;
+    padding: 1.5rem 1.75rem;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px -2px rgba(22, 163, 74, 0.15);
 }
 
 .success-panel h2 {
-    margin: 0 0 0.5rem 0;
+    margin: 0 0 0.75rem 0;
     color: #047857;
-    font-size: 1.3rem;
+    font-size: 1.5rem;
+    line-height: 1.2;
+}
+
+.success-panel p {
+    line-height: 1.55;
+    margin: 0.5rem 0;
 }
 
 .success-actions {
     display: flex;
-    gap: 0.6rem;
-    margin-top: 1rem;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid #bbf7d0;
     flex-wrap: wrap;
 }
 
@@ -321,22 +344,24 @@
 
 .radio-group {
     display: flex;
-    gap: 1rem;
+    gap: 0.75rem;
     flex-wrap: wrap;
 }
 
 .radio-option {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.5rem;
     cursor: pointer;
     color: #1e3a5f;
-    font-size: 0.95rem;
-    padding: 0.35rem 0.75rem;
+    font-size: 1rem;
+    padding: 0.55rem 1rem;
     border: 1px solid #cbd5e1;
-    border-radius: 6px;
+    border-radius: 8px;
     background: #f8fafc;
     transition: all 0.15s ease;
+    min-width: 90px;
+    justify-content: center;
 }
 
 .radio-option:hover {
@@ -354,24 +379,26 @@
 .period-checks {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.6rem;
     align-items: center;
 }
 
 .period-check {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    padding: 0.4rem 0.8rem;
+    gap: 0.4rem;
+    padding: 0.55rem 1rem;
     border: 1px solid #cbd5e1;
-    border-radius: 18px;
+    border-radius: 22px;
     background: #f8fafc;
     cursor: pointer;
-    font-size: 0.88rem;
+    font-size: 0.95rem;
     color: #1e3a5f;
     transition: all 0.15s ease;
     user-select: none;
     font-weight: 500;
+    min-width: 66px;
+    justify-content: center;
 }
 
 .period-check:hover {
@@ -414,31 +441,32 @@
 .form-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 0.6rem;
-    margin-top: 1rem;
-    padding-top: 1rem;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
     border-top: 1px solid #e2e8f0;
 }
 
 .btn-primary {
-    background: #1e3a5f;
-    color: #fff;
-    border: 1px solid #1e3a5f;
-    padding: 0.6rem 1.25rem;
-    border-radius: 6px;
+    background: #f5b81c;
+    color: #1e3a5f;
+    border: 1px solid #d9a319;
+    padding: 0.7rem 1.5rem;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 0.95rem;
-    font-weight: 600;
+    font-size: 1rem;
+    font-weight: 700;
     text-decoration: none;
     display: inline-block;
-    transition: background 0.15s ease, transform 0.05s ease;
-    box-shadow: 0 1px 3px rgba(21, 40, 64, 0.18);
+    transition: background 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
+    box-shadow: 0 2px 4px rgba(217, 163, 25, 0.25);
+    letter-spacing: 0.01em;
 }
 
 .btn-primary:hover:not(:disabled) {
-    background: #152840;
+    background: #f7c94d;
     transform: translateY(-1px);
-    box-shadow: 0 3px 8px rgba(21, 40, 64, 0.25);
+    box-shadow: 0 4px 10px rgba(217, 163, 25, 0.35);
 }
 
 .btn-primary:active:not(:disabled) {
@@ -446,10 +474,11 @@
 }
 
 .btn-primary:disabled {
-    background: #94a3b8;
-    border-color: #94a3b8;
+    background: #cbd5e1;
+    border-color: #cbd5e1;
+    color: #64748b;
     cursor: not-allowed;
-    opacity: 0.75;
+    opacity: 0.8;
     box-shadow: none;
 }
 
@@ -457,10 +486,10 @@
     background: #fff;
     color: #1e3a5f;
     border: 1px solid #cbd5e1;
-    padding: 0.6rem 1.1rem;
-    border-radius: 6px;
+    padding: 0.7rem 1.25rem;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 0.95rem;
+    font-size: 1rem;
     font-weight: 500;
     text-decoration: none;
     display: inline-block;

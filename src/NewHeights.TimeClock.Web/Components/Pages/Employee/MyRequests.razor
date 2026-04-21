@@ -69,6 +69,30 @@
     {
         <div class="error-panel">@loadError</div>
     }
+    else if (isAdminNoRecordMode)
+    {
+        <div class="empty-state" style="background:#eff6ff; border:1px solid #bfdbfe; border-left:4px solid #1e3a5f;">
+            <h3 style="color:#1e3a5f;">Admin view — no personal requests</h3>
+            <p>
+                You don't have an employee record in the TimeClock system, so this page
+                doesn't show personal sub requests. Here's where to go instead:
+            </p>
+            <ul style="text-align:left; max-width:560px; margin:.75rem auto 1rem; line-height:1.65;">
+                <li>
+                    <a href="/supervisor/sub-requests"><strong>Supervisor → Sub Requests</strong></a>
+                    &mdash; every active request across the district (where you send outreach, approve, escalate)
+                </li>
+                <li>
+                    <a href="/employee/absence-request"><strong>Substitute Request</strong></a>
+                    &mdash; submit a new request on behalf of a teacher
+                </li>
+                <li>
+                    <a href="/supervisor/sub-calendar"><strong>Sub Calendar</strong></a>
+                    &mdash; week-at-a-glance view of confirmed and pending coverage
+                </li>
+            </ul>
+        </div>
+    }
     else if (requests.Count == 0)
     {
         <div class="empty-state">
@@ -251,42 +275,79 @@
 
     private string filterStatus = "open";
     private string currentUserEmail = "";
+    private string currentUserEntraOid = "";
     private int currentEmployeeId = 0;
+    // Admin-mode: supervisor-level user has no TC_Employees row (they're not
+    // in Substitute/Hourly sync groups). The page loads without error and
+    // shows a friendly empty-state directing them to the right surfaces.
+    private bool isAdminNoRecordMode = false;
 
     private long? cancellingRequestId = null;
 
     protected override async Task OnInitializedAsync()
     {
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
-        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
-                        ?? authState.User.FindFirst(ClaimTypes.Email)?.Value
+        var user = authState.User;
+        currentUserEmail = user.FindFirst("preferred_username")?.Value
+                        ?? user.FindFirst(ClaimTypes.Email)?.Value
                         ?? "";
+        currentUserEntraOid = user.FindFirst("oid")?.Value
+                           ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                           ?? "";
 
-        await ResolveEmployeeAsync();
+        // Detect supervisor-level roles so we can show a graceful empty-state
+        // instead of blocking the page when no TC_Employees row exists.
+        bool isSupervisorLevel =
+               user.IsInRole(AppConstants.Roles.Supervisor)
+            || user.IsInRole(AppConstants.Roles.SupervisorStopSix)
+            || user.IsInRole(AppConstants.Roles.SupervisorMcCart)
+            || user.IsInRole(AppConstants.Roles.Admin)
+            || user.IsInRole(AppConstants.Roles.CampusAdmin);
+
+        await ResolveEmployeeAsync(isSupervisorLevel);
         if (currentEmployeeId > 0)
             await LoadDataAsync();
+        else
+            isLoading = false;
     }
 
-    private async Task ResolveEmployeeAsync()
+    private async Task ResolveEmployeeAsync(bool isSupervisorLevel)
     {
-        if (string.IsNullOrWhiteSpace(currentUserEmail))
-        {
-            loadError = "Your session lost its user context — refresh and try again.";
-            isLoading = false;
-            return;
-        }
-
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
-            var employee = await context.TcEmployees
-                .AsNoTracking()
-                .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
+            TcEmployee? employee = null;
+
+            // EntraObjectId is the most stable match across email renames /
+            // legacy Staff rows. Fall back to case-insensitive email.
+            if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+            {
+                employee = await context.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid && e.IsActive);
+            }
+
+            if (employee == null && !string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                var emailLower = currentUserEmail.Trim().ToLower();
+                employee = await context.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.Email != null
+                                           && e.Email.ToLower() == emailLower
+                                           && e.IsActive);
+            }
 
             if (employee == null)
             {
+                if (isSupervisorLevel)
+                {
+                    // Admin/supervisor without a personal employee record.
+                    // Page loads cleanly; UI renders the empty-state block.
+                    isAdminNoRecordMode = true;
+                    return;
+                }
+
                 loadError = "Your employee record was not found. Contact your supervisor.";
-                isLoading = false;
                 return;
             }
 
