@@ -227,6 +227,14 @@ builder.Services.AddHostedService<SubRequestEscalationService>();
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
 builder.Services.AddScoped<IEmailService, EmailService>();
 
+// Phase D3: timesheet payroll-deadline reminder service. Hourly tick, fires
+// 48h + 24h pre-deadline reminders to hourly/PT/sub employees plus a
+// SUPERVISOR_DEADLINE notice on/after deadline. Dedup via TC_TimesheetReminderLog
+// unique index. Toggle the master switch via appsettings "TimesheetReminder:Enabled".
+builder.Services.Configure<TimesheetReminderOptions>(
+    builder.Configuration.GetSection("TimesheetReminder"));
+builder.Services.AddHostedService<TimesheetReminderService>();
+
 // Auto-Checkout Background Service (runs daily at 9:30 PM CST)
 builder.Services.AddHostedService<AutoCheckoutService>();
 builder.Services.AddScoped<IAutoCheckoutService, AutoCheckoutService>();

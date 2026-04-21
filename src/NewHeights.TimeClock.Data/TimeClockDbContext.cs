@@ -30,6 +30,7 @@ public class TimeClockDbContext : DbContext
     public DbSet<TcAuditLog> TcAuditLogs { get; set; } = null!;
     public DbSet<TcSystemConfig> TcSystemConfigs { get; set; } = null!;
     public DbSet<AttendanceTransaction> AttendanceTransactions { get; set; } = null!;
+    public DbSet<GeofenceTestPoint> GeofenceTestPoints { get; set; } = null!;
 
     // Added in migration 002
     public DbSet<TcPunchCorrection> TcPunchCorrections { get; set; } = null!;
@@ -45,6 +46,9 @@ public class TimeClockDbContext : DbContext
 
     // Added in migration 035 (SubstituteTimesheetSpec Phase 5).
     public DbSet<TcSubOutreach> TcSubOutreach { get; set; } = null!;
+
+    // Added in migration 043 (Phase D3 TimesheetReminderService).
+    public DbSet<TcTimesheetReminderLog> TcTimesheetReminderLogs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -100,6 +104,25 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.Latitude).HasColumnType("decimal(9,6)");
             entity.Property(e => e.Longitude).HasColumnType("decimal(9,6)");
             entity.Property(e => e.CampusWifiSSID).HasMaxLength(100);
+        });
+
+        modelBuilder.Entity<GeofenceTestPoint>(entity =>
+        {
+            entity.ToTable("Attendance_GeofenceTestPoints");
+            entity.HasKey(e => e.TestPointId);
+            entity.Property(e => e.Label).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Latitude).HasColumnType("decimal(9,6)");
+            entity.Property(e => e.Longitude).HasColumnType("decimal(9,6)");
+            entity.Property(e => e.AccuracyMeters).HasColumnType("decimal(8,2)");
+            entity.Property(e => e.Notes).HasMaxLength(500);
+            entity.Property(e => e.GeofenceMethod).HasMaxLength(20);
+            entity.Property(e => e.CapturedBy).HasMaxLength(200);
+            entity.HasOne(e => e.Campus)
+                  .WithMany()
+                  .HasForeignKey(e => e.CampusId)
+                  .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(e => new { e.CampusId, e.CapturedAtUtc })
+                  .HasDatabaseName("IX_GeofenceTestPoints_Campus_CapturedAt");
         });
     }
 
@@ -279,9 +302,18 @@ public class TimeClockDbContext : DbContext
                   .HasForeignKey(e => e.AssignedSubEmployeeId)
                   .OnDelete(DeleteBehavior.Restrict);
 
+            // Migration 042: actor when a supervisor submits on behalf of the
+            // absentee. Restrict on delete so an actor leaving doesn't cascade
+            // into historical request rows.
+            entity.HasOne(e => e.CreatedByEmployee)
+                  .WithMany()
+                  .HasForeignKey(e => e.CreatedByEmployeeId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
             entity.HasIndex(e => new { e.StartDate, e.EndDate });
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.AssignedSubEmployeeId);
+            entity.HasIndex(e => e.CreatedByEmployeeId);
         });
 
         modelBuilder.Entity<TcSubOutreach>(entity =>
@@ -399,6 +431,30 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.ConfigType).HasMaxLength(20);
             entity.Property(e => e.Description).HasMaxLength(200);
             entity.Property(e => e.ModifiedBy).HasMaxLength(100);
+        });
+
+        // Migration 043 (Phase D3): dedup log for TimesheetReminderService.
+        modelBuilder.Entity<TcTimesheetReminderLog>(entity =>
+        {
+            entity.ToTable("TC_TimesheetReminderLog");
+            entity.HasKey(e => e.ReminderLogId);
+            entity.Property(e => e.ReminderType).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.DeliveryStatus).HasMaxLength(15).IsRequired();
+            entity.Property(e => e.ErrorMessage).HasMaxLength(500);
+
+            entity.HasOne(e => e.PayPeriod)
+                  .WithMany()
+                  .HasForeignKey(e => e.PayPeriodId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Employee)
+                  .WithMany()
+                  .HasForeignKey(e => e.EmployeeId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            // Dedup guarantee — same as the unique index in migration 043.
+            entity.HasIndex(e => new { e.PayPeriodId, e.EmployeeId, e.ReminderType })
+                  .IsUnique();
+            entity.HasIndex(e => e.SentAt);
         });
         modelBuilder.Entity<AttendanceTransaction>(entity =>
         {
