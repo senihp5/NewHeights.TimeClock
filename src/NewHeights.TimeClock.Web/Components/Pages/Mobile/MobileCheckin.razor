@@ -21,7 +21,11 @@
 
 <div class="kiosk-container mobile-clock-container">
     <header class="mobile-header">
-        <div class="user-info" style="color: white;"><span>@userName</span></div>
+        <a href="/" class="home-link" title="Return to Home"
+           style="display:inline-flex; align-items:center; gap:.35rem; padding:.4rem .75rem; background:rgba(255,255,255,0.12); color:white; text-decoration:none; border-radius:6px; font-size:.88rem; font-weight:500; border:1px solid rgba(255,255,255,0.2);">
+            🏠 Home
+        </a>
+        <div class="user-info" style="color: white; flex: 1; text-align: center;"><span>@userName</span></div>
         <div class="current-time" style="font-size: 1.5rem; color: white; font-weight: 600;">@currentTime.ToString("h:mm tt")</div>
     </header>
 
