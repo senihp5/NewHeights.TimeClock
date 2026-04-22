@@ -362,9 +362,17 @@ public class TimesheetService : ITimesheetService
         {
             var timesheet = await GetPayPeriodTimesheetAsync(member.EmployeeId, periodStart, periodEnd);
 
-            // Only show employees with time recorded in the current pay period.
-            // Supervisors don't need to see employees who haven't punched at all.
-            if (timesheet.TotalHours <= 0) continue;
+            // Visibility rule splits by employee type:
+            //   Hourly FT / PT: always show. Zero hours is the actionable
+            //     signal — supervisor needs to know who hasn't punched yet
+            //     and nudge them before the pay-period deadline.
+            //   Substitute: only show when there's at least some recorded
+            //     time. Subs only work when an assignment falls their way,
+            //     so zero-hour rows for subs are normal noise, not missing
+            //     submissions. (Sub-specific timecard approvals live on
+            //     /supervisor/sub-timesheets anyway.)
+            if (member.EmployeeType == EmployeeType.Substitute && timesheet.TotalHours <= 0)
+                continue;
 
             summaries.Add(new TeamTimesheetSummary
             {
