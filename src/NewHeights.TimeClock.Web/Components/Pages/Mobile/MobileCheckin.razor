@@ -183,6 +183,14 @@
     private bool isAdmin = false;
     private bool adminOverrideApplied = false;
     private string? staffIdNumber;
+
+    // Identity fallback for substitutes and manually-added test employees
+    // who don't have PowerSchool Staff rows. See LoadStaffInfo — when the
+    // Staff lookup misses, we fall back to TcEmployees via EntraObjectId
+    // (stable) or Email (string-match) to resolve the IdNumber used by
+    // downstream punch + AttendanceTransactions code paths.
+    private string currentUserEmail = "";
+    private string currentUserEntraOid = "";
     private string? staffFirstName;
     private string? staffLastName;
     private string photoBase64 = "";
@@ -253,6 +261,12 @@
         {
             userName = user.FindFirst("name")?.Value ?? user.Identity.Name ?? "User";
             staffIdNumber = user.FindFirst("employeeid")?.Value ?? user.FindFirst("employee_id")?.Value;
+            currentUserEmail = user.FindFirst("preferred_username")?.Value
+                            ?? user.FindFirst(ClaimTypes.Email)?.Value
+                            ?? "";
+            currentUserEntraOid = user.FindFirst("oid")?.Value
+                               ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                               ?? "";
             var parts = userName.Split(' ', 2);
             staffFirstName = parts.Length > 0 ? parts[0] : "";
             staffLastName = parts.Length > 1 ? parts[1] : "";
@@ -407,6 +421,46 @@
                         .FirstOrDefaultAsync();
                     if (photo?.PhotoData != null) photoBase64 = Convert.ToBase64String(photo.PhotoData);
                 }
+                return;
+            }
+
+            // PowerSchool Staff lookup missed. This is the normal case for
+            // substitutes and for employees added via /admin/employees/add —
+            // they live in TC_Employees with no StaffDcid link. Resolve by
+            // EntraObjectId (stable across renames) then by email. Populate
+            // staffIdNumber from TcEmployees.IdNumber (SUB-NNNN for synced
+            // subs, MANUAL-NNNN for admin-form adds) so downstream punch
+            // creation + AttendanceTransactions queries use the right key.
+            TcEmployee? employee = null;
+            if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+            {
+                employee = await context.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid && e.IsActive);
+            }
+            if (employee == null && !string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                var lower = currentUserEmail.Trim().ToLower();
+                employee = await context.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.Email != null && e.Email.ToLower() == lower && e.IsActive);
+            }
+
+            if (employee != null)
+            {
+                staffIdNumber = employee.IdNumber;
+                if (!string.IsNullOrWhiteSpace(employee.DisplayName))
+                {
+                    userName = employee.DisplayName;
+                    var nameParts = employee.DisplayName.Split(' ', 2);
+                    if (nameParts.Length > 0 && string.IsNullOrWhiteSpace(staffFirstName))
+                        staffFirstName = nameParts[0];
+                    if (nameParts.Length > 1 && string.IsNullOrWhiteSpace(staffLastName))
+                        staffLastName = nameParts[1];
+                }
+                // Photo: no PowerSchool link so we skip the Photos table
+                // lookup. UI will render a blank avatar area which is fine
+                // for subs and test accounts.
             }
         }
         catch (Exception ex) { Logger.LogError(ex, "Error loading staff info"); }
