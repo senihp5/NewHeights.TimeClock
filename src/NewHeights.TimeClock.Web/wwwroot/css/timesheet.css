@@ -178,7 +178,7 @@
 .col-date {
     text-align: left !important;
     padding-left: 1rem !important;
-    width: 100px;
+    width: 140px;
 }
 
 .day-name {
@@ -190,6 +190,37 @@
     display: block;
     font-size: 0.85rem;
     color: #6b7280;
+}
+
+/* First IN / last OUT summary shown on the collapsed day row so users see
+   arrival + departure without drilling into the punch list. */
+.day-inout {
+    display: block;
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    color: #1e3a5f;
+    font-variant-numeric: tabular-nums;
+}
+
+.day-inout .inout-in {
+    color: #065f46;
+    font-weight: 600;
+}
+
+.day-inout .inout-out {
+    color: #7c2d12;
+    font-weight: 600;
+}
+
+.day-inout .inout-sep {
+    color: #94a3b8;
+    margin: 0 0.25rem;
+}
+
+.day-inout .inout-open {
+    color: #b45309;
+    font-style: italic;
+    margin-left: 0.25rem;
 }
 
 .col-status {

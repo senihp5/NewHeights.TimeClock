@@ -640,6 +640,27 @@ public class DailyTimesheetEntry
     public bool HasException { get; set; }
     public string? ExceptionNotes { get; set; }
     public ApprovalStatus ApprovalStatus { get; set; }
+
+    /// <summary>
+    /// Earliest IN punch of the day. Rendered on the collapsed row so users
+    /// can see arrival time without expanding the punch-list drill-down.
+    /// Derived on demand from <see cref="Punches"/> so callers that bypass
+    /// the service layer still get a consistent result.
+    /// </summary>
+    public PunchEntry? FirstIn => Punches
+        .Where(p => string.Equals(p.PunchType, "In", StringComparison.OrdinalIgnoreCase))
+        .OrderBy(p => p.PunchTime)
+        .FirstOrDefault();
+
+    /// <summary>
+    /// Latest OUT punch of the day. Rendered alongside <see cref="FirstIn"/>
+    /// on the collapsed row. Null while the employee is still clocked in
+    /// (no matching Out yet).
+    /// </summary>
+    public PunchEntry? LastOut => Punches
+        .Where(p => string.Equals(p.PunchType, "Out", StringComparison.OrdinalIgnoreCase))
+        .OrderByDescending(p => p.PunchTime)
+        .FirstOrDefault();
 }
 
 public class PunchEntry

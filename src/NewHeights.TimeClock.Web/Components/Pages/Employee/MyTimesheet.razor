@@ -127,6 +127,33 @@
                                 {
                                     <span class="holiday-badge" title="@holidayName">@holidayName</span>
                                 }
+                                @* Arrival / departure summary — first IN and
+                                   last OUT of the day, shown on the collapsed
+                                   row so the user sees their start/end times
+                                   without having to drill into the punch list.
+                                   Uses computed properties on DailyTimesheetEntry
+                                   so no service-layer changes needed. *@
+                                @if (day.FirstIn != null || day.LastOut != null)
+                                {
+                                    <div class="day-inout">
+                                        @if (day.FirstIn != null)
+                                        {
+                                            <span class="inout-in" title="First clock-in">In @day.FirstIn.PunchTime.ToString("h:mm tt")</span>
+                                        }
+                                        @if (day.FirstIn != null && day.LastOut != null)
+                                        {
+                                            <span class="inout-sep">·</span>
+                                        }
+                                        @if (day.LastOut != null)
+                                        {
+                                            <span class="inout-out" title="Last clock-out">Out @day.LastOut.PunchTime.ToString("h:mm tt")</span>
+                                        }
+                                        else if (day.FirstIn != null)
+                                        {
+                                            <span class="inout-open" title="Still clocked in">(still in)</span>
+                                        }
+                                    </div>
+                                }
                             </td>
                             <td class="col-status">
                                 @if (isHoliday)
