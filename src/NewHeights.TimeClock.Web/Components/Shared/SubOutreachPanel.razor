@@ -64,13 +64,13 @@
             {
                 <div class="mode-toggle">
                     <label>
-                        <input type="radio" name="mode-@Request.SubRequestId" value="manual"
+                        <input type="radio" name="mode-@(Request?.SubRequestId ?? 0)" value="manual"
                                checked="@(mode == OutreachMode.Manual)"
                                @onchange="() => SetMode(OutreachMode.Manual)" />
                         Manual — pick one sub to contact
                     </label>
                     <label>
-                        <input type="radio" name="mode-@Request.SubRequestId" value="cascade"
+                        <input type="radio" name="mode-@(Request?.SubRequestId ?? 0)" value="cascade"
                                checked="@(mode == OutreachMode.AutoCascade)"
                                @onchange="() => SetMode(OutreachMode.AutoCascade)" />
                         Auto-cascade — pick ordered list; system advances on decline/expiry
@@ -103,7 +103,7 @@
                                 <td class="select-col">
                                     @if (mode == OutreachMode.Manual)
                                     {
-                                        <input type="radio" name="sub-pick-@Request.SubRequestId"
+                                        <input type="radio" name="sub-pick-@(Request?.SubRequestId ?? 0)"
                                                checked="@manualSelected"
                                                @onchange="() => SetManualSelection(c.EmployeeId)" />
                                     }

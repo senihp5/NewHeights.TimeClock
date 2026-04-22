@@ -1196,7 +1196,7 @@
 
             // Defense-in-depth: don't allow edits of punches from a submitted /
             // locked pay period even if the button was somehow shown.
-            if (weeklyTimesheet.IsSubmitted)
+            if (weeklyTimesheet?.IsSubmitted == true)
             {
                 editPunchError = "This timesheet is already submitted. Ask your supervisor to open it.";
                 return;

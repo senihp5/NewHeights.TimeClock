@@ -106,10 +106,11 @@
                    so this only shows reception subs. *@
                 @if (req.Status == SubRequestStatus.AwaitingSub
                   || req.Status == SubRequestStatus.AbsenceApproved
-                  || req.Status == SubRequestStatus.SubAssigned)
+                  || req.Status == SubRequestStatus.SubAssigned
+                  || req.Status == SubRequestStatus.PartiallyAssigned)
                 {
                     <div style="margin-top:.75rem;">
-                        <SubOutreachPanel Request="req" />
+                        <SubOutreachPanel Request="req" CurrentUserEmail="@currentUserEmail" />
                     </div>
                 }
             </div>
@@ -121,9 +122,14 @@
     private List<TcSubRequest> requests = new();
     private bool isLoading = true;
     private string loadError = "";
+    private string currentUserEmail = "";
 
     protected override async Task OnInitializedAsync()
     {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
+                        ?? authState.User.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "";
         await LoadAsync();
     }
 

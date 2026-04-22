@@ -216,7 +216,6 @@ public class TimesheetReminderService : BackgroundService
                 : (emp.Supervisor?.DisplayName ?? "your supervisor");
 
             bool emailDelivered = false;
-            bool smsAttempted = false;
             bool smsDelivered = false;
             string? errorMsg = null;
             try
@@ -239,7 +238,6 @@ public class TimesheetReminderService : BackgroundService
              && !emp.SmsOptedOut
              && !string.IsNullOrWhiteSpace(emp.Phone))
             {
-                smsAttempted = true;
                 try
                 {
                     var smsBody = BuildEmployeeReminderSms(employeeName, deadlineDateOnly, reminderType);

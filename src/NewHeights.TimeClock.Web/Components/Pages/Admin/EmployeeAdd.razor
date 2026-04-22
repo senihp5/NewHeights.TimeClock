@@ -1,0 +1,534 @@
+@page "/admin/employees/add"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@attribute [Authorize(Policy = "RequireAdmin")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject ILogger<EmployeeAdd> Logger
+
+<PageTitle>Add Employee - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="emp-add-page">
+
+    <header class="emp-add-header">
+        <h1>Add Employee (Manual)</h1>
+        <p class="emp-add-subtitle">
+            Create a TC_Employees row without going through Entra sync. Use this
+            for test accounts and for anyone who can't match a PowerSchool
+            Staff row (hourly staff, teachers, substitutes, admins).
+        </p>
+        <p class="emp-add-note">
+            <strong>Azure reminder:</strong> a TC_Employees row alone does not
+            grant the user a role claim. After creating here, go to
+            <em>Entra ID → Enterprise applications → (TimeClock app) → Users
+            and groups</em> and assign the matching app role
+            (<code>TimeClock.Employee.*</code>, <code>TimeClock.Substitute</code>,
+            <code>TimeClock.AllStaff</code>, etc.) either to the user directly
+            or to a group they're in. Otherwise sign-in will 403.
+        </p>
+    </header>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="panel-ok" role="status">
+            <strong>@successMessage</strong>
+            @if (lastCreatedId > 0)
+            {
+                <div class="ok-meta">
+                    EmployeeId: <strong>@lastCreatedId</strong> &middot; IdNumber: <strong>@lastCreatedIdNumber</strong>
+                </div>
+            }
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="panel-err" role="alert">@errorMessage</div>
+    }
+
+    <form class="emp-form" @onsubmit="SubmitAsync" @onsubmit:preventDefault="true">
+
+        <div class="form-row">
+            <label for="entra-oid">Entra Object ID <span class="req">*</span></label>
+            <input id="entra-oid" type="text" @bind="form.EntraObjectId" required
+                   placeholder="e.g. 41b26e36-e3b0-4333-aff9-5c50a4cb0f84" />
+            <p class="hint">From Azure portal → Entra ID → Users → [user] → Object ID.</p>
+        </div>
+
+        <div class="form-row two-col">
+            <div>
+                <label for="email">Email <span class="req">*</span></label>
+                <input id="email" type="email" @bind="form.Email" required
+                       placeholder="testuser1@newheightsed.com" />
+            </div>
+            <div>
+                <label for="display-name">Display Name <span class="req">*</span></label>
+                <input id="display-name" type="text" @bind="form.DisplayName" required
+                       placeholder="Test User One" />
+            </div>
+        </div>
+
+        <div class="form-row two-col">
+            <div>
+                <label for="emp-type">Employee Type <span class="req">*</span></label>
+                <select id="emp-type" @bind="form.EmployeeType" @bind:after="OnEmployeeTypeChanged">
+                    <option value="@EmployeeType.HourlyStaff">Hourly Staff (full-time)</option>
+                    <option value="@EmployeeType.HourlyPartTime">Hourly Part-Time</option>
+                    <option value="@EmployeeType.Teacher">Teacher (salaried)</option>
+                    <option value="@EmployeeType.SalariedStaff">Salaried Staff</option>
+                    <option value="@EmployeeType.Substitute">Substitute</option>
+                    <option value="@EmployeeType.Admin">Admin</option>
+                </select>
+            </div>
+            <div>
+                <label for="shift">Shift</label>
+                <select id="shift" @bind="form.Shift">
+                    <option value="@EmployeeShift.Day">Day (8:20 AM–4:15 PM)</option>
+                    <option value="@EmployeeShift.Evening">Evening (5:30 PM–9:15 PM)</option>
+                    <option value="@EmployeeShift.Both">Both (substitutes)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="form-row two-col">
+            <div>
+                <label for="campus">Home Campus <span class="req">*</span></label>
+                <select id="campus" @bind="form.HomeCampusId" @bind:after="OnCampusChanged">
+                    <option value="0">— Select a campus —</option>
+                    @foreach (var c in campuses)
+                    {
+                        <option value="@c.CampusId">@c.CampusName</option>
+                    }
+                </select>
+            </div>
+            <div>
+                <label for="dept">Department Code</label>
+                <input id="dept" type="text" @bind="form.DepartmentCode" maxlength="20"
+                       placeholder="Auto-fills from campus" />
+                <p class="hint">NHSS (Stop Six), NHM (McCart), District.</p>
+            </div>
+        </div>
+
+        @if (form.EmployeeType == EmployeeType.Substitute)
+        {
+            <div class="form-row sub-row">
+                <label for="sub-role">Sub Role</label>
+                <select id="sub-role" @bind="form.SubRole">
+                    <option value="">Teacher Sub (default)</option>
+                    <option value="ADMIN_SUB">Admin Sub (RECEPTION)</option>
+                </select>
+                <p class="hint">Admin subs see admin-sub requests only; teacher subs see teacher requests only.</p>
+            </div>
+        }
+
+        <div class="form-row two-col">
+            <div>
+                <label for="id-number">ID Number</label>
+                <input id="id-number" type="text" @bind="form.IdNumber" maxlength="50"
+                       placeholder="@IdNumberPlaceholder" />
+                <p class="hint">Leave blank to auto-generate (@IdNumberPrefixHint).</p>
+            </div>
+            <div>
+                <label for="phone">Phone (for SMS)</label>
+                <input id="phone" type="tel" @bind="form.Phone" maxlength="30"
+                       placeholder="+1 817 555 0100" />
+            </div>
+        </div>
+
+        <div class="form-row">
+            <label for="supervisor">Supervisor (optional)</label>
+            <select id="supervisor" @bind="form.SupervisorEmployeeId">
+                <option value="">— None —</option>
+                @foreach (var s in supervisors.Where(x => form.HomeCampusId == 0 || x.HomeCampusId == form.HomeCampusId))
+                {
+                    <option value="@s.EmployeeId">@(s.DisplayName ?? s.Email) (@(s.HomeCampus?.CampusCode ?? "—"))</option>
+                }
+            </select>
+            <p class="hint">Filter matches the picked home campus. Leaves blank if unsure — sync will link later if Entra manager is set.</p>
+        </div>
+
+        <div class="form-row checkbox-row">
+            <label>
+                <input type="checkbox" @bind="form.SmsOptedOut" />
+                Opted out of SMS
+            </label>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn-primary" disabled="@isSubmitting">
+                @(isSubmitting ? "Creating…" : "Create Employee")
+            </button>
+            <button type="button" class="btn-secondary" @onclick="ResetForm" disabled="@isSubmitting">
+                Reset
+            </button>
+        </div>
+    </form>
+
+    @if (recentlyCreated.Count > 0)
+    {
+        <section class="recent">
+            <h2>Recently created (manual — no PowerSchool Staff link)</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>EmployeeId</th>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>Type</th>
+                        <th>Campus</th>
+                        <th>IdNumber</th>
+                        <th>Created</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var e in recentlyCreated)
+                    {
+                        <tr>
+                            <td>@e.EmployeeId</td>
+                            <td>@(e.DisplayName ?? "—")</td>
+                            <td>@(e.Email ?? "—")</td>
+                            <td>@e.EmployeeType</td>
+                            <td>@(e.HomeCampus?.CampusCode ?? "—")</td>
+                            <td>@e.IdNumber</td>
+                            <td>@e.CreatedDate.ToString("MMM d, h:mm tt")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+
+</div>
+
+<style>
+    .emp-add-page { max-width: 880px; margin: 0 auto; padding: 2rem 1.5rem 2.5rem; font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif; color: #1f2937; }
+    .emp-add-header { background: linear-gradient(135deg, #1e3a5f 0%, #152840 100%); color: white; padding: 1.5rem 1.75rem; border-radius: 12px; margin-bottom: 1.5rem; box-shadow: 0 6px 16px -6px rgba(21,40,64,0.35); position: relative; overflow: hidden; }
+    .emp-add-header::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: #f5b81c; }
+    .emp-add-header h1 { margin: 0 0 .35rem; font-size: 1.55rem; color: white; }
+    .emp-add-subtitle { margin: 0; color: rgba(255,255,255,0.88); font-size: .92rem; line-height: 1.45; }
+    .emp-add-note { margin: .75rem 0 0; padding: .6rem .85rem; background: rgba(245,184,28,0.15); border-left: 3px solid #f5b81c; border-radius: 4px; color: rgba(255,255,255,0.92); font-size: .85rem; line-height: 1.5; }
+    .emp-add-note strong { color: #f7c94d; }
+    .emp-add-note em { font-style: italic; color: #f7c94d; }
+    .emp-add-note code { background: rgba(0,0,0,0.25); padding: .05rem .35rem; border-radius: 3px; font-size: .82rem; }
+
+    .panel-ok, .panel-err { padding: 1rem 1.25rem; border-radius: 8px; margin-bottom: 1rem; }
+    .panel-ok { background: #f0fdf4; border: 1px solid #86efac; border-left: 4px solid #16a34a; color: #065f46; }
+    .panel-err { background: #fef2f2; border: 1px solid #fca5a5; border-left: 4px solid #dc2626; color: #991b1b; }
+    .ok-meta { margin-top: .4rem; font-size: .88rem; color: #065f46; }
+
+    .emp-form { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 2rem; box-shadow: 0 4px 12px -4px rgba(21,40,64,0.1); }
+
+    .form-row { display: flex; flex-direction: column; gap: .55rem; margin-bottom: 1.5rem; }
+    .form-row.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+    .form-row.two-col > div { display: flex; flex-direction: column; gap: .55rem; }
+    .form-row.checkbox-row { flex-direction: row; align-items: center; gap: .4rem; }
+    .form-row > label { font-weight: 600; color: #1e3a5f; font-size: .95rem; }
+    .form-row.two-col label { font-weight: 600; color: #1e3a5f; font-size: .95rem; }
+    .form-row.sub-row { background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f5b81c; padding: .85rem 1rem; border-radius: 6px; }
+    .req { color: #dc2626; }
+
+    .form-row select, .form-row input[type=text], .form-row input[type=email], .form-row input[type=tel] {
+        width: 100%; padding: .7rem .85rem; border: 1px solid #cbd5e1; border-radius: 8px;
+        font-size: 1rem; color: #0f172a; background: white; font-family: inherit; transition: border-color .15s, box-shadow .15s;
+    }
+    .form-row select:focus, .form-row input:focus {
+        outline: none; border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.15);
+    }
+
+    .hint { margin: .2rem 0 0; color: #64748b; font-size: .82rem; line-height: 1.4; }
+
+    .form-actions { display: flex; justify-content: flex-end; gap: .75rem; margin-top: 1rem; padding-top: 1.25rem; border-top: 1px solid #e2e8f0; }
+    .btn-primary { background: #f5b81c; color: #1e3a5f; border: 1px solid #d9a319; padding: .7rem 1.5rem; border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: 700; box-shadow: 0 2px 4px rgba(217,163,25,0.25); transition: all .15s; }
+    .btn-primary:hover:not(:disabled) { background: #f7c94d; transform: translateY(-1px); box-shadow: 0 4px 10px rgba(217,163,25,0.35); }
+    .btn-primary:disabled { background: #cbd5e1; border-color: #cbd5e1; color: #64748b; cursor: not-allowed; }
+    .btn-secondary { background: white; color: #1e3a5f; border: 1px solid #cbd5e1; padding: .7rem 1.25rem; border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: 500; }
+    .btn-secondary:hover:not(:disabled) { background: #f1f5f9; border-color: #94a3b8; }
+
+    .recent { margin-top: 2rem; background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1.25rem 1.5rem; }
+    .recent h2 { margin: 0 0 .75rem; font-size: 1.1rem; color: #1e3a5f; }
+    .recent table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    .recent th { text-align: left; padding: .5rem .75rem; background: #f8fafc; color: #475569; font-weight: 600; border-bottom: 1px solid #e2e8f0; }
+    .recent td { padding: .5rem .75rem; border-bottom: 1px solid #f1f5f9; color: #0f172a; }
+    .recent tr:hover td { background: #f8fafc; }
+
+    @@media (max-width: 640px) {
+        .emp-add-page { padding: 1rem; }
+        .form-row.two-col { grid-template-columns: 1fr; }
+        .form-actions { flex-direction: column-reverse; }
+        .form-actions button { width: 100%; }
+    }
+</style>
+
+@code {
+    private EmployeeForm form = new();
+    private List<Campus> campuses = new();
+    private List<TcEmployee> supervisors = new();
+    private List<TcEmployee> recentlyCreated = new();
+
+    private bool isSubmitting = false;
+    private string successMessage = "";
+    private string errorMessage = "";
+    private int lastCreatedId = 0;
+    private string lastCreatedIdNumber = "";
+
+    private string IdNumberPlaceholder => form.EmployeeType == EmployeeType.Substitute
+        ? "SUB-0042 (auto-generated)"
+        : "MANUAL-0001 (auto-generated)";
+
+    private string IdNumberPrefixHint => form.EmployeeType == EmployeeType.Substitute
+        ? "SUB-NNNN"
+        : "MANUAL-NNNN";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadLookupsAsync();
+    }
+
+    private async Task LoadLookupsAsync()
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+
+        // District Office is a payroll/HR rollup; excluded from the campus
+        // picker so admins don't accidentally seed test employees against it.
+        campuses = await ctx.Campuses
+            .AsNoTracking()
+            .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
+            .OrderBy(c => c.CampusName)
+            .ToListAsync();
+
+        supervisors = await ctx.TcEmployees
+            .AsNoTracking()
+            .Include(e => e.HomeCampus)
+            .Where(e => e.IsActive
+                     && (e.EmployeeType == EmployeeType.SalariedStaff
+                      || e.EmployeeType == EmployeeType.Admin))
+            .OrderBy(e => e.DisplayName)
+            .ToListAsync();
+
+        // Recent manual adds = active rows with no PowerSchool link.
+        recentlyCreated = await ctx.TcEmployees
+            .AsNoTracking()
+            .Include(e => e.HomeCampus)
+            .Where(e => e.StaffDcid == null)
+            .OrderByDescending(e => e.CreatedDate)
+            .Take(10)
+            .ToListAsync();
+    }
+
+    private void OnEmployeeTypeChanged()
+    {
+        // Substitutes can cover either session, so default shift flips to Both
+        // when the admin picks Substitute and hasn't already customized it.
+        if (form.EmployeeType == EmployeeType.Substitute && form.Shift != EmployeeShift.Both)
+        {
+            form.Shift = EmployeeShift.Both;
+        }
+    }
+
+    private void OnCampusChanged()
+    {
+        // Auto-fill department code from the picked campus so admins don't
+        // have to remember NHSS / NHM. District isn't in the dropdown so we
+        // don't need to handle it here.
+        var campus = campuses.FirstOrDefault(c => c.CampusId == form.HomeCampusId);
+        if (campus == null)
+        {
+            form.DepartmentCode = "";
+            return;
+        }
+        form.DepartmentCode = campus.CampusCode switch
+        {
+            "STOPSIX" => AppConstants.Campus.DeptStopSix,   // "NHSS"
+            "MCCART"  => AppConstants.Campus.DeptMcCart,    // "NHM"
+            _ => form.DepartmentCode
+        };
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (isSubmitting) return;
+
+        successMessage = "";
+        errorMessage = "";
+
+        // Client-side validation — keep guards tight because this bypasses
+        // the sync service's staff-matching safety checks.
+        if (string.IsNullOrWhiteSpace(form.EntraObjectId))
+        {
+            errorMessage = "Entra Object ID is required.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(form.Email))
+        {
+            errorMessage = "Email is required.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(form.DisplayName))
+        {
+            errorMessage = "Display name is required.";
+            return;
+        }
+        if (form.HomeCampusId == 0)
+        {
+            errorMessage = "Pick a home campus.";
+            return;
+        }
+
+        isSubmitting = true;
+
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            var oidTrimmed = form.EntraObjectId.Trim();
+            var emailLower = form.Email.Trim().ToLower();
+
+            if (await ctx.TcEmployees.AnyAsync(e => e.EntraObjectId == oidTrimmed))
+            {
+                errorMessage = "An employee with that Entra Object ID already exists. Use the SQL upsert script or edit the row directly.";
+                return;
+            }
+
+            if (await ctx.TcEmployees.AnyAsync(e => e.Email != null && e.Email.ToLower() == emailLower))
+            {
+                errorMessage = $"An employee with email {form.Email} already exists. Emails must be unique.";
+                return;
+            }
+
+            var idNumber = string.IsNullOrWhiteSpace(form.IdNumber)
+                ? await GenerateIdNumberAsync(ctx, form.EmployeeType)
+                : form.IdNumber.Trim();
+
+            if (await ctx.TcEmployees.AnyAsync(e => e.IdNumber == idNumber))
+            {
+                errorMessage = $"IdNumber '{idNumber}' is already taken. Pick a different value or leave blank to auto-generate.";
+                return;
+            }
+
+            int? supervisorId = form.SupervisorEmployeeId == 0 ? null : (int?)form.SupervisorEmployeeId;
+            string? subRole = form.EmployeeType == EmployeeType.Substitute && !string.IsNullOrWhiteSpace(form.SubRole)
+                ? form.SubRole
+                : null;
+
+            var emp = new TcEmployee
+            {
+                StaffDcid            = null,
+                IdNumber             = idNumber,
+                DisplayName          = form.DisplayName.Trim(),
+                AscenderEmployeeId   = null,
+                EmployeeType         = form.EmployeeType,
+                Shift                = form.Shift,
+                HomeCampusId         = form.HomeCampusId,
+                SupervisorEmployeeId = supervisorId,
+                DepartmentCode       = string.IsNullOrWhiteSpace(form.DepartmentCode) ? null : form.DepartmentCode.Trim(),
+                Email                = form.Email.Trim(),
+                Phone                = string.IsNullOrWhiteSpace(form.Phone) ? null : form.Phone.Trim(),
+                IsActive             = true,
+                EntraObjectId        = oidTrimmed,
+                SubRole              = subRole,
+                SmsOptedOut          = form.SmsOptedOut,
+                ExcludedFromSubPool  = false,
+                CreatedDate          = DateTime.Now,
+                ModifiedDate         = DateTime.Now
+            };
+
+            ctx.TcEmployees.Add(emp);
+            await ctx.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.EmployeeSync.Created,
+                entityType: AuditEntityTypes.Employee,
+                entityId: emp.EmployeeId.ToString(),
+                newValues: new
+                {
+                    emp.EmployeeId,
+                    emp.IdNumber,
+                    emp.DisplayName,
+                    emp.Email,
+                    EmployeeType = emp.EmployeeType.ToString(),
+                    emp.HomeCampusId,
+                    emp.EntraObjectId,
+                    Source = "manual-admin-form"
+                },
+                deltaSummary: $"Manually added employee '{emp.DisplayName}' ({emp.Email}) as {emp.EmployeeType} via /admin/employees/add",
+                source: AuditSource.AdminUi,
+                employeeId: emp.EmployeeId,
+                campusId: emp.HomeCampusId);
+
+            lastCreatedId = emp.EmployeeId;
+            lastCreatedIdNumber = emp.IdNumber;
+            successMessage = $"Created {emp.DisplayName}. Don't forget to assign the app role in Enterprise Applications.";
+
+            await LoadLookupsAsync();
+            ResetFormFields();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error adding employee manually");
+            errorMessage = "Could not create the employee. Check the logs for details.";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task<string> GenerateIdNumberAsync(TimeClockDbContext ctx, EmployeeType type)
+    {
+        // Substitutes reuse the same SUB-NNNN sequence the sync service uses
+        // so manually added test subs don't collide with future sync-created
+        // subs. Other types get a MANUAL-NNNN series, distinct from any sync
+        // or import pattern so they're obvious in audit reports.
+        string prefix = type == EmployeeType.Substitute ? "SUB-" : "MANUAL-";
+
+        var existing = await ctx.TcEmployees
+            .Where(e => e.IdNumber.StartsWith(prefix))
+            .Select(e => e.IdNumber)
+            .ToListAsync();
+
+        int nextNumber = 1;
+        foreach (var id in existing)
+        {
+            var suffix = id.Substring(prefix.Length);
+            if (int.TryParse(suffix, out var n) && n >= nextNumber)
+                nextNumber = n + 1;
+        }
+
+        return $"{prefix}{nextNumber:D4}";
+    }
+
+    private void ResetForm()
+    {
+        ResetFormFields();
+        successMessage = "";
+        errorMessage = "";
+    }
+
+    private void ResetFormFields()
+    {
+        form = new EmployeeForm();
+    }
+
+    private class EmployeeForm
+    {
+        public string EntraObjectId { get; set; } = "";
+        public string Email { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string IdNumber { get; set; } = "";
+        public EmployeeType EmployeeType { get; set; } = EmployeeType.HourlyStaff;
+        public EmployeeShift Shift { get; set; } = EmployeeShift.Day;
+        public int HomeCampusId { get; set; } = 0;
+        public string DepartmentCode { get; set; } = "";
+        public string? SubRole { get; set; }
+        public int SupervisorEmployeeId { get; set; } = 0;
+        public string Phone { get; set; } = "";
+        public bool SmsOptedOut { get; set; } = false;
+    }
+}

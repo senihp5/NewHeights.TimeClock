@@ -433,7 +433,7 @@
 
     private PeriodEntry GetEntry(string period) => entriesByPeriod[period];
 
-    private async Task AddLink(string period)
+    private void AddLink(string period)
     {
         var entry = entriesByPeriod[period];
         var url = (entry.NewLinkUrl ?? "").Trim();
