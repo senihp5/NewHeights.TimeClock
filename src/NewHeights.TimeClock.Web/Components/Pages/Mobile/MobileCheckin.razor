@@ -7,6 +7,7 @@
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
 @using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
 @using NewHeights.TimeClock.Shared.DTOs
 @using NewHeights.TimeClock.Shared.Enums
 @using Microsoft.EntityFrameworkCore
@@ -63,7 +64,14 @@
             }
             else if (locationVerified)
             {
-                <span>@nearestCampusName</span>
+                @if (adminOverrideApplied)
+                {
+                    <span style="color: #ffd54f;">@nearestCampusName <span style="font-size:.8em; opacity:.9;">(admin override)</span></span>
+                }
+                else
+                {
+                    <span>@nearestCampusName</span>
+                }
             }
             else
             {
@@ -77,6 +85,28 @@
                 <p style="color: #ff6b6b; margin-bottom: 15px;">@locationErrorMessage</p>
                 <button class="btn btn-primary" @onclick="CheckLocation">Try Again</button>
                 <p style="color: rgba(255,255,255,0.7); margin-top: 15px;">You must be on campus to check in/out</p>
+
+                @if (isAdmin)
+                {
+                    @* Admin-only: desktop browsers return wildly inaccurate
+                       geolocation (IP / WiFi fix can be off by kilometers —
+                       54m is actually close). This lets admins test the
+                       mobile-checkin flow from a desktop without being on
+                       campus. Audit logs flag the override so it's obvious
+                       later if someone abuses it. *@
+                    <div style="margin-top: 24px; padding: 14px 16px; background: rgba(255, 193, 7, 0.12); border: 1px solid rgba(255, 193, 7, 0.45); border-radius: 10px; color: #ffd54f; text-align: left;">
+                        <div style="font-weight: 700; margin-bottom: 6px;">⚠️ Admin Testing Override</div>
+                        <p style="margin: 0 0 10px; font-size: 0.88rem; color: rgba(255,255,255,0.85); line-height: 1.45;">
+                            Desktop browsers use IP/WiFi for geolocation and are often inaccurate.
+                            Real devices use GPS and will work correctly on campus. Use this to test
+                            the check-in flow without being physically on site.
+                        </p>
+                        <button class="btn btn-primary" style="background: #f5b81c; color: #1e3a5f; font-weight: 700;"
+                                @onclick="ApplyAdminOverride">
+                            Force Check-In (Admin)
+                        </button>
+                    </div>
+                }
             </div>
         }
         else if (locationVerified)
@@ -145,6 +175,13 @@
     private System.Timers.Timer? clockTimer;
     private DateTime currentTime = DateTime.Now;
     private string userName = "";
+
+    // Admin-testing override. Lets admin users bypass the geofence when
+    // testing from a desktop browser, where IP-based geolocation is
+    // wildly inaccurate. Never auto-applied — the admin has to click the
+    // override button explicitly, and the click is audited.
+    private bool isAdmin = false;
+    private bool adminOverrideApplied = false;
     private string? staffIdNumber;
     private string? staffFirstName;
     private string? staffLastName;
@@ -219,7 +256,48 @@
             var parts = userName.Split(' ', 2);
             staffFirstName = parts.Length > 0 ? parts[0] : "";
             staffLastName = parts.Length > 1 ? parts[1] : "";
+            isAdmin = user.IsInRole(AppConstants.Roles.Admin);
         }
+    }
+
+    /// <summary>
+    /// Admin-only escape hatch for desktop testing. When the geofence check
+    /// fails and the signed-in user is a TimeClock.Admin, they can click
+    /// Force Check-In to skip the location guard. Falls through to the
+    /// nearest campus (which was already resolved before the check failed)
+    /// so subsequent punch flow has a CampusId. Writes a warning log +
+    /// audit row so the bypass is visible in compliance reports.
+    /// </summary>
+    private async Task ApplyAdminOverride()
+    {
+        if (!isAdmin) return;
+
+        // Use the campus we resolved earlier as the "nearest" before the
+        // check failed. If we couldn't even resolve one, block — there's
+        // no campus to attribute the punch to.
+        if (nearestCampusId == 0)
+        {
+            var fallbackCampus = await GeofenceService.GetNearestCampusAsync(
+                latestLatitude ?? 0, latestLongitude ?? 0);
+            if (fallbackCampus == null)
+            {
+                locationErrorMessage = "Admin override failed — no campus could be resolved. Location services may be off.";
+                return;
+            }
+            nearestCampusId = fallbackCampus.CampusId;
+            nearestCampusName = fallbackCampus.CampusName;
+        }
+
+        locationVerified = true;
+        locationStatusClass = "verified";
+        adminOverrideApplied = true;
+        Logger.LogWarning(
+            "Geofence admin override applied by {User} for campus {Campus}. Reported position: ({Lat}, {Lon}).",
+            userName, nearestCampusName, latestLatitude, latestLongitude);
+
+        await LoadStaffInfo();
+        await LoadCurrentStatus();
+        StateHasChanged();
     }
 
     private void OnClockTick(object? sender, System.Timers.ElapsedEventArgs e)
