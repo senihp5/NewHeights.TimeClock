@@ -39,11 +39,25 @@
         <div class="panel-section">
             <div class="section-title">Available Substitutes</div>
 
+            @if (hiddenBlockedCount > 0)
+            {
+                <div style="background:#fef2f2; border:1px solid #fecaca; border-left:4px solid #dc2626; padding:.5rem .85rem; border-radius:6px; margin:0 0 .6rem; font-size:.86rem; color:#7f1d1d;">
+                    <strong>@hiddenBlockedCount sub@(hiddenBlockedCount == 1 ? "" : "s") hidden</strong>
+                    due to scheduling conflicts (already booked for the same period, or cross-campus travel conflict during this date range).
+                </div>
+            }
+
             @if (candidates.Count == 0)
             {
                 <div class="panel-empty">
-                    No active substitutes found. Check the Entra "Substitute Teachers" group
-                    and confirm the EmployeeSync has run.
+                    @if (hiddenBlockedCount > 0)
+                    {
+                        <span>No substitutes available. All eligible subs are already booked for another assignment that overlaps this date range.</span>
+                    }
+                    else
+                    {
+                        <span>No active substitutes found. Check the Entra "Substitute Teachers" group and confirm the EmployeeSync has run.</span>
+                    }
                 </div>
             }
             else
@@ -312,6 +326,10 @@
     [Parameter] public EventCallback OnOutreachSent { get; set; }
 
     private List<SubCandidate> candidates = new();
+    // Count of candidates filtered out because of Blocked conflicts — shown
+    // above the list so the supervisor knows why the pool is smaller than
+    // the total sub headcount. See LoadAsync for the filter logic.
+    private int hiddenBlockedCount = 0;
     // Phase D5: specialty tag display per candidate (admin subs only carry these).
     private Dictionary<int, List<string>> specialtyByEmployeeId = new();
     private List<TcSubOutreach> history = new();
@@ -383,13 +401,20 @@
             }
             else
             {
+                // Teacher pool: permissive. Anything that is a Substitute,
+                // active, not excluded, and NOT tagged ADMIN_SUB qualifies.
+                // Explicitly NOT filtering on HomeCampusId — subs are
+                // district-wide. Uses !=ADMIN_SUB instead of positive match
+                // on NULL/TEACHER_SUB so any legacy SubRole value (e.g. a
+                // pre-migration-047 'TEACHER' that somehow survived the
+                // rename) still appears as a teacher-sub candidate.
                 subs = await context.TcEmployees
                     .AsNoTracking()
                     .Include(e => e.Staff)
                     .Where(e => e.EmployeeType == EmployeeType.Substitute
                              && e.IsActive
                              && !e.ExcludedFromSubPool
-                             && (e.SubRole == null || e.SubRole == "TEACHER_SUB"))
+                             && (e.SubRole == null || e.SubRole != "ADMIN_SUB"))
                     .OrderBy(e => e.Staff!.LastName)
                     .ThenBy(e => e.Staff!.FirstName)
                     .ToListAsync();
@@ -435,7 +460,9 @@
 
             var currentPeriods = ParsePeriods(Request.PeriodsNeeded);
 
-            candidates = subs
+            // Build the full candidate list (with conflict details) first so
+            // we can separate hard-blocked candidates from the displayed pool.
+            var allCandidates = subs
                 .Select(s => new SubCandidate
                 {
                     EmployeeId = s.EmployeeId,
@@ -450,6 +477,18 @@
                         .ToList()
                 })
                 .ToList();
+
+            // Any Blocked conflict = full-day bookings at the other campus,
+            // same-period overlaps, or adjacent-period travel conflicts.
+            // These subs physically cannot take this request, so they are
+            // hidden from the Available list rather than shown with just a
+            // red badge. Review-severity conflicts (non-adjacent cross-
+            // campus, unspecified periods) still appear with yellow warning
+            // so a supervisor can make the judgment call.
+            candidates = allCandidates
+                .Where(c => !c.ConflictDetails.Any(cd => cd.Severity == ConflictSeverity.Blocked))
+                .ToList();
+            hiddenBlockedCount = allCandidates.Count - candidates.Count;
 
             history = await OutreachService.GetOutreachForRequestAsync(Request.SubRequestId);
 
