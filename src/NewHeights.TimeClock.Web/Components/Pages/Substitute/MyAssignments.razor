@@ -1,0 +1,501 @@
+@page "/sub/my-assignments"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using System.Security.Claims
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<MyAssignments> Logger
+
+<PageTitle>My Assignments - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="assignments-page">
+
+    <header class="assignments-header">
+        <h1>My Assignments</h1>
+        <p class="header-subtitle">
+            Confirmed substitute assignments — upcoming and recent past.
+            Click any card to open the teacher's class notes.
+        </p>
+        <div class="view-toggle">
+            <button type="button" class="toggle-btn @(view == "list" ? "active" : "")"
+                    @onclick='() => SetView("list")'>📋 List</button>
+            <button type="button" class="toggle-btn @(view == "month" ? "active" : "")"
+                    @onclick='() => SetView("month")'>📅 Month</button>
+        </div>
+    </header>
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading your assignments…</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="error-panel" role="alert">@loadError</div>
+    }
+    else if (noEmployeeRecord)
+    {
+        <div class="info-panel">
+            <h3>No substitute profile found</h3>
+            <p>
+                Your account isn't linked to a substitute record in the TimeClock system.
+                If you were recently added to the Substitute Entra group, try signing out
+                and back in. If the problem persists, contact your campus manager.
+            </p>
+        </div>
+    }
+    else if (items.Count == 0)
+    {
+        <div class="info-panel">
+            <h3>No assignments yet</h3>
+            <p>
+                Confirmed assignments will appear here as soon as you accept a substitute
+                request. Check your email for any pending invitations to accept.
+            </p>
+        </div>
+    }
+    else if (view == "month")
+    {
+        <section class="group">
+            <SchoolCalendar Markers="@monthMarkers"
+                            OnDateSelected="OnMonthDateClicked"
+                            CampusId="0" />
+            <p class="form-hint" style="margin-top:.75rem;">
+                Days with assignments show a navy chip (the count). Click a day to jump to its assignments below.
+            </p>
+        </section>
+
+        @if (dayDrilldown.Count > 0)
+        {
+            <section class="group">
+                <h2 class="group-title">
+                    @selectedMonthDate?.ToString("dddd, MMMM d, yyyy") <span class="count-chip">@dayDrilldown.Count</span>
+                </h2>
+                @foreach (var item in dayDrilldown)
+                {
+                    @RenderCard(item)
+                }
+            </section>
+        }
+    }
+    else
+    {
+        @if (upcoming.Count > 0)
+        {
+            <section class="group">
+                <h2 class="group-title">
+                    Upcoming <span class="count-chip">@upcoming.Count</span>
+                </h2>
+                @foreach (var item in upcoming)
+                {
+                    @RenderCard(item)
+                }
+            </section>
+        }
+
+        @if (today.Count > 0)
+        {
+            <section class="group">
+                <h2 class="group-title">
+                    Today <span class="count-chip today-chip">@today.Count</span>
+                </h2>
+                @foreach (var item in today)
+                {
+                    @RenderCard(item)
+                }
+            </section>
+        }
+
+        @if (past.Count > 0)
+        {
+            <section class="group">
+                <h2 class="group-title past">
+                    Recent past <span class="count-chip past-chip">@past.Count</span>
+                </h2>
+                @foreach (var item in past)
+                {
+                    @RenderCard(item)
+                }
+            </section>
+        }
+    }
+
+</div>
+
+@code {
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
+    private RenderFragment RenderCard(AssignmentView item) => __builder =>
+    {
+        var isToday = item.StartDate <= DateOnly.FromDateTime(DateTime.Today)
+                   && item.EndDate >= DateOnly.FromDateTime(DateTime.Today);
+        var cardClass = isToday ? "assignment-card today" : "assignment-card";
+        // Pre-compute the notes URL — can't embed a $"..." interpolated
+        // string inside a double-quoted Razor attribute without breaking
+        // the parser, so lift it out to a local variable.
+        var notesUrl = $"/sub-request/{item.SubRequestId}/notes";
+
+        <div class="@cardClass" @onclick="() => Navigation.NavigateTo(notesUrl)">
+            <div class="card-header">
+                <div class="card-date">
+                    @if (item.StartDate == item.EndDate)
+                    {
+                        <strong>@item.StartDate.ToString("dddd, MMM d, yyyy")</strong>
+                    }
+                    else
+                    {
+                        <strong>@item.StartDate.ToString("ddd, MMM d") &ndash; @item.EndDate.ToString("ddd, MMM d, yyyy")</strong>
+                    }
+                </div>
+                <div class="card-badges">
+                    @if (isToday)
+                    {
+                        <span class="badge today-badge">Today</span>
+                    }
+                    @if (item.IsEmergency)
+                    {
+                        <span class="badge emergency-badge">Urgent</span>
+                    }
+                    <span class="badge campus-badge">@item.CampusName</span>
+                </div>
+            </div>
+
+            <div class="card-body">
+                <div class="card-row">
+                    <span class="row-label">Covering</span>
+                    <span class="row-value"><strong>@item.TeacherName</strong></span>
+                </div>
+
+                <div class="card-row">
+                    <span class="row-label">Periods</span>
+                    <span class="row-value">@(string.IsNullOrWhiteSpace(item.PeriodsDisplay) ? "Whole day" : item.PeriodsDisplay)</span>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(item.SubjectArea))
+                {
+                    <div class="card-row">
+                        <span class="row-label">Subject</span>
+                        <span class="row-value">@item.SubjectArea</span>
+                    </div>
+                }
+
+                <div class="card-row">
+                    <span class="row-label">Session</span>
+                    <span class="row-value">@(item.SessionType ?? "Day")</span>
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(item.SpecialInstructions))
+            {
+                <div class="card-instructions">
+                    <strong>Special instructions:</strong> @item.SpecialInstructions
+                </div>
+            }
+
+            <div class="card-footer">
+                <span class="view-notes">📝 View class notes &rarr;</span>
+            </div>
+        </div>
+    };
+
+    private bool isLoading = true;
+    private bool noEmployeeRecord = false;
+    private string loadError = "";
+
+    private string currentUserEmail = "";
+    private string currentUserEntraOid = "";
+    private int currentEmployeeId = 0;
+
+    private List<AssignmentView> items = new();
+    private List<AssignmentView> upcoming = new();
+    private List<AssignmentView> today = new();
+    private List<AssignmentView> past = new();
+
+    // View toggle — "list" (default card stack by time group) or "month"
+    // (SchoolCalendar with per-day markers + drill-down below).
+    private string view = "list";
+    private Dictionary<DateOnly, SchoolCalendar.MarkerInfo> monthMarkers = new();
+    private DateOnly? selectedMonthDate;
+    private List<AssignmentView> dayDrilldown = new();
+
+    private void SetView(string next)
+    {
+        view = next;
+        if (view == "month") RecomputeMonthMarkers();
+    }
+
+    private void RecomputeMonthMarkers()
+    {
+        // One marker per day that has at least one assignment. When multiple
+        // assignments fall on the same day (e.g. two partial-accept pieces
+        // of the same request), the chip shows the count.
+        monthMarkers = new Dictionary<DateOnly, SchoolCalendar.MarkerInfo>();
+        foreach (var item in items)
+        {
+            for (var d = item.StartDate; d <= item.EndDate; d = d.AddDays(1))
+            {
+                if (!monthMarkers.TryGetValue(d, out var existing))
+                {
+                    monthMarkers[d] = new SchoolCalendar.MarkerInfo
+                    {
+                        Label = "1",
+                        Tooltip = $"{item.TeacherName} @ {item.CampusName}",
+                        Color = item.IsEmergency ? "#dc2626" : "#1e3a5f"
+                    };
+                }
+                else
+                {
+                    var count = int.TryParse(existing.Label, out var n) ? n + 1 : 2;
+                    existing.Label = count.ToString();
+                    existing.Tooltip += $"; {item.TeacherName} @ {item.CampusName}";
+                }
+            }
+        }
+    }
+
+    private void OnMonthDateClicked(DateOnly day)
+    {
+        selectedMonthDate = day;
+        dayDrilldown = items
+            .Where(x => x.StartDate <= day && x.EndDate >= day)
+            .OrderBy(x => x.CampusName)
+            .ToList();
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUserEmail = user.FindFirst("preferred_username")?.Value
+                        ?? user.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "";
+        currentUserEntraOid = user.FindFirst("oid")?.Value
+                           ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                           ?? "";
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        loadError = "";
+        noEmployeeRecord = false;
+        items = new();
+        upcoming = new();
+        today = new();
+        past = new();
+
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            // Resolve the current user to an EmployeeId. EntraObjectId is the
+            // stable key; fall back to email. Same pattern as MyRequests etc.
+            TcEmployee? me = null;
+            if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+            {
+                me = await ctx.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid && e.IsActive);
+            }
+            if (me == null && !string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                var lower = currentUserEmail.Trim().ToLower();
+                me = await ctx.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.Email != null && e.Email.ToLower() == lower && e.IsActive);
+            }
+
+            if (me == null)
+            {
+                noEmployeeRecord = true;
+                return;
+            }
+
+            currentEmployeeId = me.EmployeeId;
+
+            // Date window: show assignments ending within the last 30 days up
+            // through any future date. Keeps the page fresh without hiding
+            // recent history.
+            var cutoffStart = DateOnly.FromDateTime(DateTime.Today.AddDays(-30));
+
+            // Phase A model: one TcSubRequestAssignment row per partial accept.
+            // Authoritative for post-Phase-A requests.
+            var phaseA = await ctx.TcSubRequestAssignments
+                .AsNoTracking()
+                .Include(a => a.SubRequest).ThenInclude(r => r!.Campus)
+                .Include(a => a.SubRequest).ThenInclude(r => r!.RequestingEmployee).ThenInclude(e => e!.Staff)
+                .Where(a => a.SubEmployeeId == currentEmployeeId
+                         && a.SubRequest != null
+                         && a.SubRequest.Status != SubRequestStatus.Denied
+                         && a.SubRequest.Status != SubRequestStatus.Cancelled
+                         && a.SubRequest.EndDate >= cutoffStart)
+                .ToListAsync();
+
+            // Legacy model: pre-Phase-A requests use TcSubRequest.AssignedSubEmployeeId
+            // without a corresponding join row. Pull those too, but exclude
+            // anything already covered by phaseA to avoid duplicates.
+            var phaseARequestIds = phaseA.Select(a => a.SubRequestId).ToHashSet();
+            var legacy = await ctx.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.Campus)
+                .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                .Where(r => r.AssignedSubEmployeeId == currentEmployeeId
+                         && r.Status != SubRequestStatus.Denied
+                         && r.Status != SubRequestStatus.Cancelled
+                         && r.EndDate >= cutoffStart
+                         && !phaseARequestIds.Contains(r.SubRequestId))
+                .ToListAsync();
+
+            foreach (var a in phaseA)
+            {
+                items.Add(BuildView(a.SubRequest!, a.PeriodsCovered));
+            }
+            foreach (var r in legacy)
+            {
+                items.Add(BuildView(r, r.PeriodsNeeded));
+            }
+
+            // Sort by start date then subject. Bucket into time groups for
+            // the three sections.
+            items = items.OrderBy(x => x.StartDate).ThenBy(x => x.TeacherName).ToList();
+            var todayOnly = DateOnly.FromDateTime(DateTime.Today);
+            foreach (var it in items)
+            {
+                if (it.StartDate <= todayOnly && it.EndDate >= todayOnly)
+                {
+                    today.Add(it);
+                }
+                else if (it.StartDate > todayOnly)
+                {
+                    upcoming.Add(it);
+                }
+                else
+                {
+                    past.Add(it);
+                }
+            }
+            // Past: most recent first, rest ascending.
+            past = past.OrderByDescending(x => x.StartDate).ToList();
+
+            // If the user is currently on Month view, recompute markers so
+            // newly-loaded assignments show up as per-day chips on the calendar.
+            if (view == "month") RecomputeMonthMarkers();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading assignments for employee {Email}", currentUserEmail);
+            loadError = "Could not load your assignments. Please refresh and try again.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private static AssignmentView BuildView(TcSubRequest req, string? periodsSource)
+    {
+        var teacher = req.RequestingEmployee;
+        return new AssignmentView
+        {
+            SubRequestId        = req.SubRequestId,
+            StartDate           = req.StartDate,
+            EndDate             = req.EndDate,
+            CampusName          = req.Campus?.CampusName ?? "—",
+            TeacherName         = teacher?.Staff?.FullName
+                                 ?? teacher?.DisplayName
+                                 ?? teacher?.Email
+                                 ?? "(unknown teacher)",
+            PeriodsDisplay      = FormatPeriods(periodsSource),
+            SessionType         = req.SessionType,
+            SubjectArea         = req.SubjectArea,
+            SpecialInstructions = req.SpecialInstructions,
+            IsEmergency         = req.IsEmergency,
+            Status              = req.Status
+        };
+    }
+
+    private static string FormatPeriods(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        return string.Join(", ", raw.Split(',').Select(p => p.Trim()).Where(p => p.Length > 0));
+    }
+
+    private class AssignmentView
+    {
+        public long SubRequestId { get; set; }
+        public DateOnly StartDate { get; set; }
+        public DateOnly EndDate { get; set; }
+        public string CampusName { get; set; } = "";
+        public string TeacherName { get; set; } = "";
+        public string PeriodsDisplay { get; set; } = "";
+        public string? SessionType { get; set; }
+        public string? SubjectArea { get; set; }
+        public string? SpecialInstructions { get; set; }
+        public bool IsEmergency { get; set; }
+        public SubRequestStatus Status { get; set; }
+    }
+}
+
+<style>
+    .assignments-page { max-width: 880px; margin: 0 auto; padding: 1.75rem 1.5rem 2rem; font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif; color: #1f2937; }
+
+    .assignments-header { position: relative; background: linear-gradient(135deg, #1e3a5f 0%, #152840 100%); color: white; padding: 1.5rem 1.75rem; border-radius: 12px; margin-bottom: 1.5rem; box-shadow: 0 6px 16px -6px rgba(21,40,64,0.35); overflow: hidden; }
+    .assignments-header::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: #f5b81c; }
+    .assignments-header h1 { margin: 0 0 .35rem; color: white; font-size: 1.55rem; }
+    .header-subtitle { margin: 0 0 .7rem; color: rgba(255,255,255,0.88); font-size: .92rem; line-height: 1.45; }
+    .view-toggle { display: inline-flex; gap: .3rem; padding: .2rem; background: rgba(0,0,0,0.25); border-radius: 8px; }
+    .toggle-btn { padding: .35rem .85rem; background: transparent; color: rgba(255,255,255,0.82); border: none; border-radius: 6px; cursor: pointer; font-size: .88rem; font-weight: 500; transition: all .15s; }
+    .toggle-btn:hover { color: white; background: rgba(255,255,255,0.1); }
+    .toggle-btn.active { background: #f5b81c; color: #1e3a5f; font-weight: 700; }
+    .form-hint { color: #64748b; font-size: .85rem; margin: 0; line-height: 1.45; }
+
+    .loading, .info-panel, .error-panel { padding: 1.25rem 1.5rem; border-radius: 10px; margin-bottom: 1rem; }
+    .loading { background: #f1f5f9; color: #475569; text-align: center; font-weight: 500; }
+    .info-panel { background: #eff6ff; border: 1px solid #bfdbfe; border-left: 5px solid #1e3a5f; color: #1e3a5f; }
+    .info-panel h3 { margin: 0 0 .5rem; color: #1e3a5f; font-size: 1.1rem; }
+    .info-panel p { margin: 0; line-height: 1.5; }
+    .error-panel { background: #fef2f2; border: 1px solid #fecaca; border-left: 5px solid #dc2626; color: #991b1b; }
+
+    .group { margin-bottom: 1.75rem; }
+    .group-title { margin: 0 0 .75rem; color: #1e3a5f; font-size: 1.1rem; display: inline-flex; align-items: center; gap: .5rem; }
+    .group-title.past { color: #64748b; }
+    .count-chip { padding: .12rem .55rem; background: #1e3a5f; color: white; border-radius: 10px; font-size: .78rem; font-weight: 600; }
+    .count-chip.today-chip { background: #dc2626; }
+    .count-chip.past-chip { background: #94a3b8; }
+
+    .assignment-card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: .75rem; cursor: pointer; transition: all .15s ease; box-shadow: 0 2px 6px -2px rgba(21,40,64,0.08); }
+    .assignment-card:hover { border-color: #1e3a5f; transform: translateY(-1px); box-shadow: 0 4px 12px -2px rgba(21,40,64,0.15); }
+    .assignment-card.today { border-left: 4px solid #dc2626; background: #fffbfb; }
+
+    .card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: .75rem; margin-bottom: .65rem; flex-wrap: wrap; }
+    .card-date { color: #1e3a5f; font-size: 1.05rem; }
+    .card-badges { display: flex; gap: .4rem; flex-wrap: wrap; }
+
+    .badge { padding: .18rem .65rem; border-radius: 12px; font-size: .78rem; font-weight: 600; }
+    .badge.today-badge { background: #dc2626; color: white; }
+    .badge.emergency-badge { background: #f59e0b; color: white; }
+    .badge.campus-badge { background: #dbeafe; color: #1e40af; border: 1px solid #bfdbfe; }
+
+    .card-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: .45rem .8rem; margin-bottom: .65rem; }
+    .card-row { display: flex; flex-direction: column; gap: .1rem; }
+    .row-label { color: #64748b; font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+    .row-value { color: #0f172a; font-size: .95rem; }
+
+    .card-instructions { background: #fffbeb; border: 1px solid #fde68a; border-left: 3px solid #f5b81c; padding: .6rem .85rem; border-radius: 6px; color: #78350f; font-size: .88rem; line-height: 1.4; margin-bottom: .65rem; }
+
+    .card-footer { display: flex; justify-content: flex-end; padding-top: .5rem; border-top: 1px solid #f1f5f9; }
+    .view-notes { color: #1d4ed8; font-size: .88rem; font-weight: 500; }
+
+    @@media (max-width: 640px) {
+        .assignments-page { padding: 1rem; }
+        .card-header { flex-direction: column; align-items: flex-start; }
+        .card-body { grid-template-columns: 1fr; }
+    }
+</style>
