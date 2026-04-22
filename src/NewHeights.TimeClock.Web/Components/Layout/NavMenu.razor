@@ -40,10 +40,14 @@
             </div>
         </AuthorizeView>
 
-        @* My Timesheet / My Sub Timesheet - visible to all authenticated staff.
-           Admins, reception, and salaried viewers need a quick nav link to their
-           own timesheet view, not just hourly employees. *@
-        <AuthorizeView Policy="RequireAnyStaff" Context="myTimeCtx">
+        @* My Timesheet / My Sub Timesheet — only users who actually clock in.
+           RequireHourly (Employee* variants + Substitute + Admin) gates this
+           section so salaried teachers, AllStaff, HR, Reception, and District
+           roles don't see a link that leads to an empty page. A receptionist
+           who is also in an Employee PT group will pass RequireHourly and
+           see their timesheet link; receptionists who don't punch the clock
+           won't. *@
+        <AuthorizeView Policy="RequireHourly" Context="myTimeCtx">
             <details class="nav-section-group" open>
                 <summary class="nav-section">My Time</summary>
                 @if (myTimeCtx.User.IsInRole("TimeClock.Substitute"))

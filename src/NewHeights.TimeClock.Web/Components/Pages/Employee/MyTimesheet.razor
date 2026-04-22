@@ -32,35 +32,58 @@
         </div>
     </header>
 
-    <div class="employee-info-bar">
-        <div class="info-item">
-            <span class="info-label">Name:</span>
-            <span class="info-value">@employeeName</span>
-        </div>
-        <div class="info-item">
-            <span class="info-label">Pay Period:</span>
-            <span class="info-value">@currentPayPeriod?.PeriodName</span>
-        </div>
-        @if (currentPayPeriod != null && !currentPayPeriod.IsPastDeadline)
-        {
-            <div class="info-item deadline @(currentPayPeriod.DaysUntilDeadline <= 2 ? "urgent" : "")">
-                <span class="info-label">Submission Deadline:</span>
-                <span class="info-value">@currentPayPeriod.EmployeeDeadline.ToString("dddd, MMM d") (@currentPayPeriod.DaysUntilDeadline days)</span>
+    @if (!noEmployeeRecord)
+    {
+        <div class="employee-info-bar">
+            <div class="info-item">
+                <span class="info-label">Name:</span>
+                <span class="info-value">@employeeName</span>
             </div>
-        }
-    </div>
-
-    <div class="week-navigation">
-        <button class="btn-nav" @onclick="PreviousWeek" disabled="@isLoading">← Previous Week</button>
-        <div class="current-week">
-            <strong>Week of @selectedWeekStart.ToString("MMMM d") - @selectedWeekEnd.ToString("MMMM d, yyyy")</strong>
-            @if (weekOffset == 0)
+            <div class="info-item">
+                <span class="info-label">Pay Period:</span>
+                <span class="info-value">@currentPayPeriod?.PeriodName</span>
+            </div>
+            @if (currentPayPeriod != null && !currentPayPeriod.IsPastDeadline)
             {
-                <span class="current-badge">Current</span>
+                <div class="info-item deadline @(currentPayPeriod.DaysUntilDeadline <= 2 ? "urgent" : "")">
+                    <span class="info-label">Submission Deadline:</span>
+                    <span class="info-value">@currentPayPeriod.EmployeeDeadline.ToString("dddd, MMM d") (@currentPayPeriod.DaysUntilDeadline days)</span>
+                </div>
             }
         </div>
-        <button class="btn-nav" @onclick="NextWeek" disabled="@(weekOffset >= 0 || isLoading)">Next Week →</button>
-    </div>
+    }
+
+    @if (noEmployeeRecord)
+    {
+        <div class="no-record-panel" style="margin: 1.5rem 0; padding: 1.25rem 1.5rem; background: #eff6ff; border: 1px solid #bfdbfe; border-left: 5px solid #1e3a5f; border-radius: 10px; color: #1e3a5f;">
+            <h2 style="margin: 0 0 .5rem; color: #1e3a5f;">No timesheet for this account</h2>
+            <p style="margin: .35rem 0; line-height: 1.55;">
+                Your account (<strong>@currentUserEmail</strong>) isn't linked to an
+                employee record in the TimeClock system. This is normal for admin-only
+                and IT roles — you don't punch the clock for payroll.
+            </p>
+            <p style="margin: .5rem 0 0; line-height: 1.55;">
+                If you think this is wrong (for example, you're a part-time hourly
+                employee who should be punching in), ask your supervisor to confirm
+                your Entra group membership includes the hourly-employee group for
+                your campus, then sign out and sign back in.
+            </p>
+        </div>
+    }
+    else
+    {
+        <div class="week-navigation">
+            <button class="btn-nav" @onclick="PreviousWeek" disabled="@isLoading">← Previous Week</button>
+            <div class="current-week">
+                <strong>Week of @selectedWeekStart.ToString("MMMM d") - @selectedWeekEnd.ToString("MMMM d, yyyy")</strong>
+                @if (weekOffset == 0)
+                {
+                    <span class="current-badge">Current</span>
+                }
+            </div>
+            <button class="btn-nav" @onclick="NextWeek" disabled="@(weekOffset >= 0 || isLoading)">Next Week →</button>
+        </div>
+    }
 
     @if (isLoading)
     {
@@ -612,6 +635,11 @@
 
     private int weekOffset = 0;
     private bool isLoading = true;
+    // Admin / salaried users reach this page without a TC_Employees row of
+    // their own. Instead of rendering default DateOnly values ("Jan 1, 0001"),
+    // flag the state so the UI can show a friendly explanation.
+    private bool noEmployeeRecord = false;
+    private string currentUserEntraOid = "";
     private bool isSubmitting = false;
     private bool certificationChecked = false;
 
@@ -667,6 +695,9 @@
         var user = authState.User;
         currentUserEmail = user.FindFirst("preferred_username")?.Value ??
                            user.FindFirst(ClaimTypes.Email)?.Value ?? "";
+        currentUserEntraOid = user.FindFirst("oid")?.Value
+                           ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                           ?? "";
 
         currentPayPeriod = await PayPeriodService.GetCurrentPayPeriodAsync();
         await LoadEmployeeAndTimesheet();
@@ -675,14 +706,33 @@
     private async Task LoadEmployeeAndTimesheet()
     {
         isLoading = true;
+        noEmployeeRecord = false;
 
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
 
-            var employee = await context.TcEmployees
-                .Include(e => e.Staff)
-                .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
+            // Multi-step lookup: EntraObjectId is the most stable match; fall
+            // back to case-insensitive email. Matches the pattern used on the
+            // Substitute Request and My Sub Requests pages.
+            TcEmployee? employee = null;
+
+            if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+            {
+                employee = await context.TcEmployees
+                    .Include(e => e.Staff)
+                    .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid && e.IsActive);
+            }
+
+            if (employee == null && !string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                var emailLower = currentUserEmail.Trim().ToLower();
+                employee = await context.TcEmployees
+                    .Include(e => e.Staff)
+                    .FirstOrDefaultAsync(e => e.Email != null
+                                           && e.Email.ToLower() == emailLower
+                                           && e.IsActive);
+            }
 
             if (employee != null)
             {
@@ -700,6 +750,14 @@
                 isHolidayEligible = employee.EmployeeType != EmployeeType.HourlyPartTime
                                  && employee.EmployeeType != EmployeeType.Substitute;
                 await LoadTimesheet();
+            }
+            else
+            {
+                // Admin / IT-only users have the Admin role (which satisfies
+                // RequireHourly) but no TC_Employees row. Flag so the UI
+                // renders an empty-state panel instead of DateOnly.MinValue
+                // ("Week of January 1 - January 1, 0001").
+                noEmployeeRecord = true;
             }
         }
         catch (Exception ex)
