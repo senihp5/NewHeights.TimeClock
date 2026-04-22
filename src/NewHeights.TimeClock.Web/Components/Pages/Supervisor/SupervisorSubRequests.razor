@@ -115,7 +115,14 @@
 
                 <div class="request-header">
                     <div class="request-who">
-                        <strong>@(req.RequestingEmployee?.Staff?.FullName ?? req.RequestingEmployee?.Email ?? "—")</strong>
+                        <strong>@(req.RequestingEmployee?.Staff?.FullName ?? req.RequestingEmployee?.DisplayName ?? req.RequestingEmployee?.Email ?? "—")</strong>
+                        @if (req.CreatedByEmployeeId.HasValue && req.CreatedByEmployee != null)
+                        {
+                            <span class="on-behalf-badge"
+                                  style="display:inline-block; margin-left:8px; padding:2px 10px; background:#eff6ff; color:#0369a1; border:1px solid #93c5fd; border-radius:12px; font-size:0.8rem; font-weight:500;">
+                                Created by @(req.CreatedByEmployee.Staff?.FullName ?? req.CreatedByEmployee.DisplayName ?? req.CreatedByEmployee.Email ?? "Admin")
+                            </span>
+                        }
                         <span class="request-dates">
                             @(req.StartDate == req.EndDate
                                 ? req.StartDate.ToString("ddd, MMM d, yyyy")
@@ -190,7 +197,8 @@
                 }
                 else if (req.Status == SubRequestStatus.AwaitingSub
                       || req.Status == SubRequestStatus.AbsenceApproved
-                      || req.Status == SubRequestStatus.SubAssigned)
+                      || req.Status == SubRequestStatus.SubAssigned
+                      || req.Status == SubRequestStatus.PartiallyAssigned)
                 {
                     @* Phase 9a: AwaitingSub is teacher-driven, but admin override is allowed
                        via this same panel. AbsenceApproved is the legacy pre-9a state still
@@ -239,6 +247,14 @@
                         {
                             <span class="confirmed-email"> · confirmation email sent ✓</span>
                         }
+                        @* Migration 050: supervisors have read-only access to
+                           the per-period class notes page for oversight. *@
+                        <div style="margin-top:.4rem;">
+                            <a href="@($"/sub-request/{req.SubRequestId}/notes")"
+                               style="display:inline-block; padding:.3rem .75rem; background:white; color:#1e3a5f; border:1px solid #1e3a5f; text-decoration:none; border-radius:6px; font-size:.82rem; font-weight:500;">
+                                View Class Notes
+                            </a>
+                        </div>
                     </div>
 
                     @if (isDenyingThis)
@@ -376,6 +392,11 @@
                 .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
                 .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
                 .Include(r => r.Campus)
+                .Include(r => r.CreatedByEmployee).ThenInclude(e => e!.Staff)
+                // Phase D4B: this is the TEACHER supervisor view. Reception
+                // requests live on /reception/sub-requests with their own
+                // isolated pool. NULL is treated as TEACHER (legacy data).
+                .Where(r => r.RequestType == null || r.RequestType == "TEACHER")
                 .AsQueryable();
 
             if (filterCampusId.HasValue)
@@ -388,6 +409,7 @@
                 "open" => query.Where(r => r.Status == SubRequestStatus.Submitted
                                         || r.Status == SubRequestStatus.AwaitingSub
                                         || r.Status == SubRequestStatus.SubAssigned
+                                        || r.Status == SubRequestStatus.PartiallyAssigned
                                         || r.Status == SubRequestStatus.SubConfirmed),
                 "all" => query,
                 "awaitingsub" => query.Where(r => r.Status == SubRequestStatus.AwaitingSub),

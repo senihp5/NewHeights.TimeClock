@@ -169,6 +169,15 @@
                         <p class="confirmed-next">
                             Awaiting final approval from your campus admin.
                         </p>
+                        @* Migration 050: teachers can start writing class notes
+                           as soon as a sub is confirmed — don't wait for
+                           admin approval, which may land close to the date. *@
+                        <div style="margin-top:.5rem;">
+                            <a href="@($"/sub-request/{req.SubRequestId}/notes")"
+                               style="display:inline-block; padding:.4rem .9rem; background:#1e3a5f; color:white; text-decoration:none; border-radius:6px; font-size:.85rem; font-weight:600;">
+                                📝 Add Class Notes
+                            </a>
+                        </div>
                     </div>
 
                     <div class="cancel-row">
@@ -191,6 +200,14 @@
                         {
                             <span> Approved on @req.SupervisorApprovedDate.Value.ToString("MMM d h:mm tt").</span>
                         }
+                        @* Migration 050: deep link to per-period class notes so
+                           the teacher can leave lesson plans / URLs for subs. *@
+                        <div style="margin-top:.6rem;">
+                            <a href="@($"/sub-request/{req.SubRequestId}/notes")"
+                               style="display:inline-block; padding:.4rem .9rem; background:#1e3a5f; color:white; text-decoration:none; border-radius:6px; font-size:.85rem; font-weight:600;">
+                                📝 Add Class Notes
+                            </a>
+                        </div>
                     </div>
                 }
                 else if (req.Status == SubRequestStatus.Denied)

@@ -53,6 +53,9 @@ public class TimeClockDbContext : DbContext
     // Added in migration 045 (Phase D5 — sub pool management).
     public DbSet<TcSubSpecialty> TcSubSpecialties { get; set; } = null!;
     public DbSet<TcSubSpecialtyAssignment> TcSubSpecialtyAssignments { get; set; } = null!;
+    public DbSet<TcSubRequestAssignment> TcSubRequestAssignments { get; set; } = null!;
+    public DbSet<TcSubRequestPeriodNote> TcSubRequestPeriodNotes { get; set; } = null!;
+    public DbSet<TcSubRequestPeriodAttachment> TcSubRequestPeriodAttachments { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -493,6 +496,70 @@ public class TimeClockDbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasIndex(e => new { e.EmployeeId, e.SpecialtyId }).IsUnique();
+        });
+
+        // Phase A (migration 048): partial-acceptance assignments. Join table
+        // that records which sub committed to which periods of a request.
+        modelBuilder.Entity<TcSubRequestAssignment>(entity =>
+        {
+            entity.ToTable("TC_SubRequestAssignments");
+            entity.HasKey(e => e.AssignmentId);
+            entity.Property(e => e.PeriodsCovered).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.AssignedBy).HasMaxLength(100);
+
+            entity.HasOne(e => e.SubRequest)
+                  .WithMany(r => r.Assignments)
+                  .HasForeignKey(e => e.SubRequestId)
+                  .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.SubEmployee)
+                  .WithMany()
+                  .HasForeignKey(e => e.SubEmployeeId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(e => e.SubRequestId);
+        });
+
+        // Migration 050: per-period class notes. One row per (SubRequestId,
+        // PeriodIdentifier). Unique index enforces that pairing at the DB
+        // level so concurrent saves can't write two rows for the same slot.
+        modelBuilder.Entity<TcSubRequestPeriodNote>(entity =>
+        {
+            entity.ToTable("TC_SubRequestPeriodNotes");
+            entity.HasKey(e => e.PeriodNoteId);
+            entity.Property(e => e.PeriodIdentifier).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.CreatedBy).HasMaxLength(100);
+            entity.Property(e => e.ModifiedBy).HasMaxLength(100);
+
+            entity.HasOne(e => e.SubRequest)
+                  .WithMany(r => r.PeriodNotes)
+                  .HasForeignKey(e => e.SubRequestId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => new { e.SubRequestId, e.PeriodIdentifier }).IsUnique();
+        });
+
+        // Migration 050: attachments hanging off a period note. AttachmentType
+        // discriminator distinguishes paste-link URLs (today) from future
+        // Azure Blob uploads. CHECK constraint in the migration enforces
+        // legal values at the DB layer.
+        modelBuilder.Entity<TcSubRequestPeriodAttachment>(entity =>
+        {
+            entity.ToTable("TC_SubRequestPeriodAttachments");
+            entity.HasKey(e => e.AttachmentId);
+            entity.Property(e => e.AttachmentType).HasMaxLength(10).IsRequired();
+            entity.Property(e => e.Label).HasMaxLength(200);
+            entity.Property(e => e.Url).HasMaxLength(1000);
+            entity.Property(e => e.BlobContainer).HasMaxLength(100);
+            entity.Property(e => e.BlobKey).HasMaxLength(500);
+            entity.Property(e => e.ContentType).HasMaxLength(100);
+            entity.Property(e => e.UploadedBy).HasMaxLength(100);
+
+            entity.HasOne(e => e.PeriodNote)
+                  .WithMany(p => p.Attachments)
+                  .HasForeignKey(e => e.PeriodNoteId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => e.PeriodNoteId);
         });
         modelBuilder.Entity<AttendanceTransaction>(entity =>
         {

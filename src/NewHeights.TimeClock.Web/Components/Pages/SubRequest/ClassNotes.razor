@@ -1,0 +1,586 @@
+@page "/sub-request/{SubRequestId:long}/notes"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@using System.Security.Claims
+@attribute [Authorize]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject ILogger<ClassNotes> Logger
+
+<PageTitle>Class Notes - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="class-notes-page">
+
+    @if (isLoading)
+    {
+        <div class="loading-panel">Loading class notes…</div>
+    }
+    else if (accessDenied)
+    {
+        <div class="error-panel" role="alert">
+            <h2>Access denied</h2>
+            <p>
+                This class-notes page is only available to the requesting teacher,
+                substitutes assigned to cover this request, and supervisors or
+                campus admins. If you think you should have access, contact your
+                campus manager.
+            </p>
+        </div>
+    }
+    else if (request == null)
+    {
+        <div class="error-panel" role="alert">
+            <h2>Request not found</h2>
+            <p>This sub request doesn't exist or has been removed.</p>
+        </div>
+    }
+    else
+    {
+        <header class="notes-header">
+            <h1>Class Notes — Request #@request.SubRequestId</h1>
+            <p class="notes-subtitle">
+                <strong>@(teacherName)</strong> &bull; @(campusName) &bull;
+                @(request.StartDate == request.EndDate
+                    ? request.StartDate.ToString("dddd, MMM d, yyyy")
+                    : $"{request.StartDate:ddd MMM d} – {request.EndDate:ddd MMM d, yyyy}")
+            </p>
+            <p class="notes-mode">
+                @if (canEdit)
+                {
+                    <span class="mode-badge editable">Editable — you are the requesting teacher</span>
+                }
+                else if (canView)
+                {
+                    <span class="mode-badge readonly">Read only — @viewerReason</span>
+                }
+            </p>
+        </header>
+
+        @if (!string.IsNullOrEmpty(statusMessage))
+        {
+            <div class="status-panel @(statusIsError ? "error" : "success")">@statusMessage</div>
+        }
+
+        @if (periodIds.Count == 0)
+        {
+            <div class="info-panel">
+                <p>This request doesn't specify individual periods — it's treated as a whole-day absence. Add your notes below; they'll apply to the entire day.</p>
+            </div>
+        }
+
+        <div class="periods-list">
+            @foreach (var period in periodIds)
+            {
+                var entry = GetEntry(period);
+                <section class="period-card">
+                    <header class="period-card-header">
+                        <h2>@period</h2>
+                        @if (entry.AssignedSubName != null)
+                        {
+                            <span class="period-assigned-sub">Covered by: <strong>@entry.AssignedSubName</strong></span>
+                        }
+                        else
+                        {
+                            <span class="period-assigned-sub muted">Unassigned</span>
+                        }
+                    </header>
+
+                    <div class="period-body">
+                        <label class="field-label">Class notes / lesson plan</label>
+                        @if (canEdit)
+                        {
+                            <textarea class="notes-textarea"
+                                      rows="6"
+                                      placeholder="Lesson plan, activities, seating notes, behavioral notes, student flags..."
+                                      @bind="entry.Notes"></textarea>
+                        }
+                        else
+                        {
+                            <div class="notes-readonly">
+                                @if (string.IsNullOrWhiteSpace(entry.Notes))
+                                {
+                                    <em class="muted">No notes provided.</em>
+                                }
+                                else
+                                {
+                                    @((MarkupString)System.Net.WebUtility.HtmlEncode(entry.Notes).Replace("\n", "<br/>"))
+                                }
+                            </div>
+                        }
+
+                        <div class="links-section">
+                            <label class="field-label">Links to materials</label>
+                            @if (entry.Attachments.Count == 0)
+                            {
+                                <p class="muted">@(canEdit ? "No links yet — paste a cloud-drive URL below to add one." : "No links provided.")</p>
+                            }
+                            else
+                            {
+                                <ul class="link-list">
+                                    @foreach (var a in entry.Attachments)
+                                    {
+                                        <li class="link-item">
+                                            <a href="@a.Url" target="_blank" rel="noopener">
+                                                @(!string.IsNullOrWhiteSpace(a.Label) ? a.Label : a.Url)
+                                            </a>
+                                            @if (canEdit)
+                                            {
+                                                <button type="button" class="btn-remove" title="Remove link"
+                                                        @onclick="() => RemoveAttachment(period, a)">&times;</button>
+                                            }
+                                        </li>
+                                    }
+                                </ul>
+                            }
+
+                            @if (canEdit)
+                            {
+                                <div class="add-link-row">
+                                    <input type="text"
+                                           class="link-label-input"
+                                           placeholder="Label (e.g. 'Lesson plan')"
+                                           @bind="entry.NewLinkLabel" />
+                                    <input type="url"
+                                           class="link-url-input"
+                                           placeholder="https://onedrive.live.com/..."
+                                           @bind="entry.NewLinkUrl" />
+                                    <button type="button" class="btn-add-link"
+                                            disabled="@string.IsNullOrWhiteSpace(entry.NewLinkUrl)"
+                                            @onclick="() => AddLink(period)">+ Add link</button>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </section>
+            }
+        </div>
+
+        @if (canEdit)
+        {
+            <div class="page-actions">
+                <button type="button" class="btn-save" disabled="@isSaving" @onclick="SaveAsync">
+                    @(isSaving ? "Saving…" : "Save All Notes")
+                </button>
+                <a class="btn-cancel" href="/employee/my-sub-requests">Back to My Sub Requests</a>
+            </div>
+        }
+        else
+        {
+            <div class="page-actions">
+                <a class="btn-cancel" href="@backLink">Back</a>
+            </div>
+        }
+    }
+
+</div>
+
+<style>
+    .class-notes-page { max-width: 900px; margin: 0 auto; padding: 1.75rem 1.5rem 2rem; font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif; color: #1f2937; }
+    .loading-panel { padding: 2rem; text-align: center; color: #64748b; background: #f8fafc; border-radius: 10px; }
+
+    .notes-header { background: linear-gradient(135deg, #1e3a5f 0%, #152840 100%); color: white; padding: 1.4rem 1.5rem; border-radius: 12px; margin-bottom: 1.25rem; box-shadow: 0 6px 16px -6px rgba(21, 40, 64, 0.35); position: relative; }
+    .notes-header::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: #f5b81c; border-radius: 12px 0 0 12px; }
+    .notes-header h1 { margin: 0 0 .35rem; font-size: 1.5rem; color: white; }
+    .notes-subtitle { margin: 0 0 .5rem; color: rgba(255,255,255,0.88); font-size: .95rem; }
+    .notes-mode { margin: 0; font-size: .82rem; }
+    .mode-badge { display: inline-block; padding: .2rem .65rem; border-radius: 12px; font-weight: 600; font-size: .78rem; letter-spacing: .02em; }
+    .mode-badge.editable { background: #f5b81c; color: #1e3a5f; }
+    .mode-badge.readonly { background: rgba(255,255,255,0.2); color: #f7c94d; border: 1px solid rgba(247,201,77,0.4); }
+
+    .status-panel { padding: .75rem 1rem; border-radius: 8px; margin: 0 0 1rem; font-size: .95rem; }
+    .status-panel.success { background: #f0fdf4; border: 1px solid #86efac; color: #065f46; }
+    .status-panel.error { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+
+    .info-panel { background: #eff6ff; border: 1px solid #bfdbfe; border-left: 4px solid #1e3a5f; padding: .75rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: .92rem; color: #1e3a5f; }
+
+    .error-panel { background: #fef2f2; border: 1px solid #fca5a5; border-left: 5px solid #dc2626; padding: 1.25rem 1.5rem; border-radius: 10px; color: #991b1b; }
+    .error-panel h2 { margin: 0 0 .5rem; color: #991b1b; font-size: 1.3rem; }
+
+    .periods-list { display: flex; flex-direction: column; gap: 1.1rem; }
+
+    .period-card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 3px 8px -3px rgba(21,40,64,0.08); overflow: hidden; }
+    .period-card-header { display: flex; justify-content: space-between; align-items: baseline; padding: .85rem 1.25rem; background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+    .period-card-header h2 { margin: 0; color: #1e3a5f; font-size: 1.15rem; letter-spacing: .01em; }
+    .period-assigned-sub { color: #475569; font-size: .9rem; }
+    .period-assigned-sub.muted { color: #94a3b8; font-style: italic; }
+
+    .period-body { padding: 1rem 1.25rem 1.25rem; }
+    .field-label { display: block; font-weight: 600; color: #1e3a5f; font-size: .88rem; margin: .8rem 0 .4rem; }
+    .field-label:first-child { margin-top: 0; }
+
+    .notes-textarea { width: 100%; min-height: 120px; padding: .7rem .85rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: .95rem; font-family: inherit; line-height: 1.5; color: #0f172a; background: white; resize: vertical; transition: border-color .15s, box-shadow .15s; }
+    .notes-textarea:focus { outline: none; border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.12); }
+    .notes-readonly { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: .75rem .95rem; min-height: 60px; line-height: 1.5; color: #1f2937; }
+    .muted { color: #94a3b8; }
+
+    .links-section { margin-top: .25rem; }
+    .link-list { list-style: none; margin: .25rem 0 .6rem; padding: 0; display: flex; flex-direction: column; gap: .3rem; }
+    .link-item { display: flex; align-items: center; gap: .5rem; padding: .4rem .7rem; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; font-size: .92rem; }
+    .link-item a { color: #1d4ed8; font-weight: 500; text-decoration: none; flex: 1; overflow-wrap: anywhere; }
+    .link-item a:hover { text-decoration: underline; }
+    .btn-remove { background: transparent; border: none; color: #b91c1c; cursor: pointer; font-size: 1.3rem; line-height: 1; padding: 0 .3rem; }
+    .btn-remove:hover { color: #7f1d1d; }
+
+    .add-link-row { display: grid; grid-template-columns: 1fr 2fr auto; gap: .5rem; margin-top: .5rem; }
+    .link-label-input, .link-url-input { padding: .55rem .7rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: .92rem; font-family: inherit; }
+    .link-label-input:focus, .link-url-input:focus { outline: none; border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.12); }
+    .btn-add-link { background: #1e3a5f; color: white; border: none; padding: .55rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: .9rem; }
+    .btn-add-link:hover:not(:disabled) { background: #152840; }
+    .btn-add-link:disabled { background: #94a3b8; cursor: not-allowed; opacity: .7; }
+
+    .page-actions { display: flex; justify-content: flex-end; gap: .75rem; margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #e2e8f0; }
+    .btn-save { background: #f5b81c; color: #1e3a5f; border: 1px solid #d9a319; padding: .7rem 1.5rem; border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: 700; box-shadow: 0 2px 4px rgba(217,163,25,0.25); transition: all .15s; }
+    .btn-save:hover:not(:disabled) { background: #f7c94d; transform: translateY(-1px); box-shadow: 0 4px 10px rgba(217,163,25,0.35); }
+    .btn-save:disabled { background: #cbd5e1; border-color: #cbd5e1; color: #64748b; cursor: not-allowed; opacity: .8; box-shadow: none; }
+    .btn-cancel { background: white; color: #1e3a5f; border: 1px solid #cbd5e1; padding: .7rem 1.25rem; border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: 500; text-decoration: none; display: inline-block; }
+    .btn-cancel:hover { background: #f1f5f9; border-color: #94a3b8; }
+
+    @@media (max-width: 640px) {
+        .class-notes-page { padding: 1rem; }
+        .add-link-row { grid-template-columns: 1fr; }
+    }
+</style>
+
+@code {
+    [Parameter] public long SubRequestId { get; set; }
+
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private bool accessDenied = false;
+    private bool canEdit = false;
+    private bool canView = false;
+    private string viewerReason = "";
+    private string backLink = "/";
+
+    private string currentUserEmail = "";
+    private string currentUserEntraOid = "";
+    private int currentEmployeeId = 0;
+    private bool isSupervisorLevel = false;
+
+    private TcSubRequest? request;
+    private string teacherName = "";
+    private string campusName = "";
+
+    private List<string> periodIds = new();
+    private Dictionary<string, PeriodEntry> entriesByPeriod = new(StringComparer.OrdinalIgnoreCase);
+
+    private string statusMessage = "";
+    private bool statusIsError = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        currentUserEmail = user.FindFirst("preferred_username")?.Value
+                        ?? user.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "";
+        currentUserEntraOid = user.FindFirst("oid")?.Value
+                           ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                           ?? "";
+
+        isSupervisorLevel =
+               user.IsInRole(AppConstants.Roles.Supervisor)
+            || user.IsInRole(AppConstants.Roles.SupervisorStopSix)
+            || user.IsInRole(AppConstants.Roles.SupervisorMcCart)
+            || user.IsInRole(AppConstants.Roles.Admin)
+            || user.IsInRole(AppConstants.Roles.CampusAdmin);
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        accessDenied = false;
+        canEdit = false;
+        canView = false;
+        statusMessage = "";
+
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            // Resolve the current user's EmployeeId (EntraObjectId > Email).
+            if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+            {
+                var meByOid = await ctx.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid && e.IsActive);
+                if (meByOid != null) currentEmployeeId = meByOid.EmployeeId;
+            }
+            if (currentEmployeeId == 0 && !string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                var lower = currentUserEmail.Trim().ToLower();
+                var meByEmail = await ctx.TcEmployees
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(e => e.Email != null && e.Email.ToLower() == lower && e.IsActive);
+                if (meByEmail != null) currentEmployeeId = meByEmail.EmployeeId;
+            }
+
+            request = await ctx.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.Campus)
+                .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                .Include(r => r.Assignments).ThenInclude(a => a.SubEmployee).ThenInclude(e => e!.Staff)
+                .Include(r => r.PeriodNotes).ThenInclude(p => p.Attachments)
+                .FirstOrDefaultAsync(r => r.SubRequestId == SubRequestId);
+
+            if (request == null)
+            {
+                return;
+            }
+
+            teacherName = request.RequestingEmployee?.Staff?.FullName
+                       ?? request.RequestingEmployee?.DisplayName
+                       ?? "the requesting teacher";
+            campusName = request.Campus?.CampusName ?? "New Heights";
+
+            // Authorization — three allowed groups per design decision:
+            //   1. The requesting teacher: full edit.
+            //   2. Assigned subs (rows in Assignments with SubEmployeeId ==
+            //      currentEmployeeId): read-only.
+            //   3. Supervisor-level users (Supervisor variants, Admin,
+            //      CampusAdmin): read-only for oversight.
+            bool isRequestingTeacher = request.RequestingEmployeeId == currentEmployeeId && currentEmployeeId != 0;
+            bool isAssignedSub = request.Assignments.Any(a => a.SubEmployeeId == currentEmployeeId) && currentEmployeeId != 0;
+
+            if (isRequestingTeacher)
+            {
+                canEdit = true;
+                canView = true;
+                viewerReason = "requesting teacher";
+                backLink = "/employee/my-sub-requests";
+            }
+            else if (isAssignedSub)
+            {
+                canView = true;
+                viewerReason = "assigned substitute";
+                backLink = request.RequestingEmployeeId == currentEmployeeId
+                    ? "/employee/my-sub-requests"
+                    : "/";
+            }
+            else if (isSupervisorLevel)
+            {
+                canView = true;
+                viewerReason = "supervisor / admin";
+                backLink = "/supervisor/sub-requests";
+            }
+            else
+            {
+                accessDenied = true;
+                return;
+            }
+
+            BuildPeriodEntries();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error loading class notes for request {Id}", SubRequestId);
+            accessDenied = true;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void BuildPeriodEntries()
+    {
+        if (request == null) return;
+
+        // Periods for this request, in canonical order from PeriodsNeeded.
+        // Whole-day requests (empty PeriodsNeeded) get a single pseudo-period
+        // "WHOLE" so the teacher has one note card to fill in.
+        periodIds = ParsePeriods(request.PeriodsNeeded).ToList();
+        if (periodIds.Count == 0)
+        {
+            periodIds = new List<string> { "WHOLE" };
+        }
+
+        entriesByPeriod = new Dictionary<string, PeriodEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in periodIds)
+        {
+            var existing = request.PeriodNotes.FirstOrDefault(n =>
+                string.Equals(n.PeriodIdentifier, p, StringComparison.OrdinalIgnoreCase));
+
+            var subForPeriod = request.Assignments
+                .FirstOrDefault(a => ParsePeriods(a.PeriodsCovered).Any(pp =>
+                    string.Equals(pp, p, StringComparison.OrdinalIgnoreCase)));
+
+            entriesByPeriod[p] = new PeriodEntry
+            {
+                Period = p,
+                PeriodNoteId = existing?.PeriodNoteId ?? 0,
+                Notes = existing?.Notes ?? "",
+                AssignedSubName = subForPeriod?.SubEmployee?.Staff?.FullName
+                                ?? subForPeriod?.SubEmployee?.DisplayName,
+                Attachments = (existing?.Attachments ?? new List<TcSubRequestPeriodAttachment>())
+                    .OrderBy(a => a.UploadedAt)
+                    .ToList()
+            };
+        }
+    }
+
+    private PeriodEntry GetEntry(string period) => entriesByPeriod[period];
+
+    private async Task AddLink(string period)
+    {
+        var entry = entriesByPeriod[period];
+        var url = (entry.NewLinkUrl ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        // Soft-validate URL: require http:// or https:// so we never render a
+        // paste-link that acts like a local relative path.
+        if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+         && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            statusMessage = "Links must start with http:// or https://";
+            statusIsError = true;
+            return;
+        }
+
+        entry.Attachments.Add(new TcSubRequestPeriodAttachment
+        {
+            AttachmentType = "URL",
+            Label = string.IsNullOrWhiteSpace(entry.NewLinkLabel) ? null : entry.NewLinkLabel.Trim(),
+            Url = url,
+            UploadedBy = currentUserEmail,
+            UploadedAt = DateTime.Now
+        });
+        entry.NewLinkUrl = "";
+        entry.NewLinkLabel = "";
+        statusMessage = "Link staged. Click Save All Notes to persist.";
+        statusIsError = false;
+    }
+
+    private void RemoveAttachment(string period, TcSubRequestPeriodAttachment a)
+    {
+        var entry = entriesByPeriod[period];
+        entry.Attachments.Remove(a);
+        statusMessage = "Link removed from the draft. Click Save All Notes to persist.";
+        statusIsError = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!canEdit || isSaving || request == null) return;
+
+        isSaving = true;
+        statusMessage = "";
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            // For each period's entry, upsert the note row and replace its
+            // attachment set with the current draft. Upsert rather than
+            // insert-only so re-saving doesn't create a second row for the
+            // same (SubRequestId, PeriodIdentifier) pair (the unique index
+            // would reject it anyway).
+            foreach (var kvp in entriesByPeriod)
+            {
+                var entry = kvp.Value;
+
+                var note = await ctx.TcSubRequestPeriodNotes
+                    .Include(n => n.Attachments)
+                    .FirstOrDefaultAsync(n => n.SubRequestId == SubRequestId
+                                           && n.PeriodIdentifier == entry.Period);
+
+                if (note == null)
+                {
+                    note = new TcSubRequestPeriodNote
+                    {
+                        SubRequestId = SubRequestId,
+                        PeriodIdentifier = entry.Period,
+                        Notes = string.IsNullOrWhiteSpace(entry.Notes) ? null : entry.Notes.Trim(),
+                        CreatedBy = currentUserEmail,
+                        ModifiedBy = currentUserEmail,
+                        CreatedDate = DateTime.Now,
+                        ModifiedDate = DateTime.Now
+                    };
+                    ctx.TcSubRequestPeriodNotes.Add(note);
+                    await ctx.SaveChangesAsync();
+                }
+                else
+                {
+                    note.Notes = string.IsNullOrWhiteSpace(entry.Notes) ? null : entry.Notes.Trim();
+                    note.ModifiedBy = currentUserEmail;
+                    note.ModifiedDate = DateTime.Now;
+                }
+
+                // Attachment delta: remove any DB rows not present in the
+                // draft; add rows that are present in draft but have
+                // AttachmentId=0 (new).
+                var draftIds = entry.Attachments.Select(a => a.AttachmentId).Where(id => id > 0).ToHashSet();
+                var toRemove = note.Attachments.Where(a => !draftIds.Contains(a.AttachmentId)).ToList();
+                foreach (var dead in toRemove)
+                {
+                    ctx.TcSubRequestPeriodAttachments.Remove(dead);
+                }
+
+                foreach (var draft in entry.Attachments.Where(a => a.AttachmentId == 0))
+                {
+                    ctx.TcSubRequestPeriodAttachments.Add(new TcSubRequestPeriodAttachment
+                    {
+                        PeriodNoteId = note.PeriodNoteId,
+                        AttachmentType = draft.AttachmentType,
+                        Label = draft.Label,
+                        Url = draft.Url,
+                        UploadedBy = currentUserEmail,
+                        UploadedAt = DateTime.Now
+                    });
+                }
+
+                await ctx.SaveChangesAsync();
+            }
+
+            statusMessage = "Class notes saved.";
+            statusIsError = false;
+
+            // Reload so AttachmentIds populate and we stay in sync with DB state.
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error saving class notes for request {Id}", SubRequestId);
+            statusMessage = "Could not save class notes. Please try again.";
+            statusIsError = true;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private static IEnumerable<string> ParsePeriods(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) yield break;
+        foreach (var raw in csv.Split(','))
+        {
+            var p = raw.Trim().ToUpperInvariant();
+            if (p.Length > 0) yield return p;
+        }
+    }
+
+    private class PeriodEntry
+    {
+        public string Period { get; set; } = "";
+        public long PeriodNoteId { get; set; }
+        public string Notes { get; set; } = "";
+        public string? AssignedSubName { get; set; }
+        public List<TcSubRequestPeriodAttachment> Attachments { get; set; } = new();
+
+        // Draft-only fields for the add-link inline form.
+        public string NewLinkLabel { get; set; } = "";
+        public string NewLinkUrl { get; set; } = "";
+    }
+}

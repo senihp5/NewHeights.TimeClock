@@ -1295,9 +1295,18 @@ public class SubOutreachService : ISubOutreachService
             // Teacher notification (always)
             if (teacher != null)
             {
+                // Migration 050: approval emails get a deep link to the class
+                // notes page so teachers can add lesson plans / URLs the sub
+                // needs before the absence. Denied emails don't get the link
+                // since the absence isn't happening.
+                var classNotesUrl = isApproved
+                    ? BuildClassNotesUrl(subRequestId)
+                    : null;
+
                 var (smsBody, subject, html) = BuildAbsenceDecisionForTeacher(
                     isApproved, teacherShort, subName, campusName, dates, reason,
-                    request.AssignedSubEmployeeId.HasValue);
+                    request.AssignedSubEmployeeId.HasValue,
+                    classNotesUrl);
                 await TrySendOneStakeholderAsync(teacher, smsBody, subject, html);
             }
 
@@ -1322,9 +1331,23 @@ public class SubOutreachService : ISubOutreachService
         }
     }
 
+    /// <summary>
+    /// Builds the absolute URL to the class-notes page. Uses the same base
+    /// URL resolution as outreach emails so the deep link reaches production
+    /// regardless of what host the background service is running on.
+    /// </summary>
+    private string BuildClassNotesUrl(long subRequestId)
+    {
+        var baseUrl = _configuration["AzureCommunication:BaseUrl"]
+                   ?? _configuration["App:BaseUrl"]
+                   ?? "https://clock.newheightsed.com";
+        return $"{baseUrl.TrimEnd('/')}/sub-request/{subRequestId}/notes";
+    }
+
     private static (string smsBody, string subject, string html) BuildAbsenceDecisionForTeacher(
         bool isApproved, string teacherShort, string subName, string campusName,
-        string dates, string? reason, bool hadAssignedSub)
+        string dates, string? reason, bool hadAssignedSub,
+        string? classNotesUrl = null)
     {
         string smsBody, subject, color, headline, body;
         if (isApproved)
@@ -1352,6 +1375,23 @@ public class SubOutreachService : ISubOutreachService
     submit a separate time-off request for these dates.
   </p>
 </div>";
+
+            // Migration 050: link to the class-notes page so the teacher can
+            // leave lesson plans and paste-link URLs for the sub to find.
+            if (!string.IsNullOrWhiteSpace(classNotesUrl))
+            {
+                var encodedUrl = System.Net.WebUtility.HtmlEncode(classNotesUrl);
+                body += $@"
+<div style='margin-top:1rem; padding:.85rem 1rem; background:#eff6ff; border:1px solid #bfdbfe; border-left:4px solid #1e3a5f; border-radius:6px;'>
+  <strong style='color:#1e3a5f;'>Next: leave class notes for your sub</strong>
+  <p style='margin:.35rem 0 .65rem; color:#1e3a5f;'>
+    Add lesson plans, seating notes, and links to any files the sub will need.
+    You can paste cloud-drive URLs (OneDrive, Google Drive, SharePoint). Both
+    your substitute(s) and supervisor will be able to see this page.
+  </p>
+  <a href='{encodedUrl}' style='display:inline-block; padding:.55rem 1.1rem; background:#1e3a5f; color:#fff; text-decoration:none; border-radius:6px; font-weight:600;'>Open Class Notes</a>
+</div>";
+            }
         }
         else
         {

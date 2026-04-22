@@ -91,4 +91,8 @@ public class TcSubRequest
     // Phase A (migration 048): partial-acceptance join. Authoritative for
     // "who covers which periods" on this request.
     public ICollection<TcSubRequestAssignment> Assignments { get; set; } = new List<TcSubRequestAssignment>();
+
+    // Migration 050: per-period class notes + attachments (URLs now, Azure
+    // Blob uploads later). One TcSubRequestPeriodNote per covered period.
+    public ICollection<TcSubRequestPeriodNote> PeriodNotes { get; set; } = new List<TcSubRequestPeriodNote>();
 }
