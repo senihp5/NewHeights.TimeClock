@@ -1117,11 +1117,18 @@ public class SubOutreachService : ISubOutreachService
             TcEmployee? supervisorEmp = null;
             if (!string.IsNullOrWhiteSpace(request.SupervisorApprovedBy))
             {
-                var supervisorEmail = request.SupervisorApprovedBy.Trim();
+                // SupervisorApprovedBy stores a historical email string from
+                // whenever approval happened. Do a case-insensitive match so
+                // mixed-casing (preferred_username often arrives as
+                // 'User@NEWHEIGHTSED.COM' while TC_Employees stores lowercase)
+                // doesn't silently skip the real supervisor.
+                var supervisorEmailLower = request.SupervisorApprovedBy.Trim().ToLower();
                 supervisorEmp = await context.TcEmployees
                     .AsNoTracking()
                     .Include(e => e.Staff)
-                    .FirstOrDefaultAsync(e => e.Email == supervisorEmail && e.IsActive);
+                    .FirstOrDefaultAsync(e => e.Email != null
+                                           && e.Email.ToLower() == supervisorEmailLower
+                                           && e.IsActive);
             }
 
             if (supervisorEmp == null)

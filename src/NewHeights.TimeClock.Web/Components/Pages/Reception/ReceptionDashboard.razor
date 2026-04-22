@@ -465,7 +465,16 @@ else
         currentUserEmail = user.FindFirst("preferred_username")?.Value ?? user.FindFirst(ClaimTypes.Email)?.Value ?? "";
 
         using var context = await DbFactory.CreateDbContextAsync();
-        availableCampuses = await context.Campuses.AsNoTracking().OrderBy(c => c.CampusName).ToListAsync();
+        // District Office is a payroll/HR rollup campus, not a physical
+        // location with a front desk. Hidden from the reception campus picker
+        // so the modal only offers the two real campuses. Matches the filter
+        // already applied in StudentCheckin, SafetyDashboard, and Home's
+        // Campus Safety Live section.
+        availableCampuses = await context.Campuses
+            .AsNoTracking()
+            .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
+            .OrderBy(c => c.CampusName)
+            .ToListAsync();
 
         if (!string.IsNullOrEmpty(CampusCode))
         {

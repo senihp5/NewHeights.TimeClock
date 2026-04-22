@@ -345,9 +345,18 @@
         {
             using var ctx = await DbFactory.CreateDbContextAsync();
 
+            // Google SSO emails can arrive with mixed casing (particularly
+            // when manually enrolled). Case-insensitive match protects
+            // against silent "student not found" when SIS has the email in
+            // one case and the token claim is in another. Students have no
+            // Entra Object ID (they authenticate via Google) so this is the
+            // only available lookup key.
+            var signedInLower = (signedInEmail ?? "").Trim().ToLower();
             student = await ctx.Students
                 .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.Email == signedInEmail && s.IsActive);
+                .FirstOrDefaultAsync(s => s.Email != null
+                                       && s.Email.ToLower() == signedInLower
+                                       && s.IsActive);
 
             // Student-facing picker: exclude the District Office campus (no
             // students attend there). Keys are TimeClock CampusId (1, 2, 5);

@@ -23,14 +23,18 @@
 <div class="sub-timesheet-page">
 
     <header class="sub-timesheet-header">
-        <div class="header-brand">
-            <img src="/images/logo.jpg" alt="New Heights" class="header-logo" />
-            <div>
-                <h1>Substitute Time Sheet</h1>
-                <p class="header-subtitle">
-                    Track periods you covered. Approval routes to the campus where you checked in.
-                </p>
+        <div class="header-accent"></div>
+        <div class="header-inner">
+            <div class="header-brand">
+                <img src="/images/logo.jpg" alt="New Heights" class="header-logo" />
+                <div class="header-title-block">
+                    <h1>Substitute Time Sheet</h1>
+                    <p class="header-subtitle">
+                        Track the periods you covered today. Approval routes to the campus where you checked in.
+                    </p>
+                </div>
             </div>
+            <a class="btn-home" href="/" title="Home">🏠 Home</a>
         </div>
     </header>
 
@@ -92,11 +96,61 @@
     }
     else
     {
-        @if (cards.Count == 0 && (!HasTodayInWindow() || todayCard != null))
+        @* Hero CTA: when today is in window, no card exists yet, and it's the current period *@
+        @if (periodOffset == 0 && todayCard == null && HasTodayInWindow())
+        {
+            <div class="hero-cta @(todayCheckInCampusId.HasValue ? "ready" : "needs-campus")">
+                <div class="hero-left">
+                    <div class="hero-eyebrow">Today — @DateTime.Today.ToString("dddd, MMM d")</div>
+                    @if (todayCheckInCampusId.HasValue)
+                    {
+                        <h2 class="hero-title">You're checked in at <span class="hero-campus">@GetCampusName(todayCheckInCampusId.Value)</span></h2>
+                        <p class="hero-sub">Log the first period you covered to start today's timecard.</p>
+                    }
+                    else
+                    {
+                        <h2 class="hero-title">Ready to log a period?</h2>
+                        <p class="hero-sub">
+                            You're not checked in at a campus yet today. Pick a campus below to start today's timecard
+                            — or check in at a kiosk first.
+                        </p>
+                    }
+                </div>
+                <div class="hero-right">
+                    @if (todayCheckInCampusId.HasValue)
+                    {
+                        <button class="btn-hero-primary"
+                                @onclick="() => OpenPickerForTodayAsync(todayCheckInCampusId.Value)"
+                                disabled="@isOpeningToday">
+                            @(isOpeningToday ? "Opening…" : "+ Log First Period")
+                        </button>
+                    }
+                    else
+                    {
+                        <div class="hero-campus-picker">
+                            <label for="hero-campus-select">Campus for today</label>
+                            <select id="hero-campus-select" @bind="selectedTodayCampusId" disabled="@isOpeningToday">
+                                <option value="0">— Select —</option>
+                                @foreach (var kv in campusNameById.OrderBy(kv => kv.Value))
+                                {
+                                    <option value="@kv.Key">@kv.Value</option>
+                                }
+                            </select>
+                            <button class="btn-hero-primary"
+                                    @onclick="HandleTodayPickerFromManualCampusAsync"
+                                    disabled="@(selectedTodayCampusId <= 0 || isOpeningToday)">
+                                @(isOpeningToday ? "Opening…" : "+ Log First Period")
+                            </button>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+        else if (cards.Count == 0)
         {
             <div class="empty-state">
-                <h3>No substitute timecards in this pay period yet.</h3>
-                <p>Once you check in at a campus and cover a period, click "Add Period" to log it.</p>
+                <h3>No substitute timecards in this pay period.</h3>
+                <p>When you cover a period, it will appear here after you log it.</p>
             </div>
         }
 
@@ -226,44 +280,20 @@
             </div>
         }
 
-        @if (periodOffset == 0 && todayCard == null)
+        @* If today's card already exists, we're checked in today but the hero is gone — surface a compact "log another period for today" bar. *@
+        @if (periodOffset == 0 && todayCard != null
+             && todayCard.ApprovalStatus != ApprovalStatus.Approved
+             && todayCard.ApprovalStatus != ApprovalStatus.Locked)
         {
-            <div class="today-prompt">
-                <h3>Today: @DateTime.Today.ToString("dddd, MMM d")</h3>
-                @if (todayCheckInCampusId.HasValue)
-                {
-                    <p>
-                        You're checked in at <strong>@GetCampusName(todayCheckInCampusId.Value)</strong>.
-                        Log the first period you cover to start today's timecard.
-                    </p>
-                    <button class="btn-add-period"
-                            @onclick="() => OpenPickerForTodayAsync(todayCheckInCampusId.Value)"
-                            disabled="@isOpeningToday">
-                        @(isOpeningToday ? "Opening…" : "+ Add Period")
-                    </button>
-                }
-                else
-                {
-                    <p class="today-prompt-warn">
-                        Not checked in at a campus yet today. Pick a campus below to start today's timecard
-                        — or check in at a kiosk first.
-                    </p>
-                    <div class="campus-picker-row">
-                        <label for="today-campus-select">Campus for today:</label>
-                        <select id="today-campus-select" @bind="selectedTodayCampusId" disabled="@isOpeningToday">
-                            <option value="0">— Select —</option>
-                            @foreach (var kv in campusNameById.OrderBy(kv => kv.Value))
-                            {
-                                <option value="@kv.Key">@kv.Value</option>
-                            }
-                        </select>
-                        <button class="btn-add-period"
-                                @onclick="HandleTodayPickerFromManualCampusAsync"
-                                disabled="@(selectedTodayCampusId <= 0 || isOpeningToday)">
-                            @(isOpeningToday ? "Opening…" : "+ Add Period")
-                        </button>
-                    </div>
-                }
+            <div class="today-quick-add">
+                <span class="today-quick-label">
+                    Need to log another period for today
+                    (<strong>@GetCampusName(todayCard.CampusId)</strong>)?
+                </span>
+                <button class="btn-hero-primary btn-hero-compact"
+                        @onclick="() => OpenPickerForCard(todayCard)">
+                    + Add Period
+                </button>
             </div>
         }
 
@@ -304,6 +334,7 @@
     private int employeeId;
     private string employeeName = "";
     private string currentUserEmail = "";
+    private string currentUserEntraOid = "";
     private EmployeeType employeeType = EmployeeType.HourlyStaff;
 
     private PayPeriodInfo? currentPayPeriod;
@@ -348,6 +379,9 @@
         currentUserEmail = user.FindFirst("preferred_username")?.Value
                         ?? user.FindFirst(ClaimTypes.Email)?.Value
                         ?? "";
+        currentUserEntraOid = user.FindFirst("oid")?.Value
+                           ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                           ?? "";
 
         await LoadData();
     }
@@ -371,9 +405,29 @@
         {
             using var context = await DbFactory.CreateDbContextAsync();
 
-            var employee = await context.TcEmployees
-                .Include(e => e.Staff)
-                .FirstOrDefaultAsync(e => e.Email == currentUserEmail && e.IsActive);
+            // Multi-step lookup: EntraObjectId (stable) → case-insensitive
+            // Email (handles casing/renames). Matches the pattern used on
+            // MyTimesheet, AbsenceRequest, MyRequests, ClassNotes, and
+            // MobileCheckin so test subs + any Staff-less employees resolve
+            // consistently. Sync-created subs always have EntraObjectId set.
+            TcEmployee? employee = null;
+
+            if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+            {
+                employee = await context.TcEmployees
+                    .Include(e => e.Staff)
+                    .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid && e.IsActive);
+            }
+
+            if (employee == null && !string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                var emailLower = currentUserEmail.Trim().ToLower();
+                employee = await context.TcEmployees
+                    .Include(e => e.Staff)
+                    .FirstOrDefaultAsync(e => e.Email != null
+                                           && e.Email.ToLower() == emailLower
+                                           && e.IsActive);
+            }
 
             if (employee == null)
             {
@@ -382,7 +436,10 @@
             }
 
             employeeId = employee.EmployeeId;
-            employeeName = employee.Staff?.FullName ?? employee.Email ?? "Unknown";
+            employeeName = employee.Staff?.FullName
+                        ?? employee.DisplayName
+                        ?? employee.Email
+                        ?? "Unknown";
             employeeType = employee.EmployeeType;
 
             if (employeeType != EmployeeType.Substitute)

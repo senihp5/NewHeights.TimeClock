@@ -1,5 +1,6 @@
 @using NewHeights.TimeClock.Shared.Constants
 @using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
 
 <div class="top-row navbar navbar-dark">
     <div class="container-fluid">
@@ -19,18 +20,32 @@
             </div>
         </AuthorizeView>
 
-        <AuthorizeView Policy="RequireAnyStaff">
+        <AuthorizeView Policy="RequireAnyStaff" Context="mobileCtx">
             <details class="nav-section-group" open>
                 <summary class="nav-section">Mobile</summary>
                 <div class="nav-item px-2">
                     <NavLink class="nav-link" href="mobile/checkin">Campus Check-In</NavLink>
                 </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="employee/absence-request">Substitute Request</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="employee/my-sub-requests">My Sub Requests</NavLink>
-                </div>
+                @* Substitute Request + My Sub Requests are teacher/staff-absence
+                   flows ("I'm going to be out, find me a sub"). Substitutes
+                   don't request subs for themselves — they COVER classes —
+                   so both links are hidden from the Substitute role. Subs
+                   instead see My Assignments below. *@
+                @if (!mobileCtx.User.Claims.Any(c => c.Type == ClaimTypes.Role && c.Value.StartsWith("TimeClock.Substitute", StringComparison.OrdinalIgnoreCase)))
+                {
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="employee/absence-request">Substitute Request</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="employee/my-sub-requests">My Sub Requests</NavLink>
+                    </div>
+                }
+                @if (mobileCtx.User.Claims.Any(c => c.Type == ClaimTypes.Role && c.Value.StartsWith("TimeClock.Substitute", StringComparison.OrdinalIgnoreCase)))
+                {
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="sub/my-assignments">My Assignments</NavLink>
+                    </div>
+                }
             </details>
         </AuthorizeView>
 
@@ -50,7 +65,7 @@
         <AuthorizeView Policy="RequireHourly" Context="myTimeCtx">
             <details class="nav-section-group" open>
                 <summary class="nav-section">My Time</summary>
-                @if (myTimeCtx.User.IsInRole("TimeClock.Substitute"))
+                @if (myTimeCtx.User.Claims.Any(c => c.Type == ClaimTypes.Role && c.Value.StartsWith("TimeClock.Substitute", StringComparison.OrdinalIgnoreCase)))
                 {
                     <div class="nav-item px-2">
                         <NavLink class="nav-link" href="my/sub-timesheet">My Sub Timesheet</NavLink>
@@ -140,6 +155,9 @@
                 </div>
                 <div class="nav-item px-2">
                     <NavLink class="nav-link" href="admin/employees/sync">Employee Sync</NavLink>
+                </div>
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/employees/add">Add Employee (Manual)</NavLink>
                 </div>
                 <div class="nav-item px-2">
                     <NavLink class="nav-link" href="admin/schedule/import">Schedule Import</NavLink>

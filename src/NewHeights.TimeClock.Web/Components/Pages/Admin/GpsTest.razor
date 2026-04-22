@@ -1,0 +1,522 @@
+@page "/admin/gps-test"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Authorization
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Web.Services
+@inject IGeofenceService Geofence
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime JS
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<GpsTest> Logger
+@implements IAsyncDisposable
+
+<PageTitle>GPS Geofence Test</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <h1>GPS Geofence Test</h1>
+        <p class="admin-subtitle">Walk the campus perimeter, capture coordinates at landmarks, and use them to tune the geofence.</p>
+    </div>
+
+    <div class="admin-card" style="padding:1.5rem">
+        <label for="campus-select" style="display:block;font-weight:600;margin-bottom:0.25rem">
+            Campus to test against
+        </label>
+        <select id="campus-select" @bind="selectedCampusId" @bind:after="OnCampusChangedAsync"
+                style="padding:0.5rem;min-width:240px;font-size:1rem">
+            @foreach (var c in campuses)
+            {
+                <option value="@c.CampusId">@c.CampusName (@c.CampusCode)</option>
+            }
+        </select>
+
+        @if (selectedCampus != null)
+        {
+            <div style="margin-top:0.75rem;font-size:0.9rem;color:#6b7280">
+                <strong>Center:</strong> @selectedCampus.Latitude, @selectedCampus.Longitude
+                &nbsp;|&nbsp; <strong>Radius:</strong> @selectedCampus.GeofenceRadiusMeters m
+                &nbsp;|&nbsp; <strong>Polygon:</strong> @(string.IsNullOrWhiteSpace(selectedCampus.GeofencePolygon) ? "not set (using radius)" : "set (using polygon)")
+            </div>
+        }
+    </div>
+
+    <div class="admin-card" style="padding:1.5rem;margin-top:1rem;background:@GetStatusBackground()">
+        <h3 style="margin-top:0">Live position</h3>
+        @if (lastError != null)
+        {
+            <div style="color:#b91c1c;font-weight:600">@lastError</div>
+        }
+        else if (latestLat == null)
+        {
+            <div style="color:#6b7280">Waiting for GPS fix… (grant location permission if prompted)</div>
+        }
+        else
+        {
+            <div style="font-family:monospace;font-size:1rem;line-height:1.6">
+                <div><strong>Lat:</strong> @latestLat?.ToString("F6") &nbsp; <strong>Lon:</strong> @latestLon?.ToString("F6")</div>
+                <div><strong>Accuracy:</strong> @latestAccuracy?.ToString("F1") m (@GetAccuracyQuality())</div>
+                <div><strong>Distance to campus center:</strong> @latestDistance?.ToString("F1") m</div>
+                <div style="font-size:1.5rem;font-weight:700;margin-top:0.75rem">
+                    @(liveIsValid == true ? "INSIDE" : liveIsValid == false ? "OUTSIDE" : "…")
+                    <span style="font-weight:400;font-size:0.9rem;color:#6b7280;margin-left:0.5rem">via @liveMethod</span>
+                </div>
+            </div>
+        }
+    </div>
+
+    <div class="admin-card" style="padding:1.5rem;margin-top:1rem">
+        <h3 style="margin-top:0">Capture this point</h3>
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-end">
+            <div style="flex:1;min-width:200px">
+                <label style="display:block;font-weight:600;font-size:0.9rem;margin-bottom:0.25rem">Label</label>
+                <input @bind="captureLabel" placeholder="e.g. NE corner of building"
+                       style="width:100%;padding:0.5rem;font-size:1rem;border:1px solid #d1d5db;border-radius:4px" />
+            </div>
+            <div style="flex:2;min-width:260px">
+                <label style="display:block;font-weight:600;font-size:0.9rem;margin-bottom:0.25rem">Notes (optional)</label>
+                <input @bind="captureNotes" placeholder="e.g. Reported OUTSIDE but I'm on the sidewalk"
+                       style="width:100%;padding:0.5rem;font-size:1rem;border:1px solid #d1d5db;border-radius:4px" />
+            </div>
+            <button class="btn btn-primary" @onclick="CaptureAsync"
+                    disabled="@(latestLat == null || string.IsNullOrWhiteSpace(captureLabel) || isSaving)"
+                    style="padding:0.6rem 1.25rem;font-size:1rem;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer">
+                @(isSaving ? "Saving…" : "Capture")
+            </button>
+        </div>
+        @if (captureMessage != null)
+        {
+            <div style="margin-top:0.75rem;font-weight:500;color:@(captureSuccess ? "#166534" : "#b91c1c")">@captureMessage</div>
+        }
+    </div>
+
+    <div class="admin-card" style="padding:1.5rem;margin-top:1rem">
+        <h3 style="margin-top:0">Saved points for @(selectedCampus?.CampusName ?? "—") (@points.Count)</h3>
+        @if (points.Count == 0)
+        {
+            <div style="color:#6b7280">No points captured yet for this campus.</div>
+        }
+        else
+        {
+            <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:0.9rem">
+                <thead style="background:#f3f4f6">
+                    <tr>
+                        <th style="padding:0.5rem;text-align:left">Label</th>
+                        <th style="padding:0.5rem;text-align:left">Lat</th>
+                        <th style="padding:0.5rem;text-align:left">Lon</th>
+                        <th style="padding:0.5rem;text-align:right">Acc (m)</th>
+                        <th style="padding:0.5rem;text-align:center">Was Inside?</th>
+                        <th style="padding:0.5rem;text-align:left">Method</th>
+                        <th style="padding:0.5rem;text-align:left">Notes</th>
+                        <th style="padding:0.5rem;text-align:left">Captured (UTC)</th>
+                        <th style="padding:0.5rem"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in points)
+                    {
+                        <tr style="border-top:1px solid #e5e7eb">
+                            <td style="padding:0.5rem">@p.Label</td>
+                            <td style="padding:0.5rem;font-family:monospace">@p.Latitude.ToString("F6")</td>
+                            <td style="padding:0.5rem;font-family:monospace">@p.Longitude.ToString("F6")</td>
+                            <td style="padding:0.5rem;text-align:right">@(p.AccuracyMeters?.ToString("F1") ?? "—")</td>
+                            <td style="padding:0.5rem;text-align:center;font-weight:600;color:@(p.WasInsideGeofence == true ? "#166534" : p.WasInsideGeofence == false ? "#b91c1c" : "#6b7280")">
+                                @(p.WasInsideGeofence == true ? "INSIDE" : p.WasInsideGeofence == false ? "OUTSIDE" : "—")
+                            </td>
+                            <td style="padding:0.5rem">@(p.GeofenceMethod ?? "—")</td>
+                            <td style="padding:0.5rem">@(p.Notes ?? "")</td>
+                            <td style="padding:0.5rem;font-size:0.85rem;color:#6b7280">@p.CapturedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td style="padding:0.5rem;text-align:right">
+                                <button @onclick="@(() => DeleteAsync(p.TestPointId))"
+                                        style="padding:0.25rem 0.5rem;font-size:0.85rem;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:4px;cursor:pointer">
+                                    Delete
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            </div>
+        }
+    </div>
+
+    <div class="admin-card" style="padding:1.5rem;margin-top:1rem">
+        <h3 style="margin-top:0">Export for geojson.io</h3>
+        <div style="color:#6b7280;font-size:0.9rem;margin-bottom:0.75rem">
+            <strong>Points</strong> = FeatureCollection you can paste into <a href="https://geojson.io" target="_blank" rel="noopener">geojson.io</a> to see every captured point with its label / accuracy / whether the fence said INSIDE.
+            <br />
+            <strong>Polygon</strong> = single Polygon feature in capture order, ready to paste into <code>Attendance_Campuses.GeofencePolygon</code>. Requires ≥3 points captured in perimeter order (walk the edge continuously — don't jump back and forth). You can also drop this into geojson.io and drag vertices to adjust.
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem">
+            <button @onclick="ExportAsPointsAsync"
+                    disabled="@(points.Count == 0)"
+                    style="padding:0.5rem 1rem;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer">
+                Build Points GeoJSON (@points.Count)
+            </button>
+            <button @onclick="ExportAsPolygonAsync"
+                    disabled="@(points.Count < 3)"
+                    style="padding:0.5rem 1rem;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer">
+                Build Polygon GeoJSON
+            </button>
+            <button @onclick="CopyToClipboardAsync"
+                    disabled="@(string.IsNullOrEmpty(exportedGeoJson))"
+                    style="padding:0.5rem 1rem;background:#059669;color:#fff;border:none;border-radius:4px;cursor:pointer">
+                Copy to clipboard
+            </button>
+        </div>
+        @if (!string.IsNullOrEmpty(exportMode))
+        {
+            <div style="margin-bottom:0.5rem;font-size:0.9rem;color:#374151">
+                Showing: <strong>@exportMode</strong>
+                @if (exportMode == "polygon")
+                {
+                    <span style="color:#6b7280">— @points.Count perimeter vertices + closing vertex</span>
+                }
+            </div>
+        }
+        <textarea rows="14"
+                  placeholder="Click a Build button above to generate GeoJSON here."
+                  style="width:100%;font-family:monospace;font-size:0.85rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:4px;resize:vertical"
+                  @bind="exportedGeoJson"></textarea>
+    </div>
+</div>
+
+@code {
+    private List<Campus> campuses = new();
+    private Campus? selectedCampus;
+    private int selectedCampusId;
+    private List<GeofenceTestPoint> points = new();
+
+    private double? latestLat;
+    private double? latestLon;
+    private double? latestAccuracy;
+    private double? latestDistance;
+    private bool? liveIsValid;
+    private string liveMethod = "";
+    private string? lastError;
+
+    private string captureLabel = "";
+    private string captureNotes = "";
+    private string? captureMessage;
+    private bool captureSuccess;
+    private bool isSaving;
+
+    private string exportedGeoJson = "";
+    private string exportMode = "";
+
+    private DotNetObjectReference<GpsTest>? dotNetRef;
+    private int watchId = -1;
+    private string? capturedByEmail;
+
+    protected override async Task OnInitializedAsync()
+    {
+        campuses = await Geofence.GetAllCampusesAsync();
+        selectedCampus = campuses.FirstOrDefault();
+        if (selectedCampus != null)
+        {
+            selectedCampusId = selectedCampus.CampusId;
+            await LoadPointsAsync();
+        }
+
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        capturedByEmail = authState.User?.Identity?.Name
+                        ?? authState.User?.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            dotNetRef = DotNetObjectReference.Create(this);
+            try
+            {
+                watchId = await JS.InvokeAsync<int>("geolocation.watchPosition", dotNetRef);
+                if (watchId < 0)
+                {
+                    lastError = "Geolocation not supported on this browser.";
+                    StateHasChanged();
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = $"Failed to start location watch: {ex.Message}";
+                Logger.LogWarning(ex, "GpsTest: failed to start watchPosition");
+                StateHasChanged();
+            }
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnPositionUpdate(PositionPayload pos)
+    {
+        latestLat = pos.Latitude;
+        latestLon = pos.Longitude;
+        latestAccuracy = pos.Accuracy;
+        lastError = null;
+
+        if (selectedCampus != null && latestLat.HasValue && latestLon.HasValue)
+        {
+            var result = await Geofence.ValidateLocationAsync(
+                selectedCampus.CampusId, latestLat.Value, latestLon.Value);
+            liveIsValid = result.IsValid;
+            latestDistance = result.DistanceMeters;
+            liveMethod = ExtractMethod(result.Message);
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task OnPositionError(string message)
+    {
+        lastError = message;
+        liveIsValid = null;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnCampusChangedAsync()
+    {
+        selectedCampus = campuses.FirstOrDefault(c => c.CampusId == selectedCampusId);
+        await LoadPointsAsync();
+        if (selectedCampus != null && latestLat.HasValue && latestLon.HasValue)
+        {
+            var result = await Geofence.ValidateLocationAsync(
+                selectedCampus.CampusId, latestLat.Value, latestLon.Value);
+            liveIsValid = result.IsValid;
+            latestDistance = result.DistanceMeters;
+            liveMethod = ExtractMethod(result.Message);
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadPointsAsync()
+    {
+        if (selectedCampus == null) { points = new(); return; }
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<TimeClockDbContext>();
+        points = await db.GeofenceTestPoints
+            .AsNoTracking()
+            .Where(p => p.CampusId == selectedCampus.CampusId)
+            .OrderByDescending(p => p.CapturedAtUtc)
+            .ToListAsync();
+    }
+
+    private async Task CaptureAsync()
+    {
+        if (latestLat == null || latestLon == null || selectedCampus == null) return;
+        if (string.IsNullOrWhiteSpace(captureLabel)) return;
+
+        isSaving = true;
+        captureMessage = null;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<TimeClockDbContext>();
+
+            var result = await Geofence.ValidateLocationAsync(
+                selectedCampus.CampusId, latestLat.Value, latestLon.Value);
+
+            var entity = new GeofenceTestPoint
+            {
+                CampusId = selectedCampus.CampusId,
+                Label = captureLabel.Trim(),
+                Latitude = (decimal)latestLat.Value,
+                Longitude = (decimal)latestLon.Value,
+                AccuracyMeters = latestAccuracy.HasValue ? (decimal?)latestAccuracy.Value : null,
+                Notes = string.IsNullOrWhiteSpace(captureNotes) ? null : captureNotes.Trim(),
+                WasInsideGeofence = result.IsValid,
+                GeofenceMethod = ExtractMethod(result.Message),
+                CapturedAtUtc = DateTime.UtcNow,
+                CapturedBy = capturedByEmail
+            };
+            db.GeofenceTestPoints.Add(entity);
+            await db.SaveChangesAsync();
+
+            captureSuccess = true;
+            captureMessage = $"Saved \"{entity.Label}\" at {entity.Latitude:F6}, {entity.Longitude:F6} ({(entity.WasInsideGeofence == true ? "INSIDE" : "OUTSIDE")}).";
+            captureLabel = "";
+            captureNotes = "";
+            await LoadPointsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "GpsTest: failed to capture point for campus {CampusId}", selectedCampus?.CampusId);
+            captureSuccess = false;
+            captureMessage = $"Save failed: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task DeleteAsync(int testPointId)
+    {
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<TimeClockDbContext>();
+            var entity = await db.GeofenceTestPoints.FindAsync(testPointId);
+            if (entity != null)
+            {
+                db.GeofenceTestPoints.Remove(entity);
+                await db.SaveChangesAsync();
+            }
+            await LoadPointsAsync();
+            captureSuccess = true;
+            captureMessage = "Point deleted.";
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "GpsTest: failed to delete point {Id}", testPointId);
+            captureSuccess = false;
+            captureMessage = $"Delete failed: {ex.Message}";
+        }
+    }
+
+    private string GetStatusBackground()
+    {
+        if (lastError != null) return "#fee2e2";
+        if (liveIsValid == true) return "#dcfce7";
+        if (liveIsValid == false) return "#fef3c7";
+        return "#ffffff";
+    }
+
+    private string GetAccuracyQuality()
+    {
+        if (latestAccuracy == null) return "";
+        if (latestAccuracy <= 10) return "excellent";
+        if (latestAccuracy <= 25) return "good";
+        if (latestAccuracy <= 50) return "fair";
+        return "poor — move to open sky";
+    }
+
+    private static string ExtractMethod(string? message)
+    {
+        if (string.IsNullOrEmpty(message)) return "";
+        if (message.Contains("(polygon)")) return "polygon";
+        if (message.Contains("(radius)")) return "radius";
+        return "";
+    }
+
+    private Task ExportAsPointsAsync()
+    {
+        if (points.Count == 0)
+        {
+            exportedGeoJson = "";
+            exportMode = "";
+            captureSuccess = false;
+            captureMessage = "No points captured yet for this campus.";
+            return Task.CompletedTask;
+        }
+
+        var ordered = points.OrderBy(p => p.CapturedAtUtc).ToList();
+        var features = ordered.Select(p => new
+        {
+            type = "Feature",
+            geometry = new
+            {
+                type = "Point",
+                coordinates = new[] { (double)p.Longitude, (double)p.Latitude }
+            },
+            properties = new
+            {
+                label = p.Label,
+                notes = p.Notes,
+                accuracyMeters = p.AccuracyMeters,
+                wasInside = p.WasInsideGeofence,
+                method = p.GeofenceMethod,
+                capturedAtUtc = p.CapturedAtUtc.ToString("o"),
+                testPointId = p.TestPointId
+            }
+        }).ToArray();
+
+        var fc = new
+        {
+            type = "FeatureCollection",
+            name = $"{selectedCampus?.CampusName ?? "Campus"} test points",
+            features
+        };
+
+        exportedGeoJson = System.Text.Json.JsonSerializer.Serialize(fc,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            });
+        exportMode = $"points ({features.Length})";
+        captureMessage = null;
+        return Task.CompletedTask;
+    }
+
+    private Task ExportAsPolygonAsync()
+    {
+        if (points.Count < 3)
+        {
+            exportedGeoJson = "";
+            exportMode = "";
+            captureSuccess = false;
+            captureMessage = "Need at least 3 captured points to form a polygon.";
+            return Task.CompletedTask;
+        }
+
+        var ordered = points.OrderBy(p => p.CapturedAtUtc).ToList();
+        var ring = ordered
+            .Select(p => new[] { (double)p.Longitude, (double)p.Latitude })
+            .ToList();
+        // Close the ring — GeoJSON spec requires first vertex == last vertex.
+        ring.Add(new[] { (double)ordered[0].Longitude, (double)ordered[0].Latitude });
+
+        var polygon = new
+        {
+            type = "Polygon",
+            coordinates = new[] { ring.ToArray() }
+        };
+
+        exportedGeoJson = System.Text.Json.JsonSerializer.Serialize(polygon,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        exportMode = "polygon";
+        captureMessage = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task CopyToClipboardAsync()
+    {
+        if (string.IsNullOrEmpty(exportedGeoJson)) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", exportedGeoJson);
+            captureSuccess = true;
+            captureMessage = "Copied to clipboard.";
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "GpsTest: clipboard write failed");
+            captureSuccess = false;
+            captureMessage = $"Copy failed: {ex.Message}. Select the text and press Ctrl+C.";
+        }
+    }
+
+    public class PositionPayload
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+        public double Accuracy { get; set; }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (watchId >= 0)
+            {
+                await JS.InvokeVoidAsync("geolocation.clearWatch", watchId);
+            }
+        }
+        catch { /* page unloading — safe to ignore */ }
+        dotNetRef?.Dispose();
+    }
+}

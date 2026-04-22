@@ -1,5 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.EntityFrameworkCore;
+using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Shared.Constants;
 
 namespace NewHeights.TimeClock.Web.Services;
@@ -80,10 +82,17 @@ public class UserContext
 public class UserContextService : IUserContextService
 {
     private readonly AuthenticationStateProvider _authStateProvider;
+    private readonly IDbContextFactory<TimeClockDbContext> _dbFactory;
+    private readonly ILogger<UserContextService> _logger;
 
-    public UserContextService(AuthenticationStateProvider authStateProvider)
+    public UserContextService(
+        AuthenticationStateProvider authStateProvider,
+        IDbContextFactory<TimeClockDbContext> dbFactory,
+        ILogger<UserContextService> logger)
     {
         _authStateProvider = authStateProvider;
+        _dbFactory = dbFactory;
+        _logger = logger;
     }
 
     public async Task<UserContext> GetCurrentUserAsync()
@@ -119,6 +128,18 @@ public class UserContextService : IUserContextService
         // Resolve campus code: department is primary, officeLocation is fallback
         ctx.CampusCode = ResolveCampusCode(ctx.Department, ctx.OfficeLocation);
 
+        // Phase post-smoke-test: if the Entra claims don't resolve a campus
+        // (department / officeLocation are blank or unrecognized), fall back
+        // to the user's TC_Employees.HomeCampusId. Fixes Jennifer Tyler and
+        // any supervisor whose Entra attributes have drifted — they'll still
+        // see their own campus in scoped pages without needing Entra edits.
+        // District users intentionally have a null CampusCode; the fallback
+        // only fires for users with an actual employee record.
+        if (string.IsNullOrEmpty(ctx.CampusCode))
+        {
+            await TryFallbackCampusFromDbAsync(ctx);
+        }
+
         // Role flags from token role claims
         ctx.IsAdmin      = user.IsInRole(AppConstants.Roles.Admin);
         ctx.IsHR         = user.IsInRole(AppConstants.Roles.HR)         || ctx.IsAdmin;
@@ -146,6 +167,58 @@ public class UserContextService : IUserContextService
     /// officeLocation ("New Heights - Stop Six" etc.) is the fallback.
     /// Returns null for District-scoped users who have no campus restriction.
     /// </summary>
+    /// <summary>
+    /// Last-resort campus resolution. When Entra department + officeLocation
+    /// claims can't produce a CampusCode, try the user's TC_Employees row
+    /// (EntraObjectId preferred; Email fallback). Sets ctx.CampusCode +
+    /// OfficeLocation when we find a match. Silent no-op on any failure —
+    /// never blocks page loads on a transient DB issue.
+    /// </summary>
+    private async Task TryFallbackCampusFromDbAsync(UserContext ctx)
+    {
+        try
+        {
+            await using var db = await _dbFactory.CreateDbContextAsync();
+
+            var query = db.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.HomeCampus)
+                .Where(e => e.IsActive);
+
+            // Prefer EntraObjectId — stable across email renames.
+            Data.Entities.TcEmployee? employee = null;
+            if (!string.IsNullOrWhiteSpace(ctx.EntraObjectId))
+            {
+                employee = await query.FirstOrDefaultAsync(e => e.EntraObjectId == ctx.EntraObjectId);
+            }
+            if (employee == null && !string.IsNullOrWhiteSpace(ctx.Email))
+            {
+                var lower = ctx.Email.Trim().ToLower();
+                employee = await query.FirstOrDefaultAsync(e => e.Email != null && e.Email.ToLower() == lower);
+            }
+
+            if (employee?.HomeCampus?.CampusCode is { } code && !string.IsNullOrWhiteSpace(code))
+            {
+                ctx.CampusCode = code;
+                // If OfficeLocation wasn't set by claims, fill it from the
+                // DB campus name so downstream display fields still work.
+                if (string.IsNullOrWhiteSpace(ctx.OfficeLocation))
+                {
+                    ctx.OfficeLocation = employee.HomeCampus.CampusName;
+                }
+                _logger.LogInformation(
+                    "UserContext campus resolved via DB fallback for {Email}: {Code}",
+                    ctx.Email, code);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "UserContext DB campus fallback failed for {Email} — campus stays unresolved.",
+                ctx.Email);
+        }
+    }
+
     private static string? ResolveCampusCode(string? department, string? officeLocation)
     {
         // Primary: department

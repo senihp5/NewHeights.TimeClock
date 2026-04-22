@@ -1,0 +1,303 @@
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+
+@*
+   Reusable month-grid calendar. Shared between the Substitute Request form
+   (date picker with holiday overlay) and My Assignments (month view of
+   confirmed substitute assignments).
+
+   Features:
+   - Month grid with prev / today / next navigation
+   - TcHolidaySchedule overlay: non-school days styled gray with a label
+   - Today highlighted
+   - Custom per-day markers via the Markers parameter (Dictionary<DateOnly, MarkerInfo>)
+   - Click-to-select with OnDateSelected callback (single-date mode)
+   - Range selection mode when Range=true (click start then click end)
+
+   Callers pass in CampusId to filter holidays (0 = all-campus view).
+ *@
+
+<div class="school-calendar">
+
+    <div class="cal-header">
+        <button type="button" class="cal-nav" @onclick="GoPrev" title="Previous month">&lsaquo;</button>
+        <div class="cal-title">
+            <strong>@_viewMonth.ToString("MMMM yyyy")</strong>
+        </div>
+        <button type="button" class="cal-nav" @onclick="GoToday" title="Today">Today</button>
+        <button type="button" class="cal-nav" @onclick="GoNext" title="Next month">&rsaquo;</button>
+    </div>
+
+    <div class="cal-weekdays">
+        <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+    </div>
+
+    <div class="cal-grid">
+        @foreach (var day in _daysInView)
+        {
+            var isToday = day == _today;
+            var isInMonth = day.Month == _viewMonth.Month;
+            var isSelected = IsSelected(day);
+            var isRangeStart = Range && _rangeStart.HasValue && day == _rangeStart.Value;
+            var isRangeEnd = Range && _rangeEnd.HasValue && day == _rangeEnd.Value;
+            var inRange = Range
+                && _rangeStart.HasValue
+                && _rangeEnd.HasValue
+                && day >= _rangeStart.Value
+                && day <= _rangeEnd.Value;
+            var holiday = _holidaysByDate.TryGetValue(day, out var h) ? h : null;
+            var marker = Markers != null && Markers.TryGetValue(day, out var m) ? m : null;
+
+            var css = new List<string> { "cal-cell" };
+            if (!isInMonth) css.Add("other-month");
+            if (isToday) css.Add("today");
+            if (holiday != null) css.Add("holiday");
+            if (isSelected) css.Add("selected");
+            if (isRangeStart) css.Add("range-start");
+            if (isRangeEnd) css.Add("range-end");
+            if (inRange && !isRangeStart && !isRangeEnd) css.Add("in-range");
+            if (marker != null) css.Add("has-marker");
+
+            <button type="button" class="@string.Join(' ', css)"
+                    @onclick="() => OnCellClick(day)">
+                <span class="cal-num">@day.Day</span>
+                @if (holiday != null)
+                {
+                    <span class="cal-holiday-label" title="@holiday.HolidayName">@holiday.HolidayName</span>
+                }
+                else if (marker != null)
+                {
+                    <span class="cal-marker" title="@marker.Tooltip" style="@($"background:{marker.Color};")">
+                        @marker.Label
+                    </span>
+                }
+            </button>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_loadError))
+    {
+        <p class="cal-error">@_loadError</p>
+    }
+</div>
+
+<style>
+    .school-calendar { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1rem; box-shadow: 0 2px 6px -2px rgba(21, 40, 64, 0.08); }
+    .cal-header { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; }
+    .cal-title { flex: 1; text-align: center; font-size: 1.05rem; color: #1e3a5f; }
+    .cal-nav { padding: .35rem .75rem; background: #f8fafc; color: #1e3a5f; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; font-weight: 600; transition: background .12s; font-size: .9rem; }
+    .cal-nav:hover { background: #eff6ff; border-color: #1e3a5f; }
+    .cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; margin-bottom: 4px; }
+    .cal-weekdays > div { text-align: center; font-size: .75rem; font-weight: 700; color: #64748b; text-transform: uppercase; padding: .3rem 0; letter-spacing: .04em; }
+    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+    .cal-cell {
+        aspect-ratio: 1 / 1;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        cursor: pointer;
+        padding: .35rem .4rem;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: flex-start;
+        gap: .25rem;
+        transition: all .1s ease;
+        font-family: inherit;
+        color: #0f172a;
+        overflow: hidden;
+        min-height: 60px;
+    }
+    .cal-cell:hover { border-color: #1e3a5f; background: #f8fafc; }
+    .cal-cell.other-month { background: #fafafa; color: #94a3b8; }
+    .cal-cell.today { border: 2px solid #f5b81c; background: #fffbeb; }
+    .cal-cell.holiday { background: #f1f5f9; color: #94a3b8; cursor: default; border-style: dashed; }
+    .cal-cell.holiday:hover { border-color: #cbd5e1; background: #f1f5f9; }
+    .cal-cell.selected, .cal-cell.range-start, .cal-cell.range-end { background: #1e3a5f; color: white; border-color: #152840; font-weight: 600; }
+    .cal-cell.selected .cal-num, .cal-cell.range-start .cal-num, .cal-cell.range-end .cal-num { color: white; }
+    .cal-cell.in-range { background: #dbeafe; border-color: #93c5fd; }
+    .cal-num { font-size: .88rem; font-weight: 600; line-height: 1; }
+    .cal-holiday-label { font-size: .68rem; line-height: 1.1; color: #64748b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; font-style: italic; }
+    .cal-marker { display: inline-block; padding: .05rem .4rem; border-radius: 8px; font-size: .7rem; font-weight: 600; color: white; line-height: 1.25; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cal-error { color: #991b1b; font-size: .85rem; margin: .5rem 0 0; }
+
+    @@media (max-width: 520px) {
+        .cal-cell { min-height: 46px; padding: .25rem; }
+        .cal-num { font-size: .78rem; }
+        .cal-holiday-label, .cal-marker { font-size: .6rem; }
+    }
+</style>
+
+@code {
+    /// <summary>Single-date mode: currently selected date.</summary>
+    [Parameter] public DateOnly? SelectedDate { get; set; }
+    [Parameter] public EventCallback<DateOnly> OnDateSelected { get; set; }
+
+    /// <summary>Range mode: calling parent opts in, we return both endpoints.</summary>
+    [Parameter] public bool Range { get; set; } = false;
+    [Parameter] public DateOnly? RangeStart { get; set; }
+    [Parameter] public DateOnly? RangeEnd { get; set; }
+    [Parameter] public EventCallback<(DateOnly start, DateOnly end)> OnRangeSelected { get; set; }
+
+    /// <summary>Filter holidays to this campus. 0 = show all-campus + any campus.</summary>
+    [Parameter] public int CampusId { get; set; } = 0;
+
+    /// <summary>
+    /// Optional day markers supplied by the parent — e.g. assignment counts on
+    /// My Assignments month view. Keyed by date; value has a short label (≤3 chars)
+    /// and tooltip/color.
+    /// </summary>
+    [Parameter] public Dictionary<DateOnly, MarkerInfo>? Markers { get; set; }
+
+    /// <summary>Initial month to display. Defaults to current month.</summary>
+    [Parameter] public DateOnly? InitialMonth { get; set; }
+
+    private DateOnly _viewMonth;
+    private DateOnly _today = DateOnly.FromDateTime(DateTime.Today);
+    private List<DateOnly> _daysInView = new();
+    private Dictionary<DateOnly, TcHolidaySchedule> _holidaysByDate = new();
+    private DateOnly? _rangeStart;
+    private DateOnly? _rangeEnd;
+    private string _loadError = "";
+
+    public class MarkerInfo
+    {
+        public string Label { get; set; } = "";
+        public string Tooltip { get; set; } = "";
+        public string Color { get; set; } = "#1e3a5f";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _viewMonth = InitialMonth ?? new DateOnly(_today.Year, _today.Month, 1);
+        _rangeStart = RangeStart;
+        _rangeEnd = RangeEnd;
+        RebuildGrid();
+        await LoadHolidaysAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Keep range endpoints in sync if parent re-binds them.
+        _rangeStart = RangeStart;
+        _rangeEnd = RangeEnd;
+        if (InitialMonth.HasValue && new DateOnly(InitialMonth.Value.Year, InitialMonth.Value.Month, 1) != _viewMonth)
+        {
+            _viewMonth = new DateOnly(InitialMonth.Value.Year, InitialMonth.Value.Month, 1);
+            RebuildGrid();
+            await LoadHolidaysAsync();
+        }
+    }
+
+    private void RebuildGrid()
+    {
+        // 42-day sliding window: always 6 full weeks starting from the Sunday
+        // on-or-before the 1st of the view month. Keeps grid height stable.
+        var first = new DateOnly(_viewMonth.Year, _viewMonth.Month, 1);
+        var firstDayOfWeek = (int)first.DayOfWeek; // Sunday=0
+        var gridStart = first.AddDays(-firstDayOfWeek);
+        _daysInView = Enumerable.Range(0, 42).Select(i => gridStart.AddDays(i)).ToList();
+    }
+
+    private async Task LoadHolidaysAsync()
+    {
+        try
+        {
+            _loadError = "";
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            var gridStart = _daysInView.First();
+            var gridEnd = _daysInView.Last();
+
+            // Pull holidays in view range, filtered by campus scope. Campus-
+            // scoped and all-campus rows both apply; we always overlay both.
+            _holidaysByDate = (await ctx.TcHolidaySchedules
+                .AsNoTracking()
+                .Where(h => h.IsActive
+                         && h.HolidayDate >= gridStart
+                         && h.HolidayDate <= gridEnd
+                         && (h.AppliesToAllCampuses
+                             || CampusId == 0
+                             || h.CampusId == CampusId))
+                .ToListAsync())
+                .GroupBy(h => h.HolidayDate)
+                .ToDictionary(g => g.Key, g => g.First());
+        }
+        catch (Exception ex)
+        {
+            _loadError = "Could not load school holidays.";
+            Console.Error.WriteLine(ex.Message);
+        }
+    }
+
+    private bool IsSelected(DateOnly d)
+    {
+        if (Range) return false;
+        return SelectedDate.HasValue && SelectedDate.Value == d;
+    }
+
+    private async Task OnCellClick(DateOnly day)
+    {
+        // Holidays are informational only — clicks are ignored so the user
+        // can't accidentally book coverage on a non-school day. The parent
+        // page should show a message if they try to submit one anyway.
+        if (_holidaysByDate.ContainsKey(day)) return;
+
+        if (Range)
+        {
+            // Click 1: set start, clear end. Click 2: set end. Click 3+: reset.
+            if (!_rangeStart.HasValue || (_rangeStart.HasValue && _rangeEnd.HasValue))
+            {
+                _rangeStart = day;
+                _rangeEnd = null;
+            }
+            else if (_rangeStart.HasValue && !_rangeEnd.HasValue)
+            {
+                if (day < _rangeStart.Value)
+                {
+                    // User clicked backwards — swap.
+                    _rangeEnd = _rangeStart;
+                    _rangeStart = day;
+                }
+                else
+                {
+                    _rangeEnd = day;
+                }
+                if (OnRangeSelected.HasDelegate)
+                {
+                    await OnRangeSelected.InvokeAsync((_rangeStart!.Value, _rangeEnd!.Value));
+                }
+            }
+        }
+        else
+        {
+            if (OnDateSelected.HasDelegate)
+            {
+                await OnDateSelected.InvokeAsync(day);
+            }
+        }
+    }
+
+    private async Task GoPrev()
+    {
+        _viewMonth = _viewMonth.AddMonths(-1);
+        RebuildGrid();
+        await LoadHolidaysAsync();
+    }
+
+    private async Task GoNext()
+    {
+        _viewMonth = _viewMonth.AddMonths(1);
+        RebuildGrid();
+        await LoadHolidaysAsync();
+    }
+
+    private async Task GoToday()
+    {
+        _viewMonth = new DateOnly(_today.Year, _today.Month, 1);
+        RebuildGrid();
+        await LoadHolidaysAsync();
+    }
+}

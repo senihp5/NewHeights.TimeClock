@@ -224,6 +224,59 @@
     border-left-color: #dc2626;
 }
 
+/* Date picker section: swaps two native date inputs for a single
+   SchoolCalendar in range mode. Readable chips above show the current
+   selection so users don't have to decode highlighted cells. */
+.form-row.date-picker-row {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem 1.25rem;
+}
+
+.date-range-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    margin: 0.25rem 0 0.5rem;
+    flex-wrap: wrap;
+}
+
+.date-chip {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    padding: 0.55rem 0.9rem;
+    background: white;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    min-width: 190px;
+}
+
+.date-chip-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.date-chip-value {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #1e3a5f;
+}
+
+.date-range-sep {
+    font-size: 1.4rem;
+    color: #94a3b8;
+    font-weight: 700;
+}
+
+.calendar-wrap {
+    margin-top: 0.6rem;
+}
+
 /* ── Emergency Fill callout ───────────────────────────────────── */
 
 .emergency-row {

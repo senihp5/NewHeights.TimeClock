@@ -226,21 +226,30 @@
                     </select>
                 </div>
 
-                <div class="form-row two-col">
-                    <div>
-                        <label for="start-date">Start Date</label>
-                        <input id="start-date" type="date"
-                               @bind="form.StartDate"
-                               @bind:after="OnStartDateChanged"
-                               required />
+                <div class="form-row date-picker-row">
+                    <label>When are you out?</label>
+                    <div class="date-range-summary">
+                        <div class="date-chip">
+                            <span class="date-chip-label">Start</span>
+                            <span class="date-chip-value">@form.StartDate.ToString("ddd, MMM d, yyyy")</span>
+                        </div>
+                        <div class="date-range-sep">→</div>
+                        <div class="date-chip">
+                            <span class="date-chip-label">End</span>
+                            <span class="date-chip-value">@form.EndDate.ToString("ddd, MMM d, yyyy")</span>
+                        </div>
                     </div>
-                    <div>
-                        <label for="end-date">End Date</label>
-                        <input id="end-date" type="date"
-                               @bind="form.EndDate"
-                               @bind:after="OnEndDateChanged"
-                               min="@form.StartDate.ToString("yyyy-MM-dd")"
-                               required />
+                    <p class="form-hint">
+                        Click a start date, then a second date to set the end. School holidays
+                        are greyed out and can't be selected. Single-day absences? Click the
+                        same day twice.
+                    </p>
+                    <div class="calendar-wrap">
+                        <SchoolCalendar Range="true"
+                                        RangeStart="@form.StartDate"
+                                        RangeEnd="@form.EndDate"
+                                        CampusId="@campusId"
+                                        OnRangeSelected="OnCalendarRangeSelected" />
                     </div>
                 </div>
 
@@ -566,6 +575,18 @@
         {
             isLoading = false;
         }
+    }
+
+    /// <summary>
+    /// Called by SchoolCalendar when the user finishes selecting a date
+    /// range (click start, click end). Single-day absences arrive here with
+    /// start == end. Always refreshes the other-absences banner afterward.
+    /// </summary>
+    private async Task OnCalendarRangeSelected((DateOnly start, DateOnly end) range)
+    {
+        form.StartDate = range.start;
+        form.EndDate = range.end;
+        await LoadOtherAbsencesAsync();
     }
 
     private async Task OnStartDateChanged()

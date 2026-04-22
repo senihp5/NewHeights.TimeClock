@@ -132,6 +132,14 @@ public static class AuditActions
         public const string TokenExpired        = "SUB_TOKEN_EXPIRED";
         public const string ConfirmationSent    = "SUB_CONFIRMATION_SENT";
         public const string Reassigned          = "SUB_REASSIGNED";
+        // Phase A (migration 048): partial-acceptance audit trail.
+        //   PartialAccepted     — sub claimed a subset of requested periods
+        //   FullyCovered        — final partial accept brought the request to 100%
+        //   PartialStallAlerted — supervisor notified that a partially-covered
+        //                          request has stayed stalled past the threshold
+        public const string PartialAccepted     = "SUB_PARTIAL_ACCEPTED";
+        public const string FullyCovered        = "SUB_FULLY_COVERED";
+        public const string PartialStallAlerted = "SUB_PARTIAL_STALL_ALERTED";
     }
 
     // N2. Substitute — Pool Management (Phase D5)

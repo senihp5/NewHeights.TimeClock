@@ -169,6 +169,7 @@
     private DateTime periodAnchorDate = DateTime.Today;
     private bool isLoading = true;
     private string currentUserEmail = "";
+    private string currentUserEntraOid = "";
     private int currentSupervisorId = 0;
     private UserContext? userCtx;
     private PayPeriodInfo? currentPayPeriod;
@@ -177,9 +178,12 @@
     protected override async Task OnInitializedAsync()
     {
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
-        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ?? 
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ??
                            authState.User.FindFirst(ClaimTypes.Email)?.Value ?? "";
-        
+        currentUserEntraOid = authState.User.FindFirst("oid")?.Value
+                           ?? authState.User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+                           ?? "";
+
         userCtx = await UserContextSvc.GetCurrentUserAsync();
         currentUserEmail = userCtx.Email;
         await LoadCurrentSupervisor();
@@ -189,11 +193,27 @@
     private async Task LoadCurrentSupervisor()
     {
         using var context = await DbFactory.CreateDbContextAsync();
-        var emailLower = currentUserEmail.ToLowerInvariant();
-        var supervisor = await context.TcEmployees
-            .FirstOrDefaultAsync(e => e.Email != null && e.Email.ToLower() == emailLower);
+
+        // EntraObjectId (stable) → case-insensitive email. Matches the pattern
+        // used on every other staff-facing page. Prevents drift when a
+        // supervisor's email casing differs between the token and TC_Employees.
+        TcEmployee? supervisor = null;
+        if (!string.IsNullOrWhiteSpace(currentUserEntraOid))
+        {
+            supervisor = await context.TcEmployees
+                .FirstOrDefaultAsync(e => e.EntraObjectId == currentUserEntraOid);
+        }
+        if (supervisor == null && !string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            var emailLower = currentUserEmail.ToLowerInvariant();
+            supervisor = await context.TcEmployees
+                .FirstOrDefaultAsync(e => e.Email != null && e.Email.ToLower() == emailLower);
+        }
+
         currentSupervisorId = supervisor?.EmployeeId ?? 0;
-        Logger.LogInformation("Supervisor lookup: {Email} -> ID {Id}", emailLower, currentSupervisorId);
+        Logger.LogInformation(
+            "Supervisor lookup: oid={Oid} email={Email} -> ID {Id}",
+            currentUserEntraOid, currentUserEmail, currentSupervisorId);
     }
 
     private async Task LoadTeamData()

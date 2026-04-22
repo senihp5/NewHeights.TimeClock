@@ -332,7 +332,15 @@
             try
             {
                 using var context = await DbFactory.CreateDbContextAsync();
-                _campuses = await context.Campuses.AsNoTracking().OrderBy(c => c.CampusName).ToListAsync();
+                // District Office is a payroll/HR rollup campus, not a
+                // physical location — hidden from the Campus Safety Live tabs
+                // so receptionists and admins only see the two real campuses.
+                // Matches the filter used on /safety and /student/checkin.
+                _campuses = await context.Campuses
+                    .AsNoTracking()
+                    .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
+                    .OrderBy(c => c.CampusName)
+                    .ToListAsync();
 
                 if (_campuses.Any())
                 {
