@@ -1,5 +1,5 @@
 @page "/my/timesheet"
-@page "/my/timesheet/{WeekOffset:int}"
+@page "/my/timesheet/{PeriodOffset:int}"
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireHourly")]
@@ -19,14 +19,14 @@
 @inject IAuditService Audit
 @inject ILogger<MyTimesheet> Logger
 
-<PageTitle>Weekly Time Sheet - @AppConstants.Branding.ShortName</PageTitle>
+<PageTitle>Pay Period Time Sheet - @AppConstants.Branding.ShortName</PageTitle>
 
 <div class="timesheet-page">
     <header class="timesheet-header">
         <div class="header-brand">
             <img src="/images/logo.jpg" alt="New Heights" class="header-logo" />
             <div>
-                <h1>School Year 2025-2026 Weekly Time Sheet</h1>
+                <h1>School Year 2025-2026 Pay Period Time Sheet</h1>
                 <p class="header-subtitle">This Time Sheet serves as the record for semi-monthly payroll.</p>
             </div>
         </div>
@@ -73,15 +73,15 @@
     else
     {
         <div class="week-navigation">
-            <button class="btn-nav" @onclick="PreviousWeek" disabled="@isLoading">← Previous Week</button>
+            <button class="btn-nav" @onclick="PreviousPeriod" disabled="@isLoading">← Previous Pay Period</button>
             <div class="current-week">
-                <strong>Week of @selectedWeekStart.ToString("MMMM d") - @selectedWeekEnd.ToString("MMMM d, yyyy")</strong>
-                @if (weekOffset == 0)
+                <strong>Pay Period: @periodStart.ToString("MMMM d") - @periodEnd.ToString("MMMM d, yyyy")</strong>
+                @if (periodOffset == 0)
                 {
                     <span class="current-badge">Current</span>
                 }
             </div>
-            <button class="btn-nav" @onclick="NextWeek" disabled="@(weekOffset >= 0 || isLoading)">Next Week →</button>
+            <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0 || isLoading)">Next Pay Period →</button>
         </div>
     }
 
@@ -335,7 +335,7 @@
                 </tbody>
                 <tfoot>
                     <tr class="totals-row">
-                        <td colspan="4" class="totals-label">Weekly Totals</td>
+                        <td colspan="4" class="totals-label">Pay Period Totals</td>
                         <td class="col-hours"><strong>@weeklyTimesheet.TotalHours.ToString("F2")</strong></td>
                         <td class="col-hours"><strong>@totalLeaveHours.ToString("F2")</strong></td>
                         <td class="col-hours"><strong>@totalHolidayHours.ToString("F2")</strong></td>
@@ -688,9 +688,15 @@
 </style>
 
 @code {
-    [Parameter] public int WeekOffset { get; set; } = 0;
+    /// <summary>
+    /// Offset in pay periods from the current one (0 = current, -1 = previous,
+    /// etc.). Positive values are blocked in the UI since you can't pre-submit
+    /// a future pay period. Legacy name was WeekOffset; renamed 2026-04-24 when
+    /// the display switched from weekly to pay-period granularity.
+    /// </summary>
+    [Parameter] public int PeriodOffset { get; set; } = 0;
 
-    private int weekOffset = 0;
+    private int periodOffset = 0;
     private bool isLoading = true;
     // Admin / salaried users reach this page without a TC_Employees row of
     // their own. Instead of rendering default DateOnly values ("Jan 1, 0001"),
@@ -706,9 +712,15 @@
     private bool isHolidayEligible = true;
 
     private PayPeriodInfo? currentPayPeriod;
+    // weeklyTimesheet retains its legacy name so the razor markup + helper
+    // methods stay untouched. After the pay-period refactor it holds a
+    // WeeklyTimesheet-shaped aggregate spanning the full pay period (up to
+    // 14 days), not a single Mon-Sun week. Totals / OT are computed PER WEEK
+    // by GetPayPeriodTimesheetAsync and then summed into this wrapper so the
+    // footer row reflects payroll semantics.
     private WeeklyTimesheet? weeklyTimesheet;
-    private DateOnly selectedWeekStart;
-    private DateOnly selectedWeekEnd;
+    private DateOnly periodStart;
+    private DateOnly periodEnd;
 
     private decimal totalLeaveHours = 0;
     private decimal totalHolidayHours = 0;
@@ -746,7 +758,7 @@
 
     protected override async Task OnInitializedAsync()
     {
-        weekOffset = WeekOffset;
+        periodOffset = PeriodOffset;
 
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         var user = authState.User;
@@ -837,21 +849,52 @@
 
         try
         {
-            var today = DateOnly.FromDateTime(DateTime.Today);
-            selectedWeekStart = today.AddDays(-(int)today.DayOfWeek + 1 + (weekOffset * 7));
-            if (today.DayOfWeek == DayOfWeek.Sunday)
-                selectedWeekStart = selectedWeekStart.AddDays(-7);
-            selectedWeekEnd = selectedWeekStart.AddDays(6);
+            // Resolve the pay period we're viewing. Pay periods are roughly
+            // biweekly — stepping periodOffset by 1 = ~14 days earlier.
+            // PayPeriodService.GetPayPeriodForDateAsync handles the lookup
+            // against the configured TC_PayPeriods table (with a biweekly
+            // projection fallback) and returns start/end dates that match
+            // the admin-managed schedule.
+            var anchorDate = DateTime.Today.AddDays(periodOffset * 14);
+            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchorDate);
+            // PayPeriodInfo.StartDate / EndDate are already DateOnly — no
+            // conversion needed. The earlier draft wrongly wrapped these with
+            // DateOnly.FromDateTime which caused CS1503 at build time.
+            periodStart = currentPayPeriod.StartDate;
+            periodEnd   = currentPayPeriod.EndDate;
 
-            weeklyTimesheet = await TimesheetService.GetWeeklyTimesheetAsync(employeeId, selectedWeekStart);
+            // Pull the full pay-period timesheet, then flatten its week-grouped
+            // days into a single WeeklyTimesheet-shaped wrapper so the existing
+            // UI markup keeps working. Totals (incl. OT) are already calculated
+            // per-week inside GetPayPeriodTimesheetAsync and summed at the period
+            // level — we just copy those numbers into the wrapper.
+            var periodSheet = await TimesheetService.GetPayPeriodTimesheetAsync(employeeId, periodStart, periodEnd);
 
-            // Load holidays for this week (only for benefits-eligible employees)
+            weeklyTimesheet = new WeeklyTimesheet
+            {
+                EmployeeId          = periodSheet.EmployeeId,
+                EmployeeName        = periodSheet.EmployeeName,
+                WeekStartDate       = periodStart,
+                WeekEndDate         = periodEnd,
+                Days                = periodSheet.Weeks
+                                        .SelectMany(w => w.Days)
+                                        .Where(d => d.Date >= periodStart && d.Date <= periodEnd)
+                                        .OrderBy(d => d.Date)
+                                        .ToList(),
+                TotalRegularHours   = periodSheet.TotalRegularHours,
+                TotalOvertimeHours  = periodSheet.TotalOvertimeHours,
+                TotalHours          = periodSheet.TotalHours,
+                HasExceptions       = periodSheet.ExceptionCount > 0,
+                IsSubmitted         = periodSheet.EmployeeApprovalStatus != ApprovalStatus.Pending
+            };
+
+            // Load holidays for this pay period (only for benefits-eligible employees)
             using var context = await DbFactory.CreateDbContextAsync();
             if (isHolidayEligible)
             {
                 weekHolidays = await context.TcHolidaySchedules
                     .AsNoTracking()
-                    .Where(h => h.IsActive && h.HolidayDate >= selectedWeekStart && h.HolidayDate <= selectedWeekEnd)
+                    .Where(h => h.IsActive && h.HolidayDate >= periodStart && h.HolidayDate <= periodEnd)
                     .ToListAsync();
                 totalHolidayHours = weekHolidays.Sum(h => h.HoursCredited);
             }
@@ -862,11 +905,11 @@
             }
             totalLeaveHours = 0;
 
-            // Load pending correction requests
+            // Load pending correction requests across the full pay period
             pendingCorrections = await context.TcCorrectionRequests
                 .AsNoTracking()
                 .Where(cr => cr.EmployeeId == employeeId &&
-                             cr.WorkDate >= selectedWeekStart && cr.WorkDate <= selectedWeekEnd)
+                             cr.WorkDate >= periodStart && cr.WorkDate <= periodEnd)
                 .OrderByDescending(cr => cr.CreatedDate)
                 .ToListAsync();
         }
@@ -887,17 +930,17 @@
             expandedDays.Add(date);
     }
 
-    private async Task PreviousWeek()
+    private async Task PreviousPeriod()
     {
-        weekOffset--;
+        periodOffset--;
         await LoadTimesheet();
     }
 
-    private async Task NextWeek()
+    private async Task NextPeriod()
     {
-        if (weekOffset < 0)
+        if (periodOffset < 0)
         {
-            weekOffset++;
+            periodOffset++;
             await LoadTimesheet();
         }
     }
@@ -950,7 +993,27 @@
         isSubmitting = true;
         try
         {
-            await TimesheetService.SubmitTimesheetAsync(employeeId, selectedWeekEnd, currentUserEmail);
+            // SubmitTimesheetAsync works at the weekly grain (per-week daily
+            // cards get flipped to Submitted). A pay period covers multiple
+            // weeks — submit each week-end inside the current period so the
+            // whole window lands as approved. Saturday is the canonical
+            // week-end in TC_DailyTimecards' weekly grouping convention.
+            var weekEnds = new HashSet<DateOnly>();
+            for (var d = periodStart; d <= periodEnd; d = d.AddDays(1))
+            {
+                if (d.DayOfWeek == DayOfWeek.Sunday)
+                    weekEnds.Add(d);
+            }
+            // If the period doesn't contain a Sunday for its last week (e.g.
+            // ends mid-week), treat periodEnd itself as the trailing week-end.
+            if (!weekEnds.Contains(periodEnd))
+                weekEnds.Add(periodEnd);
+
+            foreach (var weekEnd in weekEnds.OrderBy(d => d))
+            {
+                await TimesheetService.SubmitTimesheetAsync(employeeId, weekEnd, currentUserEmail);
+            }
+
             await LoadTimesheet();
         }
         catch (Exception ex)
