@@ -105,17 +105,25 @@
                 <span class="si-badge si-badge-green">✓ Confident: @parsedRows.Count(r => r.TeacherMatchMethod is "Exact" or "LastName" or "Manual")</span>
                 <span class="si-badge si-badge-yellow">⚠ Fuzzy: @parsedRows.Count(r => r.TeacherMatchMethod == "Fuzzy")</span>
                 <span class="si-badge si-badge-red">✗ Unmatched: @parsedRows.Count(r => r.TeacherMatchMethod == "Unmatched")</span>
+                <span class="si-badge si-badge-blue">☑ Accepted: @parsedRows.Count(r => r.Accepted)</span>
                 <span class="si-badge si-badge-gray">Total rows: @parsedRows.Count</span>
             </div>
 
             <p class="si-hint">
-                Green rows are ready to save. Yellow rows need verification. Red rows must be matched manually.
-                Click any teacher name to reassign.
+                Green rows are pre-accepted. Yellow / alignment-flagged / unmatched rows need explicit acceptance
+                — check the box in the Accept column after reviewing. Click any teacher name to reassign. Only
+                checked rows are saved when you click <em>Save Import</em>.
             </p>
 
             <table class="si-table">
                 <thead>
                     <tr>
+                        <th title="Check to include in import">
+                            <input type="checkbox"
+                                   checked="@parsedRows.Any() && parsedRows.All(r => r.Accepted)"
+                                   @onchange="OnAcceptAllChanged"
+                                   title="Accept / reject all rows with a resolved teacher" />
+                        </th>
                         <th>Raw Name</th>
                         <th>Resolved Teacher</th>
                         <th>Match</th>
@@ -130,6 +138,13 @@
                     @foreach (var row in parsedRows)
                     {
                         <tr class="@GetRowClass(row)">
+                            <td class="si-accept-cell">
+                                <input type="checkbox"
+                                       checked="@row.Accepted"
+                                       @onchange="e => row.Accepted = e.Value is bool b && b"
+                                       disabled="@(row.TeacherStaffDcid == null)"
+                                       title="@(row.TeacherStaffDcid == null ? "Resolve a teacher first" : "Include this row when saving")" />
+                            </td>
                             <td class="si-raw-cell">@row.RawTeacherCell</td>
                             <td>
                                 @if (editingRow == row)
@@ -165,6 +180,13 @@
                                 <span class="si-method-badge si-method-@(row.TeacherMatchMethod?.ToLower() ?? "unmatched")">
                                     @(row.TeacherMatchMethod ?? "Unmatched")
                                 </span>
+                                @if (!string.IsNullOrEmpty(row.MatchNote))
+                                {
+                                    <span class="si-method-badge si-method-note"
+                                          title="Match alignment note — audit before saving if this teacher's campus doesn't look right.">
+                                        @row.MatchNote
+                                    </span>
+                                }
                             </td>
                             <td>@row.Room</td>
                             <td>@row.DayPattern</td>
@@ -184,14 +206,14 @@
                 <button class="btn btn-secondary" @onclick="() => phase = ImportPhase.Upload">← Back</button>
                 <button class="btn btn-success"
                         @onclick="SaveImport"
-                        disabled="@(isProcessing || parsedRows.Any(r => r.TeacherMatchMethod == "Unmatched" && r.TeacherStaffDcid == null))">
+                        disabled="@(isProcessing || !parsedRows.Any(r => r.Accepted))">
                     @if (isProcessing)
                     {
                         <span>Saving...</span>
                     }
                     else
                     {
-                        <span>Save @parsedRows.Count Row(s) to Database</span>
+                        <span>Save @parsedRows.Count(r => r.Accepted) of @parsedRows.Count Row(s) to Database</span>
                     }
                 </button>
             </div>
@@ -422,6 +444,23 @@
         public string? TTh_P6 { get; set; }
 
         public string? TeacherMatchMethod  { get; set; }
+        /// <summary>
+        /// Optional audit note about the match: "CrossCampus" (matched via
+        /// cross-campus fallback), "EmpAligned" (flipped to the TC_Employees-
+        /// aligned DCID for a multi-campus teacher), or the combo. Not persisted
+        /// to TC_MasterSchedule (the column is 20 chars); only shown in Step 2
+        /// so admin can eyeball the match before saving.
+        /// </summary>
+        public string? MatchNote { get; set; }
+
+        /// <summary>
+        /// Admin opt-in flag for inclusion in the save pass. Auto-checked for
+        /// Confident matches with no MatchNote; Fuzzy / alignment-flagged /
+        /// Unmatched rows stay unchecked until the admin explicitly ticks them.
+        /// Save ignores unchecked rows — they're skipped without error so the
+        /// admin can import a partial batch and come back for edge cases.
+        /// </summary>
+        public bool Accepted { get; set; }
         public string? Partner1MatchMethod { get; set; }
         public string? Partner2MatchMethod { get; set; }
         public int?    Partner1StaffDcid   { get; set; }
@@ -667,18 +706,29 @@
             string nameTok = StripSuffix(row.RawTeacherCell);
 
             var result = MatchTeacher(nameTok, campusStaff);
+            var crossCampus = false;
             if (result.method == "Unmatched" && campusStaff.Count < allStaff.Count)
             {
-                // Cross-campus fallback. Flag the method so admin can audit.
+                // Cross-campus fallback. The campus-scoped pool had no hit, so
+                // try the full Staff list. Flag it in a separate field so Step 2
+                // can render a "review" chip without overflowing the 20-char
+                // TeacherMatchMethod column or confusing the classification
+                // counters (which expect one of Exact/LastName/Fuzzy/Manual/
+                // Unmatched as the literal value).
                 var fallback = MatchTeacher(nameTok, allStaff);
                 if (fallback.dcid.HasValue)
-                    result = (fallback.dcid, fallback.name, $"{fallback.method} (CrossCampus)");
+                {
+                    result = fallback;
+                    crossCampus = true;
+                }
             }
 
             // Post-match alignment: if the matched DCID has no TC_Employees
             // row, but another Staff row for the same person (by IdNumber)
             // DOES, flip to that DCID. Keeps the Sub Paper Entry dropdown
             // join working when TC_Employees holds the other-campus DCID.
+            // Again, don't mutate TeacherMatchMethod — record in MatchNote.
+            var empAligned = false;
             if (result.dcid.HasValue && !employeeDcids.Contains(result.dcid.Value))
             {
                 var pickedStaff = allStaff.FirstOrDefault(s => s.Dcid == result.dcid.Value);
@@ -692,12 +742,27 @@
                     {
                         result = (aligned.Dcid,
                                   $"{aligned.LastName}, {aligned.FirstName}",
-                                  $"{result.method} (EmpAligned)");
+                                  result.method);
+                        empAligned = true;
                     }
                 }
             }
 
             (row.TeacherStaffDcid, row.ResolvedTeacherName, row.TeacherMatchMethod) = result;
+            row.MatchNote = (crossCampus, empAligned) switch
+            {
+                (true, true)  => "CrossCampus+EmpAligned",
+                (true, false) => "CrossCampus",
+                (false, true) => "EmpAligned",
+                _             => null
+            };
+
+            // Pre-check only confident matches with no alignment caveats. Fuzzy,
+            // cross-campus, emp-aligned, and unmatched rows require explicit
+            // admin review (tick the checkbox in Step 2).
+            row.Accepted = row.TeacherStaffDcid.HasValue
+                        && row.MatchNote == null
+                        && row.TeacherMatchMethod is "Exact" or "LastName" or "Manual";
         }
     }
 
@@ -812,16 +877,34 @@
         row.TeacherStaffDcid    = staff.Dcid;
         row.ResolvedTeacherName = $"{staff.LastName}, {staff.FirstName}";
         row.TeacherMatchMethod  = "Manual";
+        row.MatchNote           = null;
+        // Admin explicitly picked this teacher — auto-accept.
+        row.Accepted            = true;
         editingRow   = null;
         searchText   = string.Empty;
         searchResults.Clear();
+    }
+
+    private void OnAcceptAllChanged(ChangeEventArgs e)
+    {
+        var accept = e.Value is bool b && b;
+        foreach (var row in parsedRows)
+        {
+            // Don't tick rows without a resolved DCID — they'd fail on save.
+            if (!row.TeacherStaffDcid.HasValue) continue;
+            row.Accepted = accept;
+        }
     }
 
     // ── Save ──────────────────────────────────────────────────────────────────
 
     private async Task SaveImport()
     {
-        if (parsedRows.Any(r => r.TeacherStaffDcid == null)) return;
+        // Save only rows the admin has explicitly accepted. Unchecked rows
+        // (usually Fuzzy / alignment-flagged / Unmatched ones) are skipped —
+        // not an error. The admin can re-upload or manually fix those later.
+        var acceptedRows = parsedRows.Where(r => r.Accepted && r.TeacherStaffDcid.HasValue).ToList();
+        if (acceptedRows.Count == 0) return;
 
         isProcessing  = true;
         errorMessage  = string.Empty;
@@ -845,7 +928,7 @@
             foreach (var e in existing) e.IsActive = false;
 
             var now = DateTime.Now;
-            foreach (var row in parsedRows)
+            foreach (var row in acceptedRows)
             {
                 db.TcMasterSchedules.Add(new TcMasterSchedule
                 {
@@ -905,9 +988,10 @@
             // Per-teacher SCHEDULE_TEACHER_MATCHED audits are intentionally skipped to avoid
             // polluting the audit log with 100+ rows per import; match-method distribution
             // is captured here so compliance can still analyze match quality per import.
-            var matchStats = parsedRows
+            var matchStats = acceptedRows
                 .GroupBy(r => r.TeacherMatchMethod ?? "None")
                 .ToDictionary(g => g.Key, g => g.Count());
+            var skippedCount = parsedRows.Count - acceptedRows.Count;
 
             await Audit.LogActionAsync(
                 actionCode: AuditActions.Schedule.Imported,
@@ -918,17 +1002,19 @@
                     CampusId = selectedCampusId,
                     TermName = selectedTerm,
                     SchoolYear = schoolYear,
-                    RowCount = parsedRows.Count,
+                    RowCount = acceptedRows.Count,
+                    SkippedCount = skippedCount,
                     PriorRowsDeactivated = existing.Count,
                     TeacherMatchBreakdown = matchStats,
                     ImportedBy = importedBy
                 },
-                deltaSummary: $"Imported {parsedRows.Count} schedule rows for campus {selectedCampusId} {selectedTerm} {schoolYear} (replacing {existing.Count} prior rows)",
+                deltaSummary: $"Imported {acceptedRows.Count} of {parsedRows.Count} schedule rows for campus {selectedCampusId} {selectedTerm} {schoolYear} (replacing {existing.Count} prior rows; {skippedCount} rejected)",
                 source: AuditSource.AdminUi,
                 campusId: selectedCampusId);
 
-            successMessage = $"✓ Imported {parsedRows.Count} rows for {selectedTerm} {schoolYear}. " +
-                             $"Previous import deactivated ({existing.Count} rows).";
+            successMessage = $"✓ Imported {acceptedRows.Count} of {parsedRows.Count} rows for {selectedTerm} {schoolYear}. " +
+                             $"Previous import deactivated ({existing.Count} rows)." +
+                             (skippedCount > 0 ? $" {skippedCount} row(s) were not accepted and were skipped." : string.Empty);
             phase     = ImportPhase.Upload;
             parsedRows.Clear();
         }
