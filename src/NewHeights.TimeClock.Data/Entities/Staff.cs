@@ -13,6 +13,15 @@ public class Staff
     public string? JobTitle { get; set; }
     public string? SchoolName { get; set; }
     public bool IsActive { get; set; }
-    
+
+    /// <summary>
+    /// PowerSchool school ID (e.g. 220822001 for Stop Six, 220822002 for McCart).
+    /// Used to scope teacher matching in Schedule Import — multi-campus teachers
+    /// (Jose Lagunas, for example) have a separate Staff row per campus, and
+    /// the importer needs to prefer the row whose SchoolId matches the campus
+    /// being imported. Joins to Campus.PowerSchoolId.
+    /// </summary>
+    public int? SchoolId { get; set; }
+
     public string FullName => $"{FirstName} {LastName}".Trim();
 }

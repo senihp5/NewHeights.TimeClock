@@ -433,6 +433,7 @@
     private ImportPhase    phase          = ImportPhase.Upload;
     private List<Campus>   campuses       = new();
     private List<Staff>    allStaff       = new();
+    private HashSet<int>   employeeDcids  = new();   // TC_Employees.StaffDcid set — used to keep matcher aligned so UI joins stay healthy
     private List<ParsedRow> parsedRows    = new();
 
     private int    selectedCampusId = 0;
@@ -467,6 +468,18 @@
             .Where(s => s.IsActive)
             .OrderBy(s => s.LastName)
             .ToListAsync();
+
+        // Pre-load the DCIDs that TC_Employees recognizes so the matcher can
+        // prefer them. For multi-campus teachers (two Staff rows, one per school)
+        // the TC_Employees record lives on exactly ONE of the two DCIDs, and the
+        // Sub Paper Entry / MySubTimesheet joins use that DCID. If the Schedule
+        // Import picks the other-campus DCID, the join breaks and the teacher
+        // disappears from the dropdown. This set lets the matcher stay aligned.
+        employeeDcids = (await db.TcEmployees
+            .Where(e => e.IsActive && e.StaffDcid != null)
+            .Select(e => e.StaffDcid!.Value)
+            .ToListAsync())
+            .ToHashSet();
     }
 
     // ── File ──────────────────────────────────────────────────────────────────
@@ -637,15 +650,58 @@
 
     private void MatchAllTeachers()
     {
+        // Multi-campus teachers (e.g. Jose Lagunas — taught at both Stop Six and
+        // McCart, with a separate Staff.Dcid per campus) were being mis-matched
+        // to the other campus's DCID because the fuzzy matcher had no campus
+        // awareness. Scope the candidate pool by campus first. Fallback to the
+        // full list if nothing matched — keeps teachers without per-campus
+        // Staff records from landing as Unmatched.
+        var psId = campuses.FirstOrDefault(c => c.CampusId == selectedCampusId)?.PowerSchoolId;
+        var campusStaff = psId.HasValue
+            ? allStaff.Where(s => s.SchoolId == psId.Value).ToList()
+            : allStaff;
+
         foreach (var row in parsedRows)
         {
             if (string.IsNullOrWhiteSpace(row.RawTeacherCell)) continue;
             string nameTok = StripSuffix(row.RawTeacherCell);
-            (row.TeacherStaffDcid, row.ResolvedTeacherName, row.TeacherMatchMethod) = MatchTeacher(nameTok);
+
+            var result = MatchTeacher(nameTok, campusStaff);
+            if (result.method == "Unmatched" && campusStaff.Count < allStaff.Count)
+            {
+                // Cross-campus fallback. Flag the method so admin can audit.
+                var fallback = MatchTeacher(nameTok, allStaff);
+                if (fallback.dcid.HasValue)
+                    result = (fallback.dcid, fallback.name, $"{fallback.method} (CrossCampus)");
+            }
+
+            // Post-match alignment: if the matched DCID has no TC_Employees
+            // row, but another Staff row for the same person (by IdNumber)
+            // DOES, flip to that DCID. Keeps the Sub Paper Entry dropdown
+            // join working when TC_Employees holds the other-campus DCID.
+            if (result.dcid.HasValue && !employeeDcids.Contains(result.dcid.Value))
+            {
+                var pickedStaff = allStaff.FirstOrDefault(s => s.Dcid == result.dcid.Value);
+                if (pickedStaff?.IdNumber != null)
+                {
+                    var aligned = allStaff.FirstOrDefault(s =>
+                        s.IdNumber == pickedStaff.IdNumber
+                        && s.Dcid != pickedStaff.Dcid
+                        && employeeDcids.Contains(s.Dcid));
+                    if (aligned != null)
+                    {
+                        result = (aligned.Dcid,
+                                  $"{aligned.LastName}, {aligned.FirstName}",
+                                  $"{result.method} (EmpAligned)");
+                    }
+                }
+            }
+
+            (row.TeacherStaffDcid, row.ResolvedTeacherName, row.TeacherMatchMethod) = result;
         }
     }
 
-    private (int? dcid, string? name, string method) MatchTeacher(string rawName)
+    private (int? dcid, string? name, string method) MatchTeacher(string rawName, List<Staff> pool)
     {
         if (string.IsNullOrWhiteSpace(rawName))
             return (null, null, "Unmatched");
@@ -664,7 +720,7 @@
         char firstInit = rawFirst.Length > 0 ? rawFirst[0] : '\0';
 
         // Step 1: Exact last-name match, normalized on both sides.
-        var exact = allStaff.Where(s => Norm(s.LastName) == rawLast).ToList();
+        var exact = pool.Where(s => Norm(s.LastName) == rawLast).ToList();
         if (exact.Count == 1)
             return (exact[0].Dcid, $"{exact[0].LastName}, {exact[0].FirstName}", "LastName");
 
@@ -698,7 +754,7 @@
         }
 
         // Step 3: Fuzzy — last-name starts with raw, or raw starts with last-name.
-        var fuzzy = allStaff.Where(s =>
+        var fuzzy = pool.Where(s =>
             Norm(s.LastName).StartsWith(rawLast) ||
             (rawLast.Length >= 4 && rawLast.StartsWith(Norm(s.LastName)))).ToList();
         if (fuzzy.Count == 1)
