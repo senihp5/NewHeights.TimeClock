@@ -45,9 +45,19 @@
         </div>
         <div class="period-info">
             <div class="period-nav">
-                <button class="btn-nav" @onclick="PreviousPeriod">← Previous</button>
-                <span class="period-display">@currentPayPeriod?.PeriodName</span>
-                <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0)">Next →</button>
+                <label for="sup-pp-picker" class="pp-label">Pay Period:</label>
+                <select id="sup-pp-picker" class="btn-nav pp-select"
+                        value="@selectedPayPeriodId"
+                        @onchange="OnPayPeriodChangedAsync"
+                        disabled="@isLoading">
+                    @foreach (var p in availablePeriods)
+                    {
+                        <option value="@p.PayPeriodId">
+                            @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                            @(p.IsOpen ? " · Current" : "")
+                        </option>
+                    }
+                </select>
             </div>
             <div class="status-summary">
                 <span class="status-item @(employeeApproved ? "approved" : "pending")">
@@ -589,6 +599,10 @@
     private PayPeriodInfo? currentPayPeriod;
     private PayPeriodTimesheet? payPeriodTimesheet;
 
+    // Pay-period dropdown (replaced prev/next buttons 2026-04-24).
+    private List<PayPeriodInfo> availablePeriods = new();
+    private int selectedPayPeriodId = 0;
+
     // Drill-down state
     private HashSet<DateOnly> expandedDays = new();
 
@@ -618,12 +632,26 @@
 
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         var user = authState.User;
-        currentUserEmail = user.FindFirst("preferred_username")?.Value ?? 
+        currentUserEmail = user.FindFirst("preferred_username")?.Value ??
                            user.FindFirst(ClaimTypes.Email)?.Value ?? "";
-        currentUserName = user.FindFirst("name")?.Value ?? 
+        currentUserName = user.FindFirst("name")?.Value ??
                           user.FindFirst(ClaimTypes.Name)?.Value ?? currentUserEmail;
 
+        // Populate pay-period dropdown; seed from URL offset for back-compat.
+        availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
+        var initialPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
+        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+            ? initialPeriod.PayPeriodId
+            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
         await LoadEmployeeData();
+    }
+
+    private async Task OnPayPeriodChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var id)) return;
+        selectedPayPeriodId = id;
+        await LoadTimesheet();
     }
 
     private async Task LoadEmployeeData()
@@ -676,7 +704,9 @@
 
     private async Task LoadTimesheet()
     {
-        currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
+        // Dropdown-driven. Fall back to today's period if selection is stale.
+        currentPayPeriod = availablePeriods.FirstOrDefault(p => p.PayPeriodId == selectedPayPeriodId)
+                        ?? await PayPeriodService.GetCurrentPayPeriodAsync();
 
         payPeriodTimesheet = await TimesheetService.GetPayPeriodTimesheetAsync(
             EmployeeId,
@@ -708,20 +738,8 @@
         StateHasChanged();
     }
 
-    private async Task PreviousPeriod()
-    {
-        periodOffset--;
-        await LoadTimesheet();
-    }
-
-    private async Task NextPeriod()
-    {
-        if (periodOffset < 0)
-        {
-            periodOffset++;
-            await LoadTimesheet();
-        }
-    }
+    // PreviousPeriod / NextPeriod removed 2026-04-24 — OnPayPeriodChangedAsync
+    // handles dropdown-driven navigation now.
 
     private async Task ApproveTimesheet()
     {

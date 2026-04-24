@@ -66,19 +66,19 @@
     </div>
 
     <div class="period-navigation">
-        <button class="btn-nav" @onclick="PreviousPeriod" disabled="@isLoading">← Previous Period</button>
-        <div class="current-period">
-            <strong>
-                @(currentPayPeriod != null
-                    ? $"{currentPayPeriod.StartDate:MMM d} – {currentPayPeriod.EndDate:MMM d, yyyy}"
-                    : "—")
-            </strong>
-            @if (periodOffset == 0)
+        <label for="mysub-pp-picker" class="pp-label">Pay Period:</label>
+        <select id="mysub-pp-picker" class="btn-nav pp-select"
+                value="@selectedPayPeriodId"
+                @onchange="OnPayPeriodChangedAsync"
+                disabled="@isLoading">
+            @foreach (var p in availablePeriods)
             {
-                <span class="current-badge">Current</span>
+                <option value="@p.PayPeriodId">
+                    @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                    @(p.IsOpen ? " · Current" : "")
+                </option>
             }
-        </div>
-        <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0 || isLoading)">Next Period →</button>
+        </select>
     </div>
 
     @if (!string.IsNullOrEmpty(actionError))
@@ -415,6 +415,11 @@
     private EmployeeType employeeType = EmployeeType.HourlyStaff;
 
     private PayPeriodInfo? currentPayPeriod;
+
+    // Pay-period dropdown (replaced prev/next buttons 2026-04-24).
+    private List<PayPeriodInfo> availablePeriods = new();
+    private int selectedPayPeriodId = 0;
+
     private List<TcSubstituteTimecard> cards = new();
     private TcSubstituteTimecard? todayCard;
     private int? todayCheckInCampusId;
@@ -530,6 +535,22 @@
                            ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
                            ?? "";
 
+        // Populate pay-period dropdown; seed selection from URL offset for
+        // back-compat with /my/sub-timesheet/{offset} deep links.
+        availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
+        var initialAnchor = DateTime.Today.AddDays(periodOffset * 14);
+        var initialPeriod = await PayPeriodService.GetPayPeriodForDateAsync(initialAnchor);
+        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+            ? initialPeriod.PayPeriodId
+            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
+        await LoadData();
+    }
+
+    private async Task OnPayPeriodChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var id)) return;
+        selectedPayPeriodId = id;
         await LoadData();
     }
 
@@ -598,17 +619,18 @@
                 return;
             }
 
-            // Positive coefficient on periodOffset so Previous (offset -1) lands
-            // the anchor 15 days in the past and GetPayPeriodForDateAsync resolves
-            // the prior period. Prior formula `-15 * offset` sent the anchor into
-            // the future and broke period navigation silently — fixed 2026-04-23
-            // in SupervisorSubTimesheets and MySubTimesheet together.
-            var anchorDate = DateTime.Today.AddDays(15 * periodOffset);
-            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchorDate);
+            // Resolve pay period from the dropdown selection. Fall back to
+            // today's period if the selection isn't in the list for any reason.
+            currentPayPeriod = availablePeriods.FirstOrDefault(p => p.PayPeriodId == selectedPayPeriodId);
             if (currentPayPeriod == null)
             {
-                loadError = "Could not resolve pay period for this date.";
-                return;
+                currentPayPeriod = await PayPeriodService.GetCurrentPayPeriodAsync();
+                if (currentPayPeriod == null)
+                {
+                    loadError = "Could not resolve pay period for this date.";
+                    return;
+                }
+                selectedPayPeriodId = currentPayPeriod.PayPeriodId;
             }
 
             cards = await SubTimesheetService.GetCardsForPayPeriodAsync(
@@ -715,21 +737,8 @@
         return today >= currentPayPeriod.StartDate && today <= currentPayPeriod.EndDate;
     }
 
-    private void PreviousPeriod()
-    {
-        periodOffset--;
-        Navigation.NavigateTo($"/my/sub-timesheet/{periodOffset}");
-    }
-
-    private void NextPeriod()
-    {
-        if (periodOffset >= 0) return;
-        periodOffset++;
-        if (periodOffset == 0)
-            Navigation.NavigateTo("/my/sub-timesheet");
-        else
-            Navigation.NavigateTo($"/my/sub-timesheet/{periodOffset}");
-    }
+    // PreviousPeriod / NextPeriod removed 2026-04-24 in favor of the pay-period
+    // dropdown. OnPayPeriodChangedAsync is the single entry point for nav.
 
     // ── Picker open handlers ──────────────────────────────────────────────
 

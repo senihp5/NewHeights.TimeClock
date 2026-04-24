@@ -248,7 +248,14 @@ public class TimePunchService : ITimePunchService
                 }
             }
 
-            await UpdateDailyTimecardAsync(employee.EmployeeId, campusId, now.Date);
+            // Substitutes roll up to TC_SubstituteTimecards (per-period pay),
+            // not TC_DailyTimecards (hourly). Skip the daily-timecard update so
+            // subs don't show up on the hourly Team Timesheets view with odd
+            // punch-derived hours that don't reflect their actual per-period pay.
+            if (employee.EmployeeType != EmployeeType.Substitute)
+            {
+                await UpdateDailyTimecardAsync(employee.EmployeeId, campusId, now.Date);
+            }
             var totalHours = await GetTodayHoursAsync(employee.EmployeeId);
             var photoBase64 = await GetEmployeePhotoBase64Async(employee.StaffDcid ?? 0);
 
@@ -307,8 +314,14 @@ public class TimePunchService : ITimePunchService
         timecard.FirstPunchIn = punches.FirstOrDefault(p => p.PunchType == PunchType.In)?.PunchDateTime;
         timecard.LastPunchOut = punches.LastOrDefault(p => p.PunchType == PunchType.Out)?.PunchDateTime;
         timecard.TotalHours = totalHours;
-        timecard.RegularHours = Math.Min(totalHours, 8);
-        timecard.OvertimeHours = Math.Max(0, totalHours - 8);
+        // OT is WEEKLY (40-hour threshold per Texas labor + NH policy), not
+        // daily. Don't split here. The weekly aggregator in TimesheetService
+        // handles OT correctly for OT-eligible employees (HourlyStaff only —
+        // PartTime employees never accrue OT). Storing daily OT based on a
+        // >8/day rule produced bogus payroll numbers for part-timers who
+        // worked a single long day.
+        timecard.RegularHours = totalHours;
+        timecard.OvertimeHours = 0;
         timecard.ModifiedDate = DateTime.Now;
 
         await _context.SaveChangesAsync();

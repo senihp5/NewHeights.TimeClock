@@ -60,15 +60,19 @@
     </div>
 
     <div class="period-nav">
-        <button class="btn-nav" @onclick="PreviousPeriod" disabled="@isLoading">← Previous</button>
-        <div class="current-period-wrap">
-            <strong>@(currentPayPeriod?.PeriodName ?? "—")</strong>
-            @if (periodOffset == 0)
+        <label for="pp-picker" class="pp-label">Pay Period:</label>
+        <select id="pp-picker" class="btn-nav pp-select"
+                value="@selectedPayPeriodId"
+                @onchange="OnPayPeriodChangedAsync"
+                disabled="@isLoading">
+            @foreach (var p in availablePeriods)
             {
-                <span class="current-badge">Current</span>
+                <option value="@p.PayPeriodId">
+                    @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                    @(p.IsOpen ? " · Current" : "")
+                </option>
             }
-        </div>
-        <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0 || isLoading)">Next →</button>
+        </select>
     </div>
 
     @if (!string.IsNullOrEmpty(actionError))
@@ -315,6 +319,11 @@
     private int selectedCampusFilter = 0;
 
     private PayPeriodInfo? currentPayPeriod;
+
+    // Dropdown-based pay-period selector (replaced prev/next buttons 2026-04-24).
+    private List<PayPeriodInfo> availablePeriods = new();
+    private int selectedPayPeriodId = 0;
+
     private List<TcSubstituteTimecard> cards = new();
     private List<SubGroup> groups = new();
     private Dictionary<int, string> campusNameById = new();
@@ -369,6 +378,23 @@
             scopedCampusDisplay = userCtx.CampusDisplayName;
         }
 
+        // Populate the pay-period dropdown. Default to the period implied by
+        // the URL offset (back-compat with the old /supervisor/sub-timesheets/{offset}
+        // links) if present, else the current period.
+        availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
+        var initialAnchor = DateTime.Today.AddDays(periodOffset * 14);
+        var initialPeriod = await PayPeriodService.GetPayPeriodForDateAsync(initialAnchor);
+        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+            ? initialPeriod.PayPeriodId
+            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
+        await LoadData();
+    }
+
+    private async Task OnPayPeriodChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var id)) return;
+        selectedPayPeriodId = id;
         await LoadData();
     }
 
@@ -378,6 +404,20 @@
         if (incoming != periodOffset)
         {
             periodOffset = incoming;
+
+            // Re-resolve the dropdown selection from the new URL offset so
+            // browser back/forward navigation keeps the <select> in sync.
+            // availablePeriods may be empty on the very first call — the
+            // OnInitializedAsync path handles initial load.
+            if (availablePeriods.Count > 0)
+            {
+                var anchor = DateTime.Today.AddDays(periodOffset * 14);
+                var period = await PayPeriodService.GetPayPeriodForDateAsync(anchor);
+                selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == period.PayPeriodId)
+                    ? period.PayPeriodId
+                    : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+            }
+
             await LoadData();
         }
     }
@@ -394,17 +434,21 @@
                 .AsNoTracking()
                 .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
 
-            // Sign on the offset was inverted prior to 2026-04-23: PreviousPeriod
-            // decrements periodOffset to negative, and `-15 * -1 = +15` sent the
-            // anchor into the FUTURE, so Prev/Next silently no-op'd on data that
-            // wasn't in the current period. Correct form is positive coefficient
-            // so offset -1 → anchor = today - 15 days (lands in prior period).
-            var anchor = DateTime.Today.AddDays(15 * periodOffset);
-            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchor);
+            // Resolve the pay period from the dropdown selection. The dropdown
+            // is the source of truth — periodOffset from the URL was only used
+            // once in OnInitializedAsync to seed the initial value.
+            currentPayPeriod = availablePeriods.FirstOrDefault(p => p.PayPeriodId == selectedPayPeriodId);
             if (currentPayPeriod == null)
             {
-                loadError = "Could not resolve pay period for this date.";
-                return;
+                // No match in the dropdown — fall back to today's period so the
+                // page doesn't blank out.
+                currentPayPeriod = await PayPeriodService.GetCurrentPayPeriodAsync();
+                if (currentPayPeriod == null)
+                {
+                    loadError = "Could not resolve pay period for this date.";
+                    return;
+                }
+                selectedPayPeriodId = currentPayPeriod.PayPeriodId;
             }
 
             int? filterCampusId = isAdmin
@@ -468,21 +512,10 @@
             expandedCards.Remove(cardId);
     }
 
-    private void PreviousPeriod()
-    {
-        periodOffset--;
-        Navigation.NavigateTo($"/supervisor/sub-timesheets/{periodOffset}");
-    }
-
-    private void NextPeriod()
-    {
-        if (periodOffset >= 0) return;
-        periodOffset++;
-        if (periodOffset == 0)
-            Navigation.NavigateTo("/supervisor/sub-timesheets");
-        else
-            Navigation.NavigateTo($"/supervisor/sub-timesheets/{periodOffset}");
-    }
+    // PreviousPeriod / NextPeriod removed 2026-04-24 in favor of the pay-period
+    // dropdown. OnPayPeriodChangedAsync handles all navigation now. URL-based
+    // /supervisor/sub-timesheets/{offset} still works as a deep-link seed via
+    // OnInitializedAsync, but the button-driven URL rewrites are gone.
 
     // ── Approve / Reject handlers ─────────────────────────────────────────
 

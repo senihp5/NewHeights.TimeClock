@@ -123,11 +123,25 @@ public class TimesheetService : ITimesheetService
             timesheet.Days.Add(entry);
         }
 
-        // Calculate weekly totals
-        timesheet.TotalRegularHours = timesheet.Days.Sum(d => d.RegularHours);
-        timesheet.TotalOvertimeHours = Math.Max(0, timesheet.Days.Sum(d => d.TotalHours) - OVERTIME_THRESHOLD);
-        timesheet.TotalRegularHours = Math.Min(timesheet.Days.Sum(d => d.TotalHours), OVERTIME_THRESHOLD);
-        timesheet.TotalHours = timesheet.Days.Sum(d => d.TotalHours);
+        // Weekly totals. OT eligibility is SCOPED to EmployeeType.HourlyStaff
+        // per NH policy — PartTime employees never accrue OT regardless of
+        // hours worked in a week, and substitutes never reach this aggregator
+        // (they have their own per-period pay model on TcSubstituteTimecards).
+        // Texas labor law uses a 40 hr/week threshold; daily-level >8 splits
+        // are NOT applied.
+        var weeklyTotal = timesheet.Days.Sum(d => d.TotalHours);
+        timesheet.TotalHours = weeklyTotal;
+        if (employee.EmployeeType == EmployeeType.HourlyStaff)
+        {
+            timesheet.TotalOvertimeHours = Math.Max(0, weeklyTotal - OVERTIME_THRESHOLD);
+            timesheet.TotalRegularHours = Math.Min(weeklyTotal, OVERTIME_THRESHOLD);
+        }
+        else
+        {
+            // PartTime + any other hourly-ish type never accrue OT.
+            timesheet.TotalOvertimeHours = 0;
+            timesheet.TotalRegularHours = weeklyTotal;
+        }
         timesheet.HasExceptions = timesheet.Days.Any(d => d.HasException);
         timesheet.IsSubmitted = dailyCards.All(d => d.ApprovalStatus != ApprovalStatus.Pending);
 
@@ -173,16 +187,13 @@ public class TimesheetService : ITimesheetService
             currentDate = currentDate.AddDays(7);
         }
 
-        // Filter week data to only include days within the pay period
-        var periodRegularHours = weeks.SelectMany(w => w.Days)
-            .Where(d => d.Date >= periodStart && d.Date <= periodEnd)
-            .Sum(d => d.RegularHours);
-        var periodOvertimeHours = weeks.SelectMany(w => w.Days)
-            .Where(d => d.Date >= periodStart && d.Date <= periodEnd)
-            .Sum(d => d.OvertimeHours);
-        var periodTotalHours = weeks.SelectMany(w => w.Days)
-            .Where(d => d.Date >= periodStart && d.Date <= periodEnd)
-            .Sum(d => d.TotalHours);
+        // Sum from the week-level totals (not per-day OvertimeHours, which
+        // is stored as 0 on the daily card since OT is a weekly concept).
+        // Biweekly Mon–Sun pay periods align to Mon–Sun weeks, so a week's
+        // TotalHours/TotalOvertimeHours already belongs to exactly one period.
+        var periodRegularHours = weeks.Sum(w => w.TotalRegularHours);
+        var periodOvertimeHours = weeks.Sum(w => w.TotalOvertimeHours);
+        var periodTotalHours = weeks.Sum(w => w.TotalHours);
 
         return new PayPeriodTimesheet
         {
@@ -369,11 +380,15 @@ public class TimesheetService : ITimesheetService
             _logger.LogInformation("  Employee {Id}: Type={Type}", emp.EmployeeId, emp.EmployeeType);
         }
 
-        // Now filter to hourly staff
+        // Filter to hourly staff only. Substitutes are intentionally excluded —
+        // they have their own view at /supervisor/sub-timesheets that shows
+        // per-period coverage (the correct payroll grain for subs). Including
+        // them here produced "odd hours" rows on Team Timesheets derived from
+        // punch-stretch between first-in and last-out, which don't correspond
+        // to any real pay amount.
         var teamMembers = allEmployees.Where(e => e.EmployeeType == EmployeeType.HourlyStaff
-                                                 || e.EmployeeType == EmployeeType.HourlyPartTime
-                                                 || e.EmployeeType == EmployeeType.Substitute).ToList();
-        _logger.LogInformation("After Hourly/PT/Sub filter: {Count} employees", teamMembers.Count);
+                                                 || e.EmployeeType == EmployeeType.HourlyPartTime).ToList();
+        _logger.LogInformation("After Hourly/PT filter: {Count} employees", teamMembers.Count);
 
         var summaries = new List<TeamTimesheetSummary>();
 
@@ -434,19 +449,20 @@ public class TimesheetService : ITimesheetService
             "GetAllTeamTimesheets (admin scope): period {Start} to {End}",
             periodStart, periodEnd);
 
-        // Every active Hourly / Part-Time / Substitute across all supervisors.
-        // Eager-load supervisor + campus so the admin UI can group/filter.
+        // Every active Hourly / Part-Time across all supervisors. Substitutes
+        // excluded — they have their own page (/supervisor/sub-timesheets) and
+        // their per-period pay model doesn't translate to the hourly-hours
+        // columns this view renders.
         var teamMembers = await context.TcEmployees
             .Include(e => e.Staff)
             .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
             .Include(e => e.HomeCampus)
             .Where(e => e.IsActive
                      && (e.EmployeeType == EmployeeType.HourlyStaff
-                      || e.EmployeeType == EmployeeType.HourlyPartTime
-                      || e.EmployeeType == EmployeeType.Substitute))
+                      || e.EmployeeType == EmployeeType.HourlyPartTime))
             .ToListAsync();
 
-        _logger.LogInformation("GetAllTeamTimesheets: {Count} active hourly/PT/sub employees", teamMembers.Count);
+        _logger.LogInformation("GetAllTeamTimesheets: {Count} active hourly/PT employees", teamMembers.Count);
 
         var summaries = new List<TeamTimesheetSummary>();
 
@@ -501,12 +517,16 @@ public class TimesheetService : ITimesheetService
     {
         using var context = await _contextFactory.CreateDbContextAsync();
 
+        // Substitutes have their own payroll grain (per-period, not per-hour)
+        // and are rendered on the "Substitutes" tab by SubstitutePayrollSection.
+        // Including them here mixes period-derived "total hours" into the hourly
+        // list with nonsense values (e.g. 12.66 for a sub who covered 2 periods),
+        // so filter them out here.
         var allHourlyEmployees = await context.TcEmployees
             .Include(e => e.Staff)
             .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
             .Where(e => e.IsActive && (e.EmployeeType == EmployeeType.HourlyStaff
-                                       || e.EmployeeType == EmployeeType.HourlyPartTime
-                                       || e.EmployeeType == EmployeeType.Substitute))
+                                       || e.EmployeeType == EmployeeType.HourlyPartTime))
             .ToListAsync();
 
         var summaries = new List<PayrollSummary>();

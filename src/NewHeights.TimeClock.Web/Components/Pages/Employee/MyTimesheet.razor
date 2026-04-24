@@ -73,15 +73,20 @@
     else
     {
         <div class="week-navigation">
-            <button class="btn-nav" @onclick="PreviousPeriod" disabled="@isLoading">← Previous Pay Period</button>
-            <div class="current-week">
-                <strong>Pay Period: @periodStart.ToString("MMMM d") - @periodEnd.ToString("MMMM d, yyyy")</strong>
-                @if (periodOffset == 0)
+            <label for="pay-period-picker" class="pp-label">Pay Period:</label>
+            <select id="pay-period-picker"
+                    class="btn-nav pp-select"
+                    value="@selectedPayPeriodId"
+                    @onchange="OnPayPeriodChangedAsync"
+                    disabled="@isLoading">
+                @foreach (var p in availablePeriods)
                 {
-                    <span class="current-badge">Current</span>
+                    <option value="@p.PayPeriodId">
+                        @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                        @(p.IsOpen ? " · Current" : "")
+                    </option>
                 }
-            </div>
-            <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0 || isLoading)">Next Pay Period →</button>
+            </select>
         </div>
     }
 
@@ -722,6 +727,13 @@
     private DateOnly periodStart;
     private DateOnly periodEnd;
 
+    // Dropdown-based period navigation (replaced the old prev/next buttons
+    // 2026-04-24). availablePeriods holds ~18 historical + 2 upcoming periods
+    // from TC_PayPeriods, newest first. selectedPayPeriodId is bound to the
+    // dropdown and drives LoadTimesheet.
+    private List<PayPeriodInfo> availablePeriods = new();
+    private int selectedPayPeriodId = 0;
+
     private decimal totalLeaveHours = 0;
     private decimal totalHolidayHours = 0;
     private decimal grandTotal => (weeklyTimesheet?.TotalHours ?? 0) + totalLeaveHours + totalHolidayHours;
@@ -768,8 +780,26 @@
                            ?? user.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
                            ?? "";
 
-        currentPayPeriod = await PayPeriodService.GetCurrentPayPeriodAsync();
+        // Populate the pay-period dropdown. Default to the CURRENT period
+        // unless a URL offset was passed (back-compat with old /my/timesheet/{offset} links).
+        availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
+        var initialAnchor = DateTime.Today.AddDays(periodOffset * 14);
+        var initialPeriod = await PayPeriodService.GetPayPeriodForDateAsync(initialAnchor);
+        currentPayPeriod = initialPeriod;
+        // If the initial period isn't in the dropdown list (e.g. very old
+        // legacy URL), fall back to today's period to avoid a blank selection.
+        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+            ? initialPeriod.PayPeriodId
+            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
         await LoadEmployeeAndTimesheet();
+    }
+
+    private async Task OnPayPeriodChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var id)) return;
+        selectedPayPeriodId = id;
+        await LoadTimesheet();
     }
 
     private async Task LoadEmployeeAndTimesheet()
@@ -849,19 +879,24 @@
 
         try
         {
-            // Resolve the pay period we're viewing. Pay periods are roughly
-            // biweekly — stepping periodOffset by 1 = ~14 days earlier.
-            // PayPeriodService.GetPayPeriodForDateAsync handles the lookup
-            // against the configured TC_PayPeriods table (with a biweekly
-            // projection fallback) and returns start/end dates that match
-            // the admin-managed schedule.
-            var anchorDate = DateTime.Today.AddDays(periodOffset * 14);
-            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchorDate);
-            // PayPeriodInfo.StartDate / EndDate are already DateOnly — no
-            // conversion needed. The earlier draft wrongly wrapped these with
-            // DateOnly.FromDateTime which caused CS1503 at build time.
-            periodStart = currentPayPeriod.StartDate;
-            periodEnd   = currentPayPeriod.EndDate;
+            // Resolve the pay period from the dropdown selection. The dropdown
+            // is the source of truth — periodOffset from the URL was only used
+            // once in OnInitializedAsync to pick the initial value.
+            var selected = availablePeriods.FirstOrDefault(p => p.PayPeriodId == selectedPayPeriodId);
+            if (selected == null && availablePeriods.Count > 0)
+            {
+                selected = availablePeriods.FirstOrDefault(p => p.IsOpen) ?? availablePeriods.First();
+                selectedPayPeriodId = selected.PayPeriodId;
+            }
+            if (selected == null)
+            {
+                // No periods in TC_PayPeriods at all — fall back to today's
+                // biweekly projection so the page doesn't blank out.
+                selected = await PayPeriodService.GetCurrentPayPeriodAsync();
+            }
+            currentPayPeriod = selected;
+            periodStart = selected.StartDate;
+            periodEnd   = selected.EndDate;
 
             // Pull the full pay-period timesheet, then flatten its week-grouped
             // days into a single WeeklyTimesheet-shaped wrapper so the existing
@@ -930,20 +965,8 @@
             expandedDays.Add(date);
     }
 
-    private async Task PreviousPeriod()
-    {
-        periodOffset--;
-        await LoadTimesheet();
-    }
-
-    private async Task NextPeriod()
-    {
-        if (periodOffset < 0)
-        {
-            periodOffset++;
-            await LoadTimesheet();
-        }
-    }
+    // PreviousPeriod / NextPeriod removed 2026-04-24 in favor of the pay-period
+    // dropdown. OnPayPeriodChangedAsync handles all navigation now.
 
     // ── Feature B (migration 052): employee-set ShortDayReason / Note ────
     // Saves directly to TC_DailyTimecards via TimesheetService.SetShortDayReasonAsync.

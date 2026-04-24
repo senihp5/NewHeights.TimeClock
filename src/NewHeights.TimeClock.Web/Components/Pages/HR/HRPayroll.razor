@@ -14,6 +14,7 @@
 @using System.Text
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ITimesheetService TimesheetService
+@inject ISubstituteTimesheetService SubTimesheetService
 @inject IPayPeriodService PayPeriodService
 @inject IEmailService EmailService
 @inject IAuditService Audit
@@ -32,12 +33,23 @@
         </div>
         <div class="header-actions">
             <div class="period-nav">
-                <button class="btn-nav" @onclick="PreviousPeriod">Prev</button>
-                <div class="period-display">
-                    <span class="period-name">@currentPayPeriod?.PeriodName</span>
-                    <span class="period-dates">Pay: @currentPayPeriod?.PayDate.ToString("MMM d")</span>
-                </div>
-                <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0)">Next</button>
+                <label for="hr-pp-picker" class="pp-label">Pay Period:</label>
+                <select id="hr-pp-picker" class="btn-nav pp-select"
+                        value="@selectedPayPeriodId"
+                        @onchange="OnPayPeriodChangedAsync"
+                        disabled="@isLoading">
+                    @foreach (var p in availablePeriods)
+                    {
+                        <option value="@p.PayPeriodId">
+                            @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                            @(p.IsOpen ? " · Current" : "")
+                        </option>
+                    }
+                </select>
+                @if (currentPayPeriod != null)
+                {
+                    <span class="period-dates">Pay: @currentPayPeriod.PayDate.ToString("MMM d")</span>
+                }
             </div>
         </div>
     </header>
@@ -45,11 +57,19 @@
     <div class="status-overview">
         <div class="status-card">
             <span class="status-value">@payrollSummaries.Count</span>
-            <span class="status-label">Employees</span>
+            <span class="status-label">Hourly Employees</span>
         </div>
         <div class="status-card">
             <span class="status-value">@payrollSummaries.Sum(p => p.TotalHours).ToString("F2")</span>
-            <span class="status-label">Total Hours</span>
+            <span class="status-label">Hourly Hours</span>
+        </div>
+        <div class="status-card">
+            <span class="status-value">@subPayrollSummaries.Count</span>
+            <span class="status-label">Substitutes</span>
+        </div>
+        <div class="status-card">
+            <span class="status-value">@subPayrollSummaries.Sum(s => s.TotalPeriods)</span>
+            <span class="status-label">Sub Periods</span>
         </div>
     </div>
 
@@ -148,6 +168,15 @@
     private string currentUserEmail = "";
     private PayPeriodInfo? currentPayPeriod;
     private List<PayrollSummary> payrollSummaries = new();
+    // Substitutes roll up to their own payroll grain (per-period, not per-hour).
+    // Loaded at page level so the status bar can show hourly hours + sub periods
+    // side-by-side in a single header, matching HR's payroll workflow.
+    private List<SubstitutePayrollSummary> subPayrollSummaries = new();
+
+    // Pay-period dropdown (replaced prev/next buttons 2026-04-24).
+    private List<PayPeriodInfo> availablePeriods = new();
+    private int selectedPayPeriodId = 0;
+
     private string filterStatus = "all";
     private bool payPeriodExported = false;
     private DateTime? exportedDate;
@@ -176,6 +205,24 @@
         periodOffset = PeriodOffset;
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         currentUserEmail = authState.User.FindFirst("preferred_username")?.Value ?? "";
+
+        // Populate the pay-period dropdown. Seed the selection from the URL
+        // PeriodOffset (legacy /hr/payroll/{offset}) if provided, else default
+        // to today's open period.
+        availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
+        var initialAnchor = DateTime.Today.AddDays(periodOffset * 14);
+        var initialPeriod = await PayPeriodService.GetPayPeriodForDateAsync(initialAnchor);
+        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+            ? initialPeriod.PayPeriodId
+            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
+        await LoadPayrollData();
+    }
+
+    private async Task OnPayPeriodChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var id)) return;
+        selectedPayPeriodId = id;
         await LoadPayrollData();
     }
 
@@ -184,8 +231,12 @@
         isLoading = true;
         try
         {
-            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(DateTime.Today.AddDays(periodOffset * 15));
+            // Resolve the period from the dropdown selection. Fall back to
+            // today's period if the selection isn't in the list for any reason.
+            currentPayPeriod = availablePeriods.FirstOrDefault(p => p.PayPeriodId == selectedPayPeriodId)
+                ?? await PayPeriodService.GetCurrentPayPeriodAsync();
             payrollSummaries = await TimesheetService.GetPayrollSummariesAsync(currentPayPeriod.StartDate, currentPayPeriod.EndDate);
+            subPayrollSummaries = await SubTimesheetService.GetPayrollSummariesAsync(currentPayPeriod.StartDate, currentPayPeriod.EndDate);
 
             using var context = await DbFactory.CreateDbContextAsync();
             var pp = await context.TcPayPeriods.FirstOrDefaultAsync(p => p.StartDate == currentPayPeriod.StartDate && p.EndDate == currentPayPeriod.EndDate);
@@ -197,8 +248,8 @@
         finally { isLoading = false; StateHasChanged(); }
     }
 
-    private async Task PreviousPeriod() { periodOffset--; await LoadPayrollData(); }
-    private async Task NextPeriod() { if (periodOffset < 0) { periodOffset++; await LoadPayrollData(); } }
+    // PreviousPeriod / NextPeriod removed 2026-04-24 in favor of the pay-period
+    // dropdown. OnPayPeriodChangedAsync is the single entry point for nav.
     private void ViewDetails(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}");
 
     private async Task ApproveEmployee(int employeeId)

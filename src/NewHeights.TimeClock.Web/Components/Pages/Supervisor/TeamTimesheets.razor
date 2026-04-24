@@ -32,13 +32,19 @@
         </div>
         <div class="header-right">
             <div class="period-nav">
-                <button class="btn-nav" @onclick="PreviousPeriod" title="Previous Period">
-                    <span>←</span>
-                </button>
-                <span class="period-display">@currentPayPeriod?.PeriodName</span>
-                <button class="btn-nav" @onclick="NextPeriod" disabled="@(periodOffset >= 0)" title="Next Period">
-                    <span>→</span>
-                </button>
+                <label for="team-pp-picker" class="pp-label">Pay Period:</label>
+                <select id="team-pp-picker" class="btn-nav pp-select"
+                        value="@selectedPayPeriodId"
+                        @onchange="OnPayPeriodChangedAsync"
+                        disabled="@isLoading">
+                    @foreach (var p in availablePeriods)
+                    {
+                        <option value="@p.PayPeriodId">
+                            @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                            @(p.IsOpen ? " · Current" : "")
+                        </option>
+                    }
+                </select>
             </div>
             <div class="deadline-info">
                 @if (currentPayPeriod != null)
@@ -229,6 +235,11 @@
     private bool isAdmin = false;
     private UserContext? userCtx;
     private PayPeriodInfo? currentPayPeriod;
+
+    // Pay-period dropdown (replaced prev/next buttons 2026-04-24).
+    private List<PayPeriodInfo> availablePeriods = new();
+    private int selectedPayPeriodId = 0;
+
     private List<TeamTimesheetSummary> teamSummaries = new();
 
     // Admin-only filter state. Dropdowns populated from teamSummaries after
@@ -263,6 +274,21 @@
         userCtx = await UserContextSvc.GetCurrentUserAsync();
         currentUserEmail = userCtx.Email;
         await LoadCurrentSupervisor();
+
+        // Populate pay-period dropdown; default to current period.
+        availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
+        var initialPeriod = await PayPeriodService.GetCurrentPayPeriodAsync();
+        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+            ? initialPeriod.PayPeriodId
+            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
+        await LoadTeamData();
+    }
+
+    private async Task OnPayPeriodChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var id)) return;
+        selectedPayPeriodId = id;
         await LoadTeamData();
     }
 
@@ -297,14 +323,10 @@
         isLoading = true;
         try
         {
-            // Anchor date shifts by 14 days per period offset so the ← / → nav
-            // actually moves between pay periods. The page previously kept
-            // periodAnchorDate pinned to today and only mutated periodOffset,
-            // which silently no-oped navigation. Bi-weekly pay periods are the
-            // norm (Apr 13 – Apr 26, etc.), so 14 days back lands reliably in
-            // the previous period for GetPayPeriodForDateAsync to resolve.
-            periodAnchorDate = DateTime.Today.AddDays(14 * periodOffset);
-            currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
+            // Dropdown-driven. Fall back to today's period if the selection
+            // isn't in the dropdown list for any reason.
+            currentPayPeriod = availablePeriods.FirstOrDefault(p => p.PayPeriodId == selectedPayPeriodId)
+                            ?? await PayPeriodService.GetCurrentPayPeriodAsync();
 
             if (isAdmin)
             {
@@ -358,20 +380,8 @@
             .ToList();
     }
 
-    private async Task PreviousPeriod()
-    {
-        periodOffset--;
-        await LoadTeamData();
-    }
-
-    private async Task NextPeriod()
-    {
-        if (periodOffset < 0)
-        {
-            periodOffset++;
-            await LoadTeamData();
-        }
-    }
+    // PreviousPeriod / NextPeriod removed 2026-04-24 — OnPayPeriodChangedAsync
+    // handles dropdown-driven navigation now.
 
     private void ViewTimesheet(int employeeId)
     {

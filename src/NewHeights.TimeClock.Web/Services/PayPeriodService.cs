@@ -14,6 +14,15 @@ public interface IPayPeriodService
     Task<PayPeriodInfo> GetPayPeriodForDateAsync(DateTime date);
     Task<List<PayPeriodInfo>> GetPayPeriodsForYearAsync(string schoolYear);
     Task<List<PayPeriodInfo>> GetAllUpcomingAsync(int count = 6);
+
+    /// <summary>
+    /// Returns pay periods around "now" for dropdown population on timesheet
+    /// pages. Defaults to the last 18 periods plus 2 upcoming, ordered newest
+    /// first so the current period is near the top of the list. Filters to
+    /// actual TC_PayPeriods rows — no biweekly projections — because the
+    /// dropdown needs real period IDs to navigate to.
+    /// </summary>
+    Task<List<PayPeriodInfo>> GetRecentPayPeriodsAsync(int countBack = 18, int countForward = 2);
 }
 
 public class PayPeriodService : IPayPeriodService
@@ -85,6 +94,35 @@ public class PayPeriodService : IPayPeriodService
             .Take(count)
             .ToListAsync();
         return periods.Select(MapToInfo).ToList();
+    }
+
+    public async Task<List<PayPeriodInfo>> GetRecentPayPeriodsAsync(int countBack = 18, int countForward = 2)
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        using var context = await _dbFactory.CreateDbContextAsync();
+
+        // Periods whose END is on/after today are "current or future". Take the
+        // first countForward of those, ordered by start ascending.
+        var forward = await context.TcPayPeriods
+            .AsNoTracking()
+            .Where(p => p.EndDate >= today)
+            .OrderBy(p => p.StartDate)
+            .Take(countForward)
+            .ToListAsync();
+
+        // Periods whose END is before today are historical. Take the most
+        // recent countBack ordered descending (newest first).
+        var back = await context.TcPayPeriods
+            .AsNoTracking()
+            .Where(p => p.EndDate < today)
+            .OrderByDescending(p => p.StartDate)
+            .Take(countBack)
+            .ToListAsync();
+
+        // Stitch forward (ascending) + back (descending) then re-order by start
+        // descending so the most recent periods are at the top of the dropdown.
+        var combined = forward.Concat(back).OrderByDescending(p => p.StartDate).ToList();
+        return combined.Select(MapToInfo).ToList();
     }
 
     private static PayPeriodInfo MapToInfo(TcPayPeriod p) => new()
