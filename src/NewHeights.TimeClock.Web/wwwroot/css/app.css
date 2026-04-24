@@ -1390,12 +1390,30 @@ main {
 .live-stat.total .live-stat-label { color: #cbd5e1; }
 .live-stat.activity .live-stat-label { color: #6b7280; }
 
-.live-body { display: grid; grid-template-columns: 1fr 240px; gap: 1rem; }
+.live-body { display: grid; grid-template-columns: 1fr 240px; gap: 1rem; align-items: stretch; }
 @media (max-width: 700px) { .live-body { grid-template-columns: 1fr; } }
 
 .live-sub-title { margin: 0 0 0.5rem; font-size: 0.85rem; font-weight: 700; color: #1e3a5f; text-transform: uppercase; letter-spacing: 0.05em; }
 
-.live-feed { max-height: 240px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; }
+/* Activity column stretches to match Quick Actions height via the grid's
+   default align-items: stretch, then the inner .live-feed flex-grows to
+   consume everything below the sub-title. `min-height: 0` is required or
+   the scrollable child won't respect the flex container's height bound. */
+.live-activity { display: flex; flex-direction: column; min-height: 0; }
+.live-feed {
+    flex: 1 1 auto;
+    min-height: 240px; /* floor so a near-empty feed doesn't collapse */
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafafa;
+}
+@media (max-width: 700px) {
+    /* On single-column mobile, the feed is no longer next to Quick Actions,
+       so cap it back to a reasonable height instead of letting it run to
+       the page bottom. */
+    .live-feed { max-height: 320px; }
+}
 .feed-row { display: grid; grid-template-columns: 1.6rem 1fr auto auto; gap: 0.4rem; align-items: center; padding: 0.35rem 0.6rem; border-bottom: 1px solid #f3f4f6; font-size: 0.82rem; }
 .feed-row:last-child { border-bottom: none; }
 .feed-row.campus-in { border-left: 3px solid #198754; }
