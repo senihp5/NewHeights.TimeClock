@@ -117,13 +117,14 @@
                         <th>OT</th>
                         <th>Total</th>
                         <th>Status</th>
+                        <th>Exceptions</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     @foreach (var emp in FilteredSummaries)
                     {
-                        <tr>
+                        <tr class="@(emp.ExceptionCount > 0 && !emp.HRApproved ? "has-exception" : emp.HRApproved ? "approved" : emp.SupervisorApproved ? "ready" : "pending")">
                             <td>@emp.EmployeeName<br/><small>@emp.IdNumber</small></td>
                             <td>@emp.SupervisorName</td>
                             <td>@emp.RegularHours.ToString("F2")</td>
@@ -133,6 +134,21 @@
                                 @(emp.EmployeeApproved ? "E✓" : "E⏳")
                                 @(emp.SupervisorApproved ? "S✓" : "S⏳")
                                 @(emp.HRApproved ? "HR✓" : "HR⏳")
+                            </td>
+                            <td class="exc-cell">
+                                @if (emp.ExceptionCount > 0)
+                                {
+                                    <button type="button"
+                                            class="exc-link"
+                                            title="View @emp.ExceptionCount exception(s)"
+                                            @onclick="() => ViewExceptions(emp.EmployeeId)">
+                                        ⚠ @emp.ExceptionCount
+                                    </button>
+                                }
+                                else
+                                {
+                                    <span class="exc-none" aria-hidden="true">—</span>
+                                }
                             </td>
                             <td>
                                 <button @onclick="() => ViewDetails(emp.EmployeeId)">View</button>
@@ -251,6 +267,11 @@
     // PreviousPeriod / NextPeriod removed 2026-04-24 in favor of the pay-period
     // dropdown. OnPayPeriodChangedAsync is the single entry point for nav.
     private void ViewDetails(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}");
+
+    // Deep-link to the Exceptions section on the single-employee review page.
+    // Matches the id="exceptions" anchor on SupervisorTimesheetView so the
+    // browser scrolls straight to the exceptions list after nav.
+    private void ViewExceptions(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}#exceptions");
 
     private async Task ApproveEmployee(int employeeId)
     {

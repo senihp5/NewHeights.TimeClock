@@ -387,7 +387,7 @@
 
         @if (payPeriodTimesheet.ExceptionCount > 0)
         {
-            <div class="exceptions-section">
+            <div id="exceptions" class="exceptions-section">
                 <h3>⚠️ Exceptions Requiring Review</h3>
                 <div class="exception-list">
                     @foreach (var week in payPeriodTimesheet.Weeks)
@@ -412,7 +412,22 @@
                 {
                     <div class="approval-warning">
                         <p>⚠️ This employee has not yet submitted their time sheet for this period.</p>
-                        <button class="btn-remind" @onclick="SendReminder">📧 Send Reminder Email</button>
+                        <button class="btn-remind" @onclick="SendReminder" disabled="@isSendingReminder">
+                            @if (isSendingReminder)
+                            {
+                                <span>Sending...</span>
+                            }
+                            else
+                            {
+                                <span>📧 Send Reminder Email</span>
+                            }
+                        </button>
+                        @if (!string.IsNullOrEmpty(reminderStatusMessage))
+                        {
+                            <div class="reminder-status @(reminderStatusIsError ? "error" : "success")" role="status" aria-live="polite">
+                                @reminderStatusMessage
+                            </div>
+                        }
                     </div>
                 }
                 else if (supervisorApproved)
@@ -624,6 +639,13 @@
     private bool addPunchInCorrection = false;
     private bool flagAsException = false;
 
+    // Reminder email feedback — surfaces the result of SendTimesheetReminderAsync
+    // so supervisors see a confirmation / error message instead of the button
+    // silently doing nothing. Auto-clears after a few seconds on success.
+    private bool isSendingReminder = false;
+    private string reminderStatusMessage = "";
+    private bool reminderStatusIsError = false;
+
     protected override async Task OnInitializedAsync()
     {
         periodOffset = PeriodOffset;
@@ -785,24 +807,170 @@
 
     private async Task SendReminder()
     {
-        if (string.IsNullOrEmpty(employeeEmail) || currentPayPeriod == null) return;
-        
+        if (isSendingReminder) return;
+
+        // Guard against missing data FIRST so the supervisor sees why the
+        // button didn't do anything instead of guessing. Previous behavior
+        // returned silently when employeeEmail was empty.
+        if (string.IsNullOrEmpty(employeeEmail))
+        {
+            reminderStatusIsError = true;
+            reminderStatusMessage = $"No email address on file for {employeeName}. Reminder not sent.";
+            StateHasChanged();
+            return;
+        }
+        if (currentPayPeriod == null)
+        {
+            reminderStatusIsError = true;
+            reminderStatusMessage = "Pay period not loaded yet. Try again in a moment.";
+            StateHasChanged();
+            return;
+        }
+
+        isSendingReminder = true;
+        reminderStatusMessage = "";
+        reminderStatusIsError = false;
+        StateHasChanged();
+
+        bool sendSuccess = false;
+        string? errorDetail = null;
+        var sentAt = DateTime.Now;
+
         try
         {
-            var success = await EmailService.SendTimesheetReminderAsync(
-                employeeEmail,
-                employeeName.Split(' ').FirstOrDefault() ?? employeeName,
-                currentUserName,
-                currentPayPeriod.EmployeeDeadline);
-                
-            if (success)
+            // ── 1. Attempt the SMTP send. ──────────────────────────────
+            try
             {
+                sendSuccess = await EmailService.SendTimesheetReminderAsync(
+                    employeeEmail,
+                    employeeName.Split(' ').FirstOrDefault() ?? employeeName,
+                    currentUserName,
+                    currentPayPeriod.EmployeeDeadline);
+
+                if (!sendSuccess)
+                {
+                    errorDetail = "SMTP send returned false. Check EmailService configuration or server logs.";
+                }
+            }
+            catch (Exception ex)
+            {
+                errorDetail = ex.Message;
+                Logger.LogError(ex, "Error sending reminder to employee {EmployeeId}", EmployeeId);
+            }
+
+            // ── 2. Persist the outcome so HR/compliance can audit it. ──
+            // Two writes: (a) upsert a TcTimesheetReminderLog row tagged
+            // ReminderType=MANUAL_SUPERVISOR, which keeps Patrick's dedup
+            // log queryable for manual sends alongside automated ones;
+            // (b) append an immutable audit row per click, so repeated
+            // clicks leave a complete trail even though the reminder-log
+            // row only stores the *latest* manual send per (pp,emp).
+            // Wrapped in its own try/catch so a log failure can't hide
+            // the email outcome from the supervisor.
+            try
+            {
+                using var ctx = await DbFactory.CreateDbContextAsync();
+                var deliveryStatus = sendSuccess ? "SENT" : "FAILED";
+
+                var existing = await ctx.TcTimesheetReminderLogs
+                    .FirstOrDefaultAsync(r =>
+                        r.PayPeriodId == currentPayPeriod.PayPeriodId &&
+                        r.EmployeeId == EmployeeId &&
+                        r.ReminderType == "MANUAL_SUPERVISOR");
+
+                if (existing == null)
+                {
+                    ctx.TcTimesheetReminderLogs.Add(new TcTimesheetReminderLog
+                    {
+                        PayPeriodId    = currentPayPeriod.PayPeriodId,
+                        EmployeeId     = EmployeeId,
+                        ReminderType   = "MANUAL_SUPERVISOR",
+                        SentAt         = sentAt,
+                        DeliveryStatus = deliveryStatus,
+                        ErrorMessage   = errorDetail
+                    });
+                }
+                else
+                {
+                    existing.SentAt         = sentAt;
+                    existing.DeliveryStatus = deliveryStatus;
+                    existing.ErrorMessage   = errorDetail;
+                }
+
+                await ctx.SaveChangesAsync();
+
+                await Audit.LogActionAsync(
+                    actionCode: sendSuccess
+                        ? AuditActions.Timesheet.ReminderEmailSent
+                        : AuditActions.Timesheet.ReminderEmailFailed,
+                    entityType: AuditEntityTypes.Employee,
+                    entityId: EmployeeId.ToString(),
+                    newValues: new
+                    {
+                        EmployeeId,
+                        EmployeeName     = employeeName,
+                        EmployeeEmail    = employeeEmail,
+                        PayPeriodId      = currentPayPeriod.PayPeriodId,
+                        PeriodName       = currentPayPeriod.PeriodName,
+                        EmployeeDeadline = currentPayPeriod.EmployeeDeadline.ToString("yyyy-MM-dd"),
+                        SentBy           = currentUserEmail,
+                        SentAt           = sentAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                        DeliveryStatus   = deliveryStatus,
+                        ErrorMessage     = errorDetail
+                    },
+                    deltaSummary: sendSuccess
+                        ? $"Manual timesheet reminder emailed to {employeeName} <{employeeEmail}> for {currentPayPeriod.PeriodName} by {currentUserEmail}"
+                        : $"Manual timesheet reminder to {employeeName} <{employeeEmail}> for {currentPayPeriod.PeriodName} by {currentUserEmail} FAILED: {errorDetail}",
+                    source: AuditSource.AdminUi,
+                    employeeId: EmployeeId);
+            }
+            catch (Exception logEx)
+            {
+                Logger.LogError(logEx,
+                    "Reminder persisted-log write failed for employee {EmployeeId} (email outcome was {Outcome}). " +
+                    "Audit/dedup row may be missing.",
+                    EmployeeId, sendSuccess ? "success" : "failure");
+            }
+
+            // ── 3. Update the UI feedback. ─────────────────────────────
+            if (sendSuccess)
+            {
+                reminderStatusIsError = false;
+                reminderStatusMessage = $"✓ Reminder sent to {employeeEmail}";
                 Logger.LogInformation("Reminder sent to {Employee} ({Email})", employeeName, employeeEmail);
             }
+            else
+            {
+                reminderStatusIsError = true;
+                reminderStatusMessage = $"Reminder to {employeeEmail} was not sent. {errorDetail}".TrimEnd();
+                Logger.LogWarning(
+                    "Reminder send failed for {Employee} ({Email}): {Error}",
+                    employeeName, employeeEmail, errorDetail);
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            Logger.LogError(ex, "Error sending reminder to employee {EmployeeId}", EmployeeId);
+            isSendingReminder = false;
+            StateHasChanged();
+        }
+
+        // Auto-clear success toasts after 6s so the supervisor doesn't see
+        // stale feedback next time they land on this page. Errors persist
+        // until the supervisor retries — they're intentionally stickier.
+        if (!reminderStatusIsError && !string.IsNullOrEmpty(reminderStatusMessage))
+        {
+            var stamp = reminderStatusMessage;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(6000);
+                // Only clear if the message we wrote is still the visible one
+                // (prevents clobbering a newer error the supervisor may now be reading).
+                if (reminderStatusMessage == stamp)
+                {
+                    reminderStatusMessage = "";
+                    await InvokeAsync(StateHasChanged);
+                }
+            });
         }
     }
 

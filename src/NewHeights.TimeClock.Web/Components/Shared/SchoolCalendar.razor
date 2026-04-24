@@ -73,6 +73,17 @@
                         @marker.Label
                     </span>
                 }
+                @* Range-selection badge: "Start" on the first click, "End" on the
+                   second. Rendered last so it sits on top; .cal-cell is
+                   position: relative so this anchors to the bottom-right. *@
+                @if (isRangeStart)
+                {
+                    <span class="cal-range-badge start">Start</span>
+                }
+                else if (isRangeEnd)
+                {
+                    <span class="cal-range-badge end">End</span>
+                }
             </button>
         }
     </div>
@@ -109,15 +120,70 @@
         color: #0f172a;
         overflow: hidden;
         min-height: 60px;
+        position: relative; /* anchor for .cal-range-badge */
     }
     .cal-cell:hover { border-color: #1e3a5f; background: #f8fafc; }
     .cal-cell.other-month { background: #fafafa; color: #94a3b8; }
     .cal-cell.today { border: 2px solid #f5b81c; background: #fffbeb; }
     .cal-cell.holiday { background: #f1f5f9; color: #94a3b8; cursor: default; border-style: dashed; }
     .cal-cell.holiday:hover { border-color: #cbd5e1; background: #f1f5f9; }
-    .cal-cell.selected, .cal-cell.range-start, .cal-cell.range-end { background: #1e3a5f; color: white; border-color: #152840; font-weight: 600; }
-    .cal-cell.selected .cal-num, .cal-cell.range-start .cal-num, .cal-cell.range-end .cal-num { color: white; }
+
+    /* Single-date mode (non-range) keeps the original navy highlight. */
+    .cal-cell.selected { background: #1e3a5f; color: white; border-color: #152840; font-weight: 600; }
+    .cal-cell.selected .cal-num { color: white; }
+
+    /* Range-start — green fill + "Start" badge. Distinct from the range-end
+       color so supervisors/teachers can tell the two endpoints apart at a
+       glance even without reading the badge. */
+    .cal-cell.range-start {
+        background: #059669;
+        color: white;
+        border-color: #047857;
+        font-weight: 600;
+    }
+    .cal-cell.range-start .cal-num { color: white; }
+
+    /* Range-end — orange fill + "End" badge. */
+    .cal-cell.range-end {
+        background: #ea580c;
+        color: white;
+        border-color: #c2410c;
+        font-weight: 600;
+    }
+    .cal-cell.range-end .cal-num { color: white; }
+
+    /* If today is also the start or end, keep the amber today-border on top
+       of the green / orange fill so "this is today" stays visible. */
+    .cal-cell.today.range-start,
+    .cal-cell.today.range-end {
+        border-color: #f5b81c;
+        border-width: 2px;
+    }
+
+    /* Range-start and range-end when both fall on the same cell (single-day
+       range). Fall back to green+badge so it doesn't look half-broken. */
+    .cal-cell.range-start.range-end {
+        background: linear-gradient(135deg, #059669 0 50%, #ea580c 50% 100%);
+    }
+
     .cal-cell.in-range { background: #dbeafe; border-color: #93c5fd; }
+
+    /* Pill in the bottom-right corner labeling which endpoint the cell is. */
+    .cal-range-badge {
+        position: absolute;
+        bottom: 3px;
+        right: 3px;
+        font-size: .55rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.28);
+        color: white;
+        line-height: 1;
+        pointer-events: none;
+    }
     .cal-num { font-size: .88rem; font-weight: 600; line-height: 1; }
     .cal-holiday-label { font-size: .68rem; line-height: 1.1; color: #64748b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; font-style: italic; }
     .cal-marker { display: inline-block; padding: .05rem .4rem; border-radius: 8px; font-size: .7rem; font-weight: 600; color: white; line-height: 1.25; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

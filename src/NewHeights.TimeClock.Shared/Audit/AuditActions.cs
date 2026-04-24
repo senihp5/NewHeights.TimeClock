@@ -42,6 +42,12 @@ public static class AuditActions
         public const string SupervisorRejected      = "TIMESHEET_SUPERVISOR_REJECTED";
         public const string ExceptionAcknowledged   = "TIMESHEET_EXCEPTION_ACK";
         public const string ExceptionFlagged        = "TIMESHEET_EXCEPTION_FLAGGED";
+        // Manual reminder-email sends from the supervisor drill-down page.
+        // Automated 48h/24h/deadline reminders are still tracked only in
+        // TcTimesheetReminderLog — these codes capture the *human* click,
+        // which is what HR/compliance reviewers typically want to see.
+        public const string ReminderEmailSent       = "TIMESHEET_REMINDER_SENT";
+        public const string ReminderEmailFailed     = "TIMESHEET_REMINDER_FAILED";
     }
 
     // F. HR Payroll

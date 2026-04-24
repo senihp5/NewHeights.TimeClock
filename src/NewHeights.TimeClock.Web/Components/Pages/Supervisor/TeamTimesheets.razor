@@ -123,104 +123,105 @@
     }
     else
     {
-        <div class="team-grid">
-            @foreach (var member in FilteredSummaries.OrderBy(m => m.SupervisorApproved).ThenBy(m => m.EmployeeName))
-            {
-                <div class="team-card @GetCardClass(member)">
-                    <div class="card-header">
-                        <div class="member-info">
-                            <span class="member-name">@member.EmployeeName</span>
-                            <span class="member-id">ID: @member.IdNumber</span>
+        <div class="payroll-table-container">
+            <table class="payroll-table">
+                <thead>
+                    <tr>
+                        <th>Employee</th>
+                        @if (isAdmin)
+                        {
+                            <th>Campus</th>
+                            <th>Supervisor</th>
+                        }
+                        <th class="num">Regular</th>
+                        <th class="num">OT</th>
+                        <th class="num">Total</th>
+                        <th class="num">Days</th>
+                        <th class="col-emp-status">Emp. Status</th>
+                        <th class="col-sup-status">Sup. Status</th>
+                        <th class="col-exc">Exceptions</th>
+                        <th class="col-flags">Flags</th>
+                        <th class="actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var member in FilteredSummaries.OrderBy(m => m.SupervisorApproved).ThenBy(m => m.EmployeeName))
+                    {
+                        <tr class="@GetRowClass(member)">
+                            <td class="emp-cell">
+                                <div class="emp-name">@member.EmployeeName</div>
+                                <div class="emp-id">ID: @member.IdNumber</div>
+                            </td>
                             @if (isAdmin)
                             {
-                                <span class="member-context">
-                                    @if (!string.IsNullOrEmpty(member.CampusName))
-                                    {
-                                        <span class="campus-chip">@member.CampusName</span>
-                                    }
-                                    @if (!string.IsNullOrEmpty(member.SupervisorName))
-                                    {
-                                        <span class="supervisor-chip" title="Supervisor">@member.SupervisorName</span>
-                                    }
-                                </span>
+                                <td class="campus-cell">@(member.CampusName ?? "—")</td>
+                                <td class="sup-cell">@(member.SupervisorName ?? "—")</td>
                             }
-                        </div>
-                        @if (member.SupervisorApproved)
-                        {
-                            <span class="approved-badge" title="Approved">✓</span>
-                        }
-                    </div>
-                    
-                    <div class="card-body">
-                        <div class="hours-section">
-                            <div class="hours-main">
-                                <span class="hours-value">@member.TotalHours.ToString("F2")</span>
-                                <span class="hours-label">hours</span>
-                            </div>
-                            @if (member.OvertimeHours > 0)
-                            {
-                                <span class="ot-badge" title="Overtime">+@member.OvertimeHours.ToString("F2") OT</span>
-                            }
-                        </div>
-                        
-                        <div class="days-info">
-                            <span>@member.DaysWorked days worked</span>
-                        </div>
-
-                        <div class="approval-status">
-                            <div class="approval-header">Approvals</div>
-                            <div class="approval-row">
-                                <span class="approval-label">Employee:</span>
-                                <span class="approval-value @(member.EmployeeApproved ? "done" : "pending")">
-                                    @(member.EmployeeApproved ? "Submitted ✓" : "Pending")
+                            <td class="num">@member.RegularHours.ToString("F2")</td>
+                            <td class="num @(member.OvertimeHours > 0 ? "ot" : "")">
+                                @member.OvertimeHours.ToString("F2")
+                            </td>
+                            <td class="num total"><strong>@member.TotalHours.ToString("F2")</strong></td>
+                            <td class="num">@member.DaysWorked</td>
+                            <td>
+                                <span class="chip @(member.EmployeeApproved ? "done" : "pending")">
+                                    @(member.EmployeeApproved ? "Submitted" : "Pending")
                                 </span>
-                            </div>
-                            <div class="approval-row">
-                                <span class="approval-label">Supervisor:</span>
-                                <span class="approval-value @(member.SupervisorApproved ? "done" : (member.EmployeeApproved ? "ready" : "pending"))">
-                                    @(member.SupervisorApproved ? "Approved ✓" : (member.EmployeeApproved ? "Ready" : "Waiting"))
+                            </td>
+                            <td>
+                                <span class="chip @(member.SupervisorApproved ? "done" : (member.EmployeeApproved ? "ready" : "pending"))">
+                                    @(member.SupervisorApproved ? "Approved" : (member.EmployeeApproved ? "Ready" : "Waiting"))
                                 </span>
-                            </div>
-                        </div>
-                        @if (member.ExceptionCount > 0)
-                        {
-                            <div class="exception-status">
-                                <span class="exception-label">Exceptions:</span>
-                                <span class="exception-count">@member.ExceptionCount day(s)</span>
-                            </div>
-                        }
-
-                        @if (member.ShortDayReasons.Count > 0)
-                        {
-                            <div class="short-day-reasons">
-                                <span class="sdr-summary-label">Reasons:</span>
-                                @foreach (var r in member.ShortDayReasons)
+                            </td>
+                            <td class="exc-cell">
+                                @if (member.ExceptionCount > 0)
                                 {
-                                    <span class="sdr-chip">@FormatReason(r)</span>
+                                    <button type="button"
+                                            class="exc-link"
+                                            title="View @member.ExceptionCount exception(s)"
+                                            @onclick="() => ViewExceptions(member.EmployeeId)">
+                                        ⚠ @member.ExceptionCount
+                                    </button>
                                 }
-                            </div>
-                        }
-                    </div>
-                    
-                    <div class="card-actions">
-                        <button class="btn-action btn-view" @onclick="() => ViewTimesheet(member.EmployeeId)">
-                            View Details
-                        </button>
-                        @if (member.EmployeeApproved && !member.SupervisorApproved)
-                        {
-                            <button class="btn-action btn-approve" @onclick="() => ApproveTimesheet(member.EmployeeId)">
-                                Approve
-                            </button>
-                        }
-                        else if (!member.EmployeeApproved)
-                        {
-                            <button class="btn-action btn-remind" @onclick="() => SendReminder(member.EmployeeId)">
-                                Send Reminder
-                            </button>
-                        }
-                    </div>
-                </div>
-            }
+                                else
+                                {
+                                    <span class="exc-none" aria-hidden="true">—</span>
+                                }
+                            </td>
+                            <td class="flags-cell">
+                                @if (member.ShortDayReasons.Count > 0)
+                                {
+                                    @foreach (var r in member.ShortDayReasons)
+                                    {
+                                        <span class="chip sdr">@FormatReason(r)</span>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="exc-none" aria-hidden="true">—</span>
+                                }
+                            </td>
+                            <td class="actions-cell">
+                                <button class="btn-action btn-view" @onclick="() => ViewTimesheet(member.EmployeeId)">
+                                    View
+                                </button>
+                                @if (member.EmployeeApproved && !member.SupervisorApproved)
+                                {
+                                    <button class="btn-action btn-approve" @onclick="() => ApproveTimesheet(member.EmployeeId)">
+                                        Approve
+                                    </button>
+                                }
+                                else if (!member.EmployeeApproved)
+                                {
+                                    <button class="btn-action btn-remind" @onclick="() => SendReminder(member.EmployeeId)">
+                                        Remind
+                                    </button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
         </div>
     }
 </div>
@@ -388,6 +389,14 @@
         Navigation.NavigateTo($"/supervisor/timesheet/{employeeId}/{periodOffset}");
     }
 
+    // Deep-link to the Exceptions section on the single-employee review page.
+    // Matches the anchor id added to SupervisorTimesheetView.razor so the
+    // browser scrolls straight to the exceptions list after nav.
+    private void ViewExceptions(int employeeId)
+    {
+        Navigation.NavigateTo($"/supervisor/timesheet/{employeeId}/{periodOffset}#exceptions");
+    }
+
     private async Task ApproveTimesheet(int employeeId)
     {
         if (currentPayPeriod == null) return;
@@ -452,12 +461,16 @@
             return new DateTime(next.Year, next.Month, 1);
         }
     }
-    private static string GetCardClass(TeamTimesheetSummary member)
+    // Row-class mapper — returns the payroll-table class names so this table
+    // inherits the same approved / ready / has-exception / pending row-tint
+    // palette as /hr/payroll. Kept the exception tint as a higher-priority
+    // override on unapproved rows so a flagged day isn't hidden by "ready".
+    private static string GetRowClass(TeamTimesheetSummary member)
     {
-        if (member.SupervisorApproved) return "status-approved";
-        if (member.ExceptionCount > 0) return "status-exception";
-        if (member.EmployeeApproved) return "status-ready";
-        return "status-pending";
+        if (member.SupervisorApproved) return "approved";
+        if (member.ExceptionCount > 0) return "has-exception";
+        if (member.EmployeeApproved) return "ready";
+        return "pending";
     }
 
     // Migration 052: display helper mirroring MyTimesheet's version.
