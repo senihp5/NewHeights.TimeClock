@@ -28,6 +28,22 @@ public class TcDailyTimecard
     public string? ApprovedBy { get; set; }
     public DateTime? ApprovedDate { get; set; }
     public string? ExceptionNotes { get; set; }
+
+    /// <summary>
+    /// Migration 052: reason code when TotalHours < ScheduledHours, or when the
+    /// day is documented non-work (Weather Closure, PTO, Sick, etc.). Values:
+    /// WeatherClosure / PTO / Sick / Personal / Holiday / ProfessionalDev / Other.
+    /// NULL means "normal full day, no annotation needed". Employee sets via
+    /// MyTimesheet UI; CSV import can also set from the paper-import preview.
+    /// </summary>
+    public string? ShortDayReason { get; set; }
+
+    /// <summary>
+    /// Migration 052: free-text context that accompanies ShortDayReason.
+    /// Example: "Left early for doctor appointment" with ShortDayReason = Sick.
+    /// </summary>
+    public string? ShortDayNote { get; set; }
+
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime ModifiedDate { get; set; } = DateTime.Now;
 

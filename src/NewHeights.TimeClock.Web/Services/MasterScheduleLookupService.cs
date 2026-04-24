@@ -152,7 +152,7 @@ public class MasterScheduleLookupService : IMasterScheduleLookupService
                 MasterScheduleId = row.ScheduleId,
                 TeacherName      = teacherName,
                 CourseName       = courseCell,
-                ContentArea      = row.ContentArea,
+                ContentArea      = CourseTagMapper.MapCourseToContentArea(courseCell),
                 Room             = row.Room
             });
         }
@@ -189,7 +189,7 @@ public class MasterScheduleLookupService : IMasterScheduleLookupService
                 .FirstOrDefaultAsync(ct);
 
             if (!string.IsNullOrWhiteSpace(term))
-                return term;
+                return NormalizeTermName(term);
         }
         catch (Exception ex)
         {
@@ -200,11 +200,34 @@ public class MasterScheduleLookupService : IMasterScheduleLookupService
         // Fallback: most recently imported active term for the campus.
         // Triggers when the primary source is unavailable OR when the date
         // falls outside all configured term windows (e.g., a summer break).
-        return await db.TcMasterSchedules
+        var fallback = await db.TcMasterSchedules
             .Where(s => s.IsActive && s.CampusId == campusId)
             .OrderByDescending(s => s.ImportedDate)
             .Select(s => s.TermName)
             .FirstOrDefaultAsync(ct);
+        return fallback is null ? null : NormalizeTermName(fallback);
+    }
+
+    // Translate between the two term-name conventions on the same schema:
+    //   CaseManagementDB.dbo.Advising_TermConfig.TermName   — short form: T1, T2, T3, T4
+    //   TC_MasterSchedule.TermName                          — long form:  TERM1, TERM2, TERM3, TERM4
+    // The ScheduleImport UI emits the long form (so do all code paths that write
+    // to TcMasterSchedule). Any value coming FROM Advising_TermConfig must be
+    // normalized before being used in an equality join on TC_MasterSchedule.TermName,
+    // otherwise the WHERE clause matches zero rows and the period picker's teacher
+    // dropdown appears empty — the exact symptom that caused this fix on 2026-04-22.
+    // Accepts long form unchanged so the function is idempotent.
+    private static string NormalizeTermName(string raw)
+    {
+        var trimmed = raw.Trim().ToUpperInvariant();
+        return trimmed switch
+        {
+            "T1" => "TERM1",
+            "T2" => "TERM2",
+            "T3" => "TERM3",
+            "T4" => "TERM4",
+            _    => trimmed
+        };
     }
 
     private static bool IsMondayOrWednesday(DayOfWeek d) =>

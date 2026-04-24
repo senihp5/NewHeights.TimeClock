@@ -13,7 +13,22 @@ public interface ITimesheetService
     Task<PayPeriodTimesheet> GetPayPeriodTimesheetAsync(int employeeId, DateOnly periodStart, DateOnly periodEnd);
     Task<bool> SubmitTimesheetAsync(int employeeId, DateOnly weekEndDate, string submittedBy);
     Task<bool> ApproveTimesheetAsync(int employeeId, DateOnly periodStart, DateOnly periodEnd, string approvedBy, string approverRole);
+    /// <summary>
+    /// Set the ShortDayReason + ShortDayNote on one daily timecard (migration 052).
+    /// Creates the TC_DailyTimecards row if it doesn't exist yet so employees can
+    /// annotate a pure non-work day before any punches land. Empty/null reason
+    /// clears both fields.
+    /// </summary>
+    Task SetShortDayReasonAsync(int employeeId, DateOnly workDate, string? reason, string? note, string modifiedBy);
     Task<List<TeamTimesheetSummary>> GetTeamTimesheetsAsync(int supervisorEmployeeId, DateOnly periodStart, DateOnly periodEnd);
+    /// <summary>
+    /// Admin-scope version of <see cref="GetTeamTimesheetsAsync(int, DateOnly, DateOnly)"/>.
+    /// Returns every active hourly / part-time / substitute employee across ALL
+    /// supervisors and campuses, with supervisor + campus context populated on
+    /// each row so the caller can render/filter. Use when the caller has the
+    /// TimeClock.Admin role; regular supervisors must call the scoped version.
+    /// </summary>
+    Task<List<TeamTimesheetSummary>> GetAllTeamTimesheetsAsync(DateOnly periodStart, DateOnly periodEnd);
     Task<List<PayrollSummary>> GetPayrollSummariesAsync(DateOnly periodStart, DateOnly periodEnd);
     Task RecalculateDailyTimecardAsync(int employeeId, DateOnly workDate);
     Task RecalculateWeeklyOvertimeAsync(int employeeId, DateOnly weekStartDate);
@@ -100,7 +115,9 @@ public class TimesheetService : ITimesheetService
                 OvertimeHours = dayCard?.OvertimeHours ?? 0,
                 HasException = dayCard?.HasException ?? false,
                 ExceptionNotes = dayCard?.ExceptionNotes,
-                ApprovalStatus = dayCard?.ApprovalStatus ?? ApprovalStatus.Pending
+                ApprovalStatus = dayCard?.ApprovalStatus ?? ApprovalStatus.Pending,
+                ShortDayReason = dayCard?.ShortDayReason,
+                ShortDayNote   = dayCard?.ShortDayNote
             };
 
             timesheet.Days.Add(entry);
@@ -341,9 +358,11 @@ public class TimesheetService : ITimesheetService
         // Query without the enum filter first to see raw data
         var allEmployees = await context.TcEmployees
             .Include(e => e.Staff)
+            .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
+            .Include(e => e.HomeCampus)
             .Where(e => e.SupervisorEmployeeId == supervisorEmployeeId && e.IsActive)
             .ToListAsync();
-        
+
         _logger.LogInformation("Found {Count} employees with supervisor {Id}", allEmployees.Count, supervisorEmployeeId);
         foreach (var emp in allEmployees)
         {
@@ -388,11 +407,94 @@ public class TimesheetService : ITimesheetService
                                    timesheet.EmployeeApprovalStatus == ApprovalStatus.Locked,
                 SupervisorApproved = timesheet.SupervisorApprovalStatus == ApprovalStatus.Approved ||
                                      timesheet.SupervisorApprovalStatus == ApprovalStatus.Locked,
-                HasExceptions = timesheet.ExceptionCount > 0
+                HasExceptions = timesheet.ExceptionCount > 0,
+                ShortDayReasons = timesheet.Weeks
+                    .SelectMany(w => w.Days)
+                    .Where(d => !string.IsNullOrEmpty(d.ShortDayReason))
+                    .Select(d => d.ShortDayReason!)
+                    .Distinct()
+                    .ToList(),
+                SupervisorEmployeeId = member.SupervisorEmployeeId,
+                SupervisorName = member.Supervisor?.Staff?.FullName
+                              ?? member.Supervisor?.DisplayName
+                              ?? member.Supervisor?.Email,
+                CampusId = member.HomeCampusId,
+                CampusName = member.HomeCampus?.CampusName
             });
         }
 
         return summaries.OrderBy(s => s.EmployeeName).ToList();
+    }
+
+    public async Task<List<TeamTimesheetSummary>> GetAllTeamTimesheetsAsync(DateOnly periodStart, DateOnly periodEnd)
+    {
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        _logger.LogInformation(
+            "GetAllTeamTimesheets (admin scope): period {Start} to {End}",
+            periodStart, periodEnd);
+
+        // Every active Hourly / Part-Time / Substitute across all supervisors.
+        // Eager-load supervisor + campus so the admin UI can group/filter.
+        var teamMembers = await context.TcEmployees
+            .Include(e => e.Staff)
+            .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
+            .Include(e => e.HomeCampus)
+            .Where(e => e.IsActive
+                     && (e.EmployeeType == EmployeeType.HourlyStaff
+                      || e.EmployeeType == EmployeeType.HourlyPartTime
+                      || e.EmployeeType == EmployeeType.Substitute))
+            .ToListAsync();
+
+        _logger.LogInformation("GetAllTeamTimesheets: {Count} active hourly/PT/sub employees", teamMembers.Count);
+
+        var summaries = new List<TeamTimesheetSummary>();
+
+        foreach (var member in teamMembers)
+        {
+            var timesheet = await GetPayPeriodTimesheetAsync(member.EmployeeId, periodStart, periodEnd);
+
+            // Same visibility rule as the scoped method: subs with zero hours
+            // are hidden (they only work when an assignment lands); hourly FT/PT
+            // always shown so admin sees who hasn't punched before deadline.
+            if (member.EmployeeType == EmployeeType.Substitute && timesheet.TotalHours <= 0)
+                continue;
+
+            summaries.Add(new TeamTimesheetSummary
+            {
+                EmployeeId = member.EmployeeId,
+                EmployeeName = member.Staff?.FullName ?? member.DisplayName ?? "Unknown",
+                IdNumber = member.IdNumber,
+                TotalHours = timesheet.TotalHours,
+                RegularHours = timesheet.TotalRegularHours,
+                OvertimeHours = timesheet.TotalOvertimeHours,
+                DaysWorked = timesheet.DaysWorked,
+                ExceptionCount = timesheet.ExceptionCount,
+                EmployeeApproved = timesheet.EmployeeApprovalStatus == ApprovalStatus.Approved ||
+                                   timesheet.EmployeeApprovalStatus == ApprovalStatus.Locked,
+                SupervisorApproved = timesheet.SupervisorApprovalStatus == ApprovalStatus.Approved ||
+                                     timesheet.SupervisorApprovalStatus == ApprovalStatus.Locked,
+                HasExceptions = timesheet.ExceptionCount > 0,
+                ShortDayReasons = timesheet.Weeks
+                    .SelectMany(w => w.Days)
+                    .Where(d => !string.IsNullOrEmpty(d.ShortDayReason))
+                    .Select(d => d.ShortDayReason!)
+                    .Distinct()
+                    .ToList(),
+                SupervisorEmployeeId = member.SupervisorEmployeeId,
+                SupervisorName = member.Supervisor?.Staff?.FullName
+                              ?? member.Supervisor?.DisplayName
+                              ?? member.Supervisor?.Email,
+                CampusId = member.HomeCampusId,
+                CampusName = member.HomeCampus?.CampusName
+            });
+        }
+
+        return summaries
+            .OrderBy(s => s.CampusName ?? "~")
+            .ThenBy(s => s.SupervisorName ?? "~")
+            .ThenBy(s => s.EmployeeName)
+            .ToList();
     }
 
     public async Task<List<PayrollSummary>> GetPayrollSummariesAsync(DateOnly periodStart, DateOnly periodEnd)
@@ -517,6 +619,54 @@ public class TimesheetService : ITimesheetService
             campusId: timecard.CampusId);
     }
 
+    public async Task SetShortDayReasonAsync(int employeeId, DateOnly workDate, string? reason, string? note, string modifiedBy)
+    {
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var normalizedReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        var normalizedNote   = string.IsNullOrWhiteSpace(note)   ? null : note.Trim();
+
+        var timecard = await context.TcDailyTimecards
+            .FirstOrDefaultAsync(t => t.EmployeeId == employeeId && t.WorkDate == workDate);
+
+        if (timecard == null)
+        {
+            // Employee is annotating a day with no punches yet (e.g., Weather
+            // Closure day). Create a zero-hours card so the reason sticks and
+            // the row renders on the timesheet view.
+            var employee = await context.TcEmployees.FindAsync(employeeId);
+            timecard = new TcDailyTimecard
+            {
+                EmployeeId = employeeId,
+                CampusId = employee?.HomeCampusId ?? 1,
+                WorkDate = workDate,
+                CreatedDate = DateTime.Now
+            };
+            context.TcDailyTimecards.Add(timecard);
+        }
+
+        var oldReason = timecard.ShortDayReason;
+        var oldNote   = timecard.ShortDayNote;
+
+        timecard.ShortDayReason = normalizedReason;
+        timecard.ShortDayNote   = normalizedNote;
+        timecard.ModifiedDate   = DateTime.Now;
+
+        await context.SaveChangesAsync();
+
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.Timecard.ExceptionFlagged,
+            entityType: AuditEntityTypes.Timecard,
+            entityId: timecard.TimecardId.ToString(),
+            oldValues: new { ShortDayReason = oldReason, ShortDayNote = oldNote },
+            newValues: new { timecard.ShortDayReason, timecard.ShortDayNote, ModifiedBy = modifiedBy },
+            deltaSummary: $"ShortDayReason={normalizedReason ?? "(cleared)"} for {workDate:yyyy-MM-dd}"
+                        + (string.IsNullOrEmpty(normalizedNote) ? "" : $" note=\"{normalizedNote}\""),
+            source: AuditSource.AdminUi,
+            employeeId: employeeId,
+            campusId: timecard.CampusId);
+    }
+
     public async Task RecalculateWeeklyOvertimeAsync(int employeeId, DateOnly weekStartDate)
     {
         using var context = await _contextFactory.CreateDbContextAsync();
@@ -597,10 +747,24 @@ public class TimesheetService : ITimesheetService
             }
         }
 
-        // If still clocked in, calculate to now
+        // If still clocked in, fill the missing OUT with "now" — ONLY when the
+        // orphan IN is from today. For historical unpaired INs (which happen
+        // after a bulk void cleanup or broken backfill pairings), filling
+        // with Now produces runaway hours like 168, 340, 510 because Now
+        // is days or weeks past the IN timestamp. Prior to 2026-04-23 this
+        // code caused Jasmine's 4/02 card to show 510.37 hours during recalc.
+        // Historical orphan INs contribute 0 minutes; DetectMissedPunch will
+        // flag IsMissedPunch so the admin sees it and can fix via a
+        // TcCorrectionRequest / manual edit.
         if (lastIn != null)
         {
-            totalMinutes += (decimal)(DateTime.Now - lastIn.PunchDateTime).TotalMinutes;
+            var today = DateOnly.FromDateTime(DateTime.Now);
+            var inDate = DateOnly.FromDateTime(lastIn.PunchDateTime);
+            if (inDate == today)
+            {
+                totalMinutes += (decimal)(DateTime.Now - lastIn.PunchDateTime).TotalMinutes;
+            }
+            // else: historical unpaired IN — skip; missed-punch flag handles it.
         }
 
         return Math.Round(totalMinutes / 60, 2);
@@ -648,6 +812,10 @@ public class DailyTimesheetEntry
     public bool HasException { get; set; }
     public string? ExceptionNotes { get; set; }
     public ApprovalStatus ApprovalStatus { get; set; }
+
+    /// <summary>Migration 052: short-day reason + note for employee annotation.</summary>
+    public string? ShortDayReason { get; set; }
+    public string? ShortDayNote { get; set; }
 
     /// <summary>
     /// Earliest IN punch of the day. Rendered on the collapsed row so users
@@ -717,6 +885,17 @@ public class TeamTimesheetSummary
     public bool EmployeeApproved { get; set; }
     public bool SupervisorApproved { get; set; }
     public bool HasExceptions { get; set; }
+
+    /// <summary>Migration 052: distinct ShortDayReason codes across the pay period.</summary>
+    public List<string> ShortDayReasons { get; set; } = new();
+
+    // Admin-view context. Populated by both GetTeamTimesheetsAsync (regular
+    // supervisor scope) and GetAllTeamTimesheetsAsync (admin scope) so the
+    // UI can render one consistent grid and filter visually.
+    public string? SupervisorName { get; set; }
+    public int? SupervisorEmployeeId { get; set; }
+    public string? CampusName { get; set; }
+    public int? CampusId { get; set; }
 }
 
 public class PayrollSummary

@@ -218,6 +218,11 @@ builder.Services.AddScoped<IMasterScheduleLookupService, MasterScheduleLookupSer
 // Substitute timecard service — sub-facing CRUD for period entries (Phase 2)
 builder.Services.AddScoped<ISubstituteTimesheetService, SubstituteTimesheetService>();
 
+// Hourly CSV importer — parses Google-Form weekly timesheet exports into
+// suggested punches, then writes TC_TimePunches on admin approval. See
+// reference_paper_timesheet_csv_formats.md for the layouts it handles.
+builder.Services.AddScoped<IHourlyCsvImportService, HourlyCsvImportService>();
+
 // SMS service — Azure Communication Services wrapper (Phase 6).
 // Degrades to no-op when AzureCommunication:Enabled=false or connection string is empty.
 builder.Services.AddScoped<ISmsService, AzureSmsService>();

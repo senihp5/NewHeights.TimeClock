@@ -1,0 +1,221 @@
+.csv-import h1 {
+    margin: 0;
+    font-size: 1.4rem;
+    color: #1e3a5f;
+}
+
+.csv-import h2 {
+    margin-top: 0;
+    margin-bottom: 0.4rem;
+    color: #1e3a5f;
+    font-size: 1.05rem;
+}
+
+/* ── Compact topbar replacing verbose admin-header ───────────────────── */
+.csv-import .csv-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.85rem;
+    padding: 0.6rem 0.85rem;
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.csv-import .csv-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+}
+
+.csv-import .csv-hint {
+    color: #475569;
+    font-size: 0.85rem;
+}
+
+.csv-import .csv-upload-inline {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.csv-import .file-input {
+    font-size: 0.85rem;
+}
+
+/* ── Meta bar: chips + inline bind selects on one row ────────────────── */
+.csv-import .csv-meta-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.55rem 0.7rem;
+    margin-bottom: 0.75rem;
+    background: rgba(30, 58, 95, 0.04);
+    border-left: 3px solid #1e3a5f;
+    border-radius: 4px;
+}
+
+.csv-import .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 0.82rem;
+}
+
+.csv-import .chip-label {
+    color: #64748b;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+}
+
+.csv-import .chip-value {
+    color: #111827;
+    font-weight: 500;
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.csv-import .meta-bind {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.csv-import .bind-label {
+    color: #64748b;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+}
+
+.csv-import .bind-select {
+    padding: 0.25rem 0.45rem;
+    font-size: 0.85rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 5px;
+    background: #fff;
+    min-width: 12rem;
+}
+
+/* ── Dense preview table ─────────────────────────────────────────────── */
+.csv-import .tight-card {
+    padding: 0.75rem 0.85rem;
+}
+
+.csv-import .punch-plan {
+    font-size: 0.82rem;
+    width: 100%;
+}
+
+.csv-import .punch-plan th {
+    background: #f3f4f6;
+    font-weight: 600;
+    color: #374151;
+    padding: 0.35rem 0.4rem;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.csv-import .punch-plan td {
+    padding: 0.22rem 0.35rem;
+    border-bottom: 1px solid #f1f5f9;
+    vertical-align: middle;
+}
+
+.csv-import .col-skip    { width: 2.5rem; }
+.csv-import .col-date    { width: 6rem; }
+.csv-import .col-hrs     { width: 3rem; text-align: right; }
+.csv-import .col-reason  { width: 9rem; }
+.csv-import .col-raw     { max-width: 18rem; }
+
+.csv-import .time-input {
+    width: 6rem;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.82rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+}
+
+.csv-import .reason-input {
+    width: 100%;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.8rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #fff;
+}
+
+.csv-import .row-skipped {
+    background: #f9fafb;
+    color: #9ca3af;
+}
+
+.csv-import .row-skipped .time-input,
+.csv-import .row-skipped .reason-input {
+    color: #9ca3af;
+}
+
+.csv-import .hrs-src {
+    font-weight: 700;
+    color: #1e3a5f;
+    text-align: right;
+}
+
+.csv-import .raw-cell {
+    color: #6b7280;
+    font-size: 0.75rem;
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 18rem;
+}
+
+.csv-import .apply-row {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.7rem;
+    padding-top: 0.6rem;
+    margin-top: 0.6rem;
+    border-top: 1px solid #e5e7eb;
+}
+
+.csv-import .apply-summary {
+    color: #475569;
+    font-size: 0.88rem;
+    margin-right: auto;
+}
+
+.csv-import .error-list {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    padding: 0.65rem 0.8rem;
+    border-radius: 4px;
+    color: #991b1b;
+    font-size: 0.9rem;
+}
+
+.csv-import .error-list ul {
+    margin: 0.25rem 0 0 1.1rem;
+    padding: 0;
+}

@@ -178,6 +178,19 @@ public static class AuditActions
         public const string Changed = "CONFIG_CHANGED";
     }
 
+    // P2. Bell Schedule administration (per-campus, per-session period catalogs)
+    public static class BellSchedule
+    {
+        public const string Created        = "BELL_SCHEDULE_CREATED";
+        public const string Modified       = "BELL_SCHEDULE_MODIFIED";
+        public const string Deleted        = "BELL_SCHEDULE_DELETED";
+        public const string SetDefault     = "BELL_SCHEDULE_SET_DEFAULT";
+        public const string Cloned         = "BELL_SCHEDULE_CLONED";
+        public const string PeriodAdded    = "BELL_PERIOD_ADDED";
+        public const string PeriodModified = "BELL_PERIOD_MODIFIED";
+        public const string PeriodDeleted  = "BELL_PERIOD_DELETED";
+    }
+
     // Q. Attendance Transactions (reception manual override / geofence tightening)
     public static class Attendance
     {

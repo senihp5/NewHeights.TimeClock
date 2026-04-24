@@ -394,7 +394,12 @@
                 .AsNoTracking()
                 .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
 
-            var anchor = DateTime.Today.AddDays(-15 * periodOffset);
+            // Sign on the offset was inverted prior to 2026-04-23: PreviousPeriod
+            // decrements periodOffset to negative, and `-15 * -1 = +15` sent the
+            // anchor into the FUTURE, so Prev/Next silently no-op'd on data that
+            // wasn't in the current period. Correct form is positive coefficient
+            // so offset -1 → anchor = today - 15 days (lands in prior period).
+            var anchor = DateTime.Today.AddDays(15 * periodOffset);
             currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchor);
             if (currentPayPeriod == null)
             {

@@ -12,13 +12,17 @@ public class TcMasterSchedule
 
     // ── Context ──────────────────────────────────────────────────────────
     public int CampusId { get; set; }
-    // Canonical term names come from CaseManagementDB.dbo.Advising_TermConfig.TermName.
-    // Values: T1, T2, T3, T4 (8-week terms). The ScheduleImport UI must emit these
-    // exact values so MasterScheduleLookupService joins correctly between the
-    // authoritative term registry and locally-stored schedule rows.
-    public string TermName { get; set; } = string.Empty;      // T1, T2, T3, T4
-    // Matches Advising_TermConfig.AcademicYear (e.g., "2025-2026"). Note: full 9 chars.
-    public string SchoolYear { get; set; } = string.Empty;    // 2025-2026
+    // Term labels as emitted by the ScheduleImport UI dropdown:
+    //   TERM1 / TERM2 / TERM3 / TERM4 (8-week terms).
+    // Canonical authoritative term registry is CaseManagementDB.dbo.Advising_TermConfig
+    // keyed by TermName + AcademicYear. MasterScheduleLookupService uses these exact
+    // string values for date→term resolution; changing the convention requires
+    // updating both the import UI and any join queries.
+    public string TermName { get; set; } = string.Empty;      // TERM1, TERM2, TERM3, TERM4
+    // Short-form school year (6 chars) as produced by the ScheduleImport UI (placeholder
+    // "e.g. 2025-26"). Do NOT expand to 9-char "2025-2026" — that was an entity-comment
+    // drift; actual stored format is 6 chars and any equality joins must match.
+    public string SchoolYear { get; set; } = string.Empty;    // 2025-26
 
     // ── Raw import data (preserved verbatim for audit / re-import) ───────
     public string? RawTeacherCell { get; set; }

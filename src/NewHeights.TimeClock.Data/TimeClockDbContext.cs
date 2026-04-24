@@ -213,6 +213,12 @@ public class TimeClockDbContext : DbContext
             
             entity.Property(e => e.ExceptionNotes).HasMaxLength(500);
 
+            // Migration 052
+            entity.Property(e => e.ShortDayReason).HasMaxLength(20);
+            entity.Property(e => e.ShortDayNote).HasMaxLength(500);
+            entity.HasIndex(e => e.ShortDayReason)
+                  .HasFilter("[ShortDayReason] IS NOT NULL");
+
             entity.HasOne(e => e.Employee).WithMany(emp => emp.DailyTimecards).HasForeignKey(e => e.EmployeeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
 
@@ -736,9 +742,21 @@ public class TimeClockDbContext : DbContext
                 .HasForeignKey(e => e.SubRequestId)
                 .OnDelete(DeleteBehavior.Restrict);
 
+            // Migration 051: FK → TC_Employees for HR Ascender matching.
+            // Named explicitly so EF uses the same constraint name the migration
+            // created (FK_TCSubPeriod_TeacherReplacedEmployee) — avoids rename
+            // churn if EF Core decides to auto-generate a different name.
+            entity.HasOne(e => e.TeacherReplacedEmployee)
+                .WithMany()
+                .HasForeignKey(e => e.TeacherReplacedEmployeeId)
+                .HasConstraintName("FK_TCSubPeriod_TeacherReplacedEmployee")
+                .OnDelete(DeleteBehavior.SetNull);
+
             entity.HasIndex(e => e.SubTimecardId);
             entity.HasIndex(e => e.BellPeriodId);
             entity.HasIndex(e => e.SessionType);
+            entity.HasIndex(e => e.TeacherReplacedEmployeeId)
+                .HasFilter("[TeacherReplacedEmployeeId] IS NOT NULL");
             entity.HasIndex(e => new { e.SubTimecardId, e.PeriodNumber }).IsUnique();
         });
     }

@@ -97,6 +97,40 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
         {
             try
             {
+                // Guard: if this employee already has an active OUT punch for today
+                // (regardless of whether inPunch.PairedPunchId was updated), DON'T
+                // create another auto-checkout. Repair the IN-OUT linkage instead
+                // so the query won't pick up this IN again tomorrow.
+                //
+                // Root cause for the bogus 9:30 data we cleaned 2026-04-22: the
+                // regular check-out flow occasionally failed to set IN.PairedPunchId
+                // after creating the OUT. AutoCheckout saw the unpaired IN and
+                // stacked a redundant OUT at 9:30. This guard defends against that.
+                var existingOut = await context.TcTimePunches
+                    .Where(o => o.EmployeeId == inPunch.EmployeeId
+                             && o.PunchType == PunchType.Out
+                             && o.PunchStatus == PunchStatus.Active
+                             && o.PunchDateTime >= todayStart
+                             && o.PunchId != inPunch.PunchId)
+                    .OrderByDescending(o => o.PunchDateTime)
+                    .FirstOrDefaultAsync();
+
+                if (existingOut != null)
+                {
+                    _logger.LogWarning(
+                        "AutoCheckout: skipping EmployeeId {Id} (IN punch #{InId}) — active OUT punch #{OutId} at {OutTime} already exists for today. Repairing pairing.",
+                        inPunch.EmployeeId, inPunch.PunchId, existingOut.PunchId, existingOut.PunchDateTime);
+
+                    // Repair the broken linkage so future runs of this loop skip
+                    // this IN via the PairedPunchId == null filter.
+                    inPunch.PairedPunchId = existingOut.PunchId;
+                    if (existingOut.PairedPunchId == null)
+                        existingOut.PairedPunchId = inPunch.PunchId;
+                    await context.SaveChangesAsync();
+
+                    continue;
+                }
+
                 var autoCheckoutTime = new DateTime(now.Year, now.Month, now.Day, AutoCheckoutHour, AutoCheckoutMinute, 0);
 
                 var outPunch = new TcTimePunch

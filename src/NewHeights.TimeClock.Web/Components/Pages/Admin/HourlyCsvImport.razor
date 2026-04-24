@@ -1,0 +1,334 @@
+@page "/admin/hourly-csv-import"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IHourlyCsvImportService Importer
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<HourlyCsvImport> Logger
+
+<PageTitle>Hourly CSV Import - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="admin-page csv-import">
+    <div class="csv-topbar">
+        <div class="csv-title">
+            <h1>Hourly CSV Import</h1>
+            <span class="csv-hint">Upload a Google-Form weekly timesheet CSV. Review, adjust times or reasons, Apply.</span>
+        </div>
+        <div class="csv-upload-inline">
+            <InputFile OnChange="HandleFileSelected" accept=".csv" class="file-input" />
+            @if (parseResult != null)
+            {
+                <button class="btn-secondary" @onclick="ResetForm">Reset</button>
+            }
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-error">@errorMessage</div>
+    }
+
+    @if (parseResult != null && string.IsNullOrEmpty(parseResult.Error))
+    {
+        <!-- ── Condensed meta + employee/campus binding ───────────────── -->
+        <div class="csv-meta-bar">
+            <div class="meta-chip">
+                <span class="chip-label">File</span>
+                <span class="chip-value" title="@parseResult.SourceFileName">@TrimFileName(parseResult.SourceFileName)</span>
+            </div>
+            <div class="meta-chip">
+                <span class="chip-label">CSV Name</span>
+                <span class="chip-value">@parseResult.EmployeeName</span>
+            </div>
+            @if (parseResult.ScheduledAm.HasValue)
+            {
+                <div class="meta-chip"><span class="chip-label">AM</span><span class="chip-value">@parseResult.ScheduledAm.Value.Start.ToString("h:mm")–@parseResult.ScheduledAm.Value.End.ToString("h:mm")</span></div>
+            }
+            @if (parseResult.ScheduledPm.HasValue)
+            {
+                <div class="meta-chip"><span class="chip-label">PM</span><span class="chip-value">@parseResult.ScheduledPm.Value.Start.ToString("h:mm")–@parseResult.ScheduledPm.Value.End.ToString("h:mm")</span></div>
+            }
+            @if (parseResult.ScheduledEvening.HasValue)
+            {
+                <div class="meta-chip"><span class="chip-label">Eve</span><span class="chip-value">@parseResult.ScheduledEvening.Value.Start.ToString("h:mm")–@parseResult.ScheduledEvening.Value.End.ToString("h:mm")</span></div>
+            }
+            <div class="meta-bind">
+                <label class="bind-label">Employee</label>
+                <select @bind="targetEmployeeId" class="form-input bind-select">
+                    <option value="0">— Select —</option>
+                    @foreach (var e in allEmployees)
+                    {
+                        <option value="@e.EmployeeId">@(e.Staff?.FullName ?? e.DisplayName ?? e.Email) #@e.EmployeeId</option>
+                    }
+                </select>
+            </div>
+            <div class="meta-bind">
+                <label class="bind-label">Campus</label>
+                <select @bind="targetCampusId" class="form-input bind-select">
+                    <option value="0">— Select —</option>
+                    @foreach (var c in allCampuses)
+                    {
+                        <option value="@c.CampusId">@c.CampusName</option>
+                    }
+                </select>
+            </div>
+        </div>
+
+        <!-- ── Preview / edit ─────────────────────────────────────────── -->
+        <div class="admin-card wide tight-card">
+
+            <div class="table-wrapper">
+                <table class="data-table punch-plan">
+                    <thead>
+                        <tr>
+                            <th class="col-skip">Skip</th>
+                            <th class="col-date">Date</th>
+                            <th>AM In</th>
+                            <th>AM Out</th>
+                            <th>PM In</th>
+                            <th>PM Out</th>
+                            <th>Eve In</th>
+                            <th>Eve Out</th>
+                            <th class="col-hrs">Hrs</th>
+                            <th class="col-reason">Reason</th>
+                            <th class="col-raw">Raw</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in parseResult.Rows)
+                        {
+                            <tr class="@(row.Skip ? "row-skipped" : "")">
+                                <td style="text-align:center">
+                                    <input type="checkbox" checked="@row.Skip"
+                                           @onchange="e => row.Skip = e.Value is bool b && b" />
+                                </td>
+                                <td>@row.WorkDate.ToString("MM-dd ddd")</td>
+                                <td>@RenderTimeCell(row, nameof(row.AmIn))</td>
+                                <td>@RenderTimeCell(row, nameof(row.AmOut))</td>
+                                <td>@RenderTimeCell(row, nameof(row.PmIn))</td>
+                                <td>@RenderTimeCell(row, nameof(row.PmOut))</td>
+                                <td>@RenderTimeCell(row, nameof(row.EveIn))</td>
+                                <td>@RenderTimeCell(row, nameof(row.EveOut))</td>
+                                <td class="hrs-src">@row.HoursWorked.ToString("F2")</td>
+                                <td class="reason-cell">
+                                    <select class="reason-input"
+                                            value="@row.Reason"
+                                            @onchange="e => row.Reason = e.Value?.ToString() ?? string.Empty">
+                                        <option value="">—</option>
+                                        <option value="WeatherClosure">Weather Closure</option>
+                                        <option value="PTO">PTO</option>
+                                        <option value="Sick">Sick</option>
+                                        <option value="Personal">Personal</option>
+                                        <option value="Holiday">Holiday</option>
+                                        <option value="ProfessionalDev">Prof. Dev</option>
+                                        <option value="Other">Other</option>
+                                    </select>
+                                </td>
+                                <td class="raw-cell" title="@string.Join(" / ", new[] { row.AmRaw, row.PmRaw, row.EveRaw }.Where(s => !string.IsNullOrWhiteSpace(s)))">
+                                    @string.Join(" / ",
+                                        new[] { row.AmRaw, row.PmRaw, row.EveRaw }
+                                            .Where(s => !string.IsNullOrWhiteSpace(s)))
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="apply-row">
+                <span class="apply-summary">
+                    @parseResult.Rows.Count(r => !r.Skip) of @parseResult.Rows.Count row(s) will be imported.
+                </span>
+                <button class="btn-primary"
+                        disabled="@(isApplying || targetEmployeeId == 0 || targetCampusId == 0)"
+                        @onclick="ApplyAsync">
+                    @(isApplying ? "Applying…" : "Apply Import")
+                </button>
+            </div>
+        </div>
+    }
+
+    @if (applyResult != null)
+    {
+        <div class="admin-card wide">
+            <h2>Results</h2>
+            <p>
+                <strong>@applyResult.RowsApplied</strong> row(s) applied ·
+                <strong>@applyResult.PunchesCreated</strong> punch(es) created ·
+                <strong>@applyResult.RetroactiveWeeksApproved</strong> historical week(s) auto-approved (employee stage).
+            </p>
+            @if (applyResult.Errors.Count > 0)
+            {
+                <div class="error-list">
+                    <strong>Errors (@applyResult.Errors.Count):</strong>
+                    <ul>
+                        @foreach (var err in applyResult.Errors)
+                        {
+                            <li>@err</li>
+                        }
+                    </ul>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private CsvParseResult? parseResult;
+    private CsvApplyResult? applyResult;
+
+    private int targetEmployeeId = 0;
+    private int targetCampusId = 0;
+
+    private List<TcEmployee> allEmployees = new();
+    private List<Campus> allCampuses = new();
+
+    private bool isApplying = false;
+    private string successMessage = "";
+    private string errorMessage = "";
+    private string currentUserEmail = "unknown";
+
+    // Trim the noisy Google-Form filename prefix for display in the meta bar.
+    // Full value is still in the tooltip/title.
+    private static string TrimFileName(string fileName)
+    {
+        if (string.IsNullOrEmpty(fileName)) return "";
+        return fileName.Length > 48 ? fileName.Substring(0, 45) + "…" : fileName;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = auth.User.FindFirst("preferred_username")?.Value
+                        ?? auth.User.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "unknown";
+
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        allEmployees = await ctx.TcEmployees
+            .AsNoTracking()
+            .Include(e => e.Staff)
+            .Where(e => e.IsActive)
+            .OrderBy(e => e.DisplayName)
+            .ToListAsync();
+        allCampuses = await ctx.Campuses
+            .AsNoTracking()
+            .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
+            .OrderBy(c => c.CampusName)
+            .ToListAsync();
+    }
+
+    private async Task HandleFileSelected(InputFileChangeEventArgs e)
+    {
+        errorMessage = "";
+        successMessage = "";
+        applyResult = null;
+
+        var file = e.File;
+        if (file == null) return;
+
+        try
+        {
+            using var stream = file.OpenReadStream(maxAllowedSize: 5 * 1024 * 1024);
+            using var mem = new MemoryStream();
+            await stream.CopyToAsync(mem);
+            mem.Position = 0;
+
+            parseResult = await Importer.ParseAsync(mem, file.Name);
+            if (!string.IsNullOrEmpty(parseResult.Error))
+            {
+                errorMessage = parseResult.Error;
+                return;
+            }
+            // Pre-fill the bind dropdowns from the resolved IDs
+            targetEmployeeId = parseResult.ResolvedEmployeeId ?? 0;
+            targetCampusId   = parseResult.ResolvedCampusId   ?? 0;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to parse CSV {Name}", file.Name);
+            errorMessage = $"Parse failed: {ex.Message}";
+        }
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (parseResult == null || targetEmployeeId == 0 || targetCampusId == 0) return;
+
+        isApplying = true;
+        errorMessage = "";
+        successMessage = "";
+        applyResult = null;
+
+        try
+        {
+            applyResult = await Importer.ApplyAsync(
+                targetEmployeeId, targetCampusId, parseResult.Rows, currentUserEmail);
+            successMessage = $"Imported {applyResult.RowsApplied} row(s), {applyResult.PunchesCreated} punch(es) created.";
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Apply failed");
+            errorMessage = $"Apply failed: {ex.Message}";
+        }
+        finally
+        {
+            isApplying = false;
+        }
+    }
+
+    private void ResetForm()
+    {
+        parseResult = null;
+        applyResult = null;
+        errorMessage = "";
+        successMessage = "";
+        targetEmployeeId = 0;
+        targetCampusId = 0;
+    }
+
+    // Editable time cell renderer
+    private RenderFragment RenderTimeCell(PunchPlanRow row, string propName) => __builder =>
+    {
+        TimeOnly? current = propName switch
+        {
+            nameof(PunchPlanRow.AmIn)  => row.AmIn,
+            nameof(PunchPlanRow.AmOut) => row.AmOut,
+            nameof(PunchPlanRow.PmIn)  => row.PmIn,
+            nameof(PunchPlanRow.PmOut) => row.PmOut,
+            nameof(PunchPlanRow.EveIn) => row.EveIn,
+            nameof(PunchPlanRow.EveOut)=> row.EveOut,
+            _ => null
+        };
+
+        __builder.OpenElement(0, "input");
+        __builder.AddAttribute(1, "type", "time");
+        __builder.AddAttribute(2, "class", "time-input");
+        __builder.AddAttribute(3, "value", current?.ToString("HH:mm") ?? "");
+        __builder.AddAttribute(4, "onchange", EventCallback.Factory.CreateBinder<string?>(this, v =>
+        {
+            TimeOnly? parsed = TimeOnly.TryParse(v, out var t) ? t : (TimeOnly?)null;
+            switch (propName)
+            {
+                case nameof(PunchPlanRow.AmIn):   row.AmIn   = parsed; break;
+                case nameof(PunchPlanRow.AmOut):  row.AmOut  = parsed; break;
+                case nameof(PunchPlanRow.PmIn):   row.PmIn   = parsed; break;
+                case nameof(PunchPlanRow.PmOut):  row.PmOut  = parsed; break;
+                case nameof(PunchPlanRow.EveIn):  row.EveIn  = parsed; break;
+                case nameof(PunchPlanRow.EveOut): row.EveOut = parsed; break;
+            }
+        }, default));
+        __builder.CloseElement();
+    };
+}

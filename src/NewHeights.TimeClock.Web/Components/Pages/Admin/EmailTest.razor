@@ -1,0 +1,246 @@
+@page "/admin/email-test"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using System.Net
+@using System.Net.Mail
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.Extensions.Options
+@inject IEmailService EmailService
+@inject IOptions<EmailSettings> SettingsOptions
+@inject ILogger<EmailTest> Logger
+
+<PageTitle>Email Diagnostic - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="admin-page email-test">
+    <div class="admin-header">
+        <div>
+            <h1>Email Diagnostic</h1>
+            <p class="admin-subtitle">
+                Fire a test email through <code>IEmailService</code> and / or a raw <code>SmtpClient</code>
+                to see the exact exception. Use when outreach rows land with
+                <code>email-service-returned-false</code> and log stream wasn't enabled at the time.
+            </p>
+        </div>
+    </div>
+
+    <div class="admin-card wide">
+        <h2>1. Current Email settings (read-only)</h2>
+        <table class="settings-table">
+            <tr><th>SmtpHost</th><td>@SettingsOptions.Value.SmtpHost</td></tr>
+            <tr><th>SmtpPort</th><td>@SettingsOptions.Value.SmtpPort</td></tr>
+            <tr>
+                <th>Username</th>
+                <td>
+                    @if (string.IsNullOrEmpty(SettingsOptions.Value.Username))
+                    {
+                        <span class="tag-bad">EMPTY</span>
+                    }
+                    else
+                    {
+                        <span>@SettingsOptions.Value.Username</span>
+                        @if (!string.Equals(SettingsOptions.Value.Username, SettingsOptions.Value.FromEmail, StringComparison.OrdinalIgnoreCase))
+                        {
+                            <span class="tag-warn" title="Gmail rejects auth when Username (the account that owns the app password) differs from FromEmail. If you intend send-as, set up the Google send-as alias and confirm.">
+                                ⚠ differs from FromEmail
+                            </span>
+                        }
+                    }
+                </td>
+            </tr>
+            <tr>
+                <th>AppPassword</th>
+                <td>
+                    @if (string.IsNullOrEmpty(SettingsOptions.Value.AppPassword))
+                    {
+                        <span class="tag-bad">EMPTY</span>
+                    }
+                    else
+                    {
+                        <span class="tag-ok">SET</span>
+                        <span class="muted">(@SettingsOptions.Value.AppPassword.Length chars)</span>
+                    }
+                </td>
+            </tr>
+            <tr><th>FromEmail</th><td>@SettingsOptions.Value.FromEmail</td></tr>
+            <tr><th>FromName</th><td>@SettingsOptions.Value.FromName</td></tr>
+        </table>
+    </div>
+
+    <div class="admin-card wide">
+        <h2>2. Send test email</h2>
+        <div class="form-grid">
+            <div class="form-field">
+                <label>Recipient</label>
+                <input type="email" class="form-input" @bind="recipient" placeholder="you@newheightsed.com" />
+            </div>
+            <div class="form-field">
+                <label>Subject</label>
+                <input type="text" class="form-input" @bind="subject" />
+            </div>
+            <div class="form-field form-field-wide">
+                <label>Body (HTML)</label>
+                <textarea class="form-input" rows="4" @bind="body"></textarea>
+            </div>
+        </div>
+
+        <div class="btn-row">
+            <button class="btn-primary" disabled="@isSending" @onclick="RunViaServiceAsync">
+                @(isSending ? "Sending…" : "A. Send via IEmailService")
+            </button>
+            <button class="btn-secondary" disabled="@isSending" @onclick="RunViaRawSmtpAsync">
+                @(isSending ? "Sending…" : "B. Send via raw SmtpClient (full exception)")
+            </button>
+        </div>
+
+        @if (lastResult != null)
+        {
+            <div class="result-block @(lastResult.Success ? "ok" : "err")">
+                <div class="result-head">
+                    <strong>@(lastResult.Success ? "✓ Success" : "✗ Failed")</strong>
+                    <span class="muted">· @lastResult.Label</span>
+                </div>
+                @if (!lastResult.Success)
+                {
+                    <div class="exception-type">@lastResult.ExceptionType</div>
+                    <pre class="exception-msg">@lastResult.Message</pre>
+                    @if (!string.IsNullOrEmpty(lastResult.InnerMessage))
+                    {
+                        <div class="inner-label">Inner exception:</div>
+                        <pre class="exception-msg">@lastResult.InnerMessage</pre>
+                    }
+                    @if (!string.IsNullOrEmpty(lastResult.StackTrace))
+                    {
+                        <details>
+                            <summary>Stack trace</summary>
+                            <pre class="stack-trace">@lastResult.StackTrace</pre>
+                        </details>
+                    }
+                }
+                else
+                {
+                    <div class="success-detail">@lastResult.Message</div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private string recipient = "";
+    private string subject  = "New Heights email diagnostic";
+    private string body     = "<p>This is a test email from the New Heights Time Clock diagnostic page.</p><p>If you see this, the SMTP path is working.</p>";
+
+    private bool isSending = false;
+    private DiagResult? lastResult;
+
+    protected override void OnInitialized()
+    {
+        recipient = SettingsOptions.Value.FromEmail;
+    }
+
+    // Path A — through the actual production IEmailService. Same exception
+    // swallowing as real traffic, so a false here matches the outreach failure
+    // we saw in TC_SubOutreach. Success here means the production path is
+    // healthy end-to-end.
+    private async Task RunViaServiceAsync()
+    {
+        if (string.IsNullOrWhiteSpace(recipient)) return;
+        isSending = true;
+        lastResult = null;
+        try
+        {
+            var ok = await EmailService.SendEmailAsync(recipient, subject, body);
+            lastResult = new DiagResult
+            {
+                Success = ok,
+                Label = "IEmailService.SendEmailAsync",
+                Message = ok
+                    ? $"Service returned true. Email dispatched to {recipient}. Check inbox + spam."
+                    : "Service returned false. The exception is in App Service logs but not surfaced here — run path B for the full exception."
+            };
+        }
+        catch (Exception ex)
+        {
+            lastResult = FromException("IEmailService.SendEmailAsync", ex);
+        }
+        finally
+        {
+            isSending = false;
+        }
+    }
+
+    // Path B — bypass IEmailService and run the SMTP call inline so we see
+    // the exact exception. Same settings as the real service, just no catch.
+    private async Task RunViaRawSmtpAsync()
+    {
+        if (string.IsNullOrWhiteSpace(recipient)) return;
+        isSending = true;
+        lastResult = null;
+        try
+        {
+            var s = SettingsOptions.Value;
+            using var client = new SmtpClient(s.SmtpHost, s.SmtpPort)
+            {
+                Credentials = new NetworkCredential(s.Username, s.AppPassword),
+                EnableSsl = true,
+                Timeout = 15000
+            };
+            var msg = new MailMessage
+            {
+                From = new MailAddress(s.FromEmail, s.FromName),
+                Subject = subject,
+                Body = body,
+                IsBodyHtml = true
+            };
+            msg.To.Add(recipient.Trim());
+
+            await client.SendMailAsync(msg);
+            lastResult = new DiagResult
+            {
+                Success = true,
+                Label = "Raw SmtpClient",
+                Message = $"SMTP send succeeded for {recipient}. Check inbox + spam."
+            };
+        }
+        catch (Exception ex)
+        {
+            lastResult = FromException("Raw SmtpClient", ex);
+        }
+        finally
+        {
+            isSending = false;
+        }
+    }
+
+    private static DiagResult FromException(string label, Exception ex)
+    {
+        return new DiagResult
+        {
+            Success = false,
+            Label = label,
+            ExceptionType = ex.GetType().FullName ?? "Exception",
+            Message = ex.Message,
+            InnerMessage = ex.InnerException?.Message,
+            StackTrace = ex.StackTrace
+        };
+    }
+
+    private static string MaskOrShow(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "(empty)";
+        if (s.Length <= 4) return "***";
+        return s.Substring(0, 3) + new string('*', Math.Max(0, s.Length - 6)) + s.Substring(s.Length - 3);
+    }
+
+    private class DiagResult
+    {
+        public bool Success { get; set; }
+        public string Label { get; set; } = "";
+        public string? ExceptionType { get; set; }
+        public string Message { get; set; } = "";
+        public string? InnerMessage { get; set; }
+        public string? StackTrace { get; set; }
+    }
+}

@@ -381,8 +381,27 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
             {
                 teacherName = ms.Teacher?.FullName
                               ?? (!string.IsNullOrWhiteSpace(ms.RawTeacherCell) ? ms.RawTeacherCell : null);
-                courseName = ms.ContentArea;
-                contentArea = ms.ContentArea;
+
+                // Per-period course: read the correct MW_Px or TTh_Px column
+                // based on card.WorkDate's day-of-week. Previously collapsed
+                // to the teacher-level ms.ContentArea — which is always NULL
+                // (pre-fix) or a mixed list (post-fix), neither suitable for
+                // a single-period snapshot.
+                var dow = card.WorkDate.DayOfWeek;
+                var isMwDay = dow == DayOfWeek.Monday
+                           || dow == DayOfWeek.Wednesday
+                           || dow == DayOfWeek.Friday;
+                courseName = bellPeriod.PeriodNumber switch
+                {
+                    1 => isMwDay ? ms.MW_P1 : ms.TTh_P1,
+                    2 => isMwDay ? ms.MW_P2 : ms.TTh_P2,
+                    3 => isMwDay ? ms.MW_P3 : ms.TTh_P3,
+                    4 => isMwDay ? ms.MW_P4 : ms.TTh_P4,
+                    5 => isMwDay ? ms.MW_P5 : ms.TTh_P5,
+                    6 => isMwDay ? ms.MW_P6 : ms.TTh_P6,
+                    _ => null
+                };
+                contentArea = CourseTagMapper.MapCourseToContentArea(courseName);
                 room = ms.Room;
             }
             else
@@ -563,67 +582,112 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
             return;
         }
 
-        // Find a SubConfirmed request matching this sub + this campus + this work date.
-        var request = await context.TcSubRequests
+        // ─── Primary source: TcSubRequestAssignments (Phase A) ─────────────
+        //
+        // Post-Phase-A, authoritative "who covers which periods" lives on the
+        // TC_SubRequestAssignments join table. A single sub can have multiple
+        // assignments at the same campus on the same day (e.g., morning partial
+        // on one request + evening emergency fill on a different request), so
+        // we load all matching rows and merge their periods into the card.
+        // Each assignment's PeriodsCovered CSV drives period creation — not the
+        // parent request's PeriodsNeeded — so partial accepts only pre-populate
+        // the subset the sub actually claimed.
+        // Accept any status where the sub has a live commitment to cover.
+        // REJECT set: Submitted (pre-outreach), AwaitingSub (nobody accepted yet),
+        // Denied, Cancelled. ACCEPT set includes AbsenceApproved because the
+        // workflow flips SubConfirmed → AbsenceApproved after the supervisor
+        // signs off, and the sub still needs their timecard pre-populated on
+        // the day of the absence (the whole point of auto-populate).
+        var acceptStatuses = new[]
+        {
+            SubRequestStatus.SubAssigned,
+            SubRequestStatus.PartiallyAssigned,
+            SubRequestStatus.SubConfirmed,
+            SubRequestStatus.AbsenceApproved
+        };
+
+        var assignments = await context.TcSubRequestAssignments
             .AsNoTracking()
-            .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
-            .FirstOrDefaultAsync(r => r.AssignedSubEmployeeId == card.EmployeeId
-                                   && r.CampusId == card.CampusId
-                                   && r.Status == SubRequestStatus.SubConfirmed
-                                   && r.StartDate <= card.WorkDate
-                                   && r.EndDate >= card.WorkDate);
-        if (request == null)
+            .Include(a => a.SubRequest!).ThenInclude(r => r!.RequestingEmployee).ThenInclude(e => e!.Staff)
+            .Where(a => a.SubEmployeeId == card.EmployeeId
+                     && a.SubRequest != null
+                     && a.SubRequest.CampusId == card.CampusId
+                     && acceptStatuses.Contains(a.SubRequest.Status)
+                     && a.SubRequest.StartDate <= card.WorkDate
+                     && a.SubRequest.EndDate >= card.WorkDate)
+            .ToListAsync();
+
+        // ─── Legacy fallback: TcSubRequest.AssignedSubEmployeeId ───────────
+        //
+        // Pre-Phase-A rows (migration 048 backfill gap) may have never been
+        // written to TC_SubRequestAssignments. If no assignment rows match,
+        // fall back to the legacy single-assignee pointer and synthesize a
+        // virtual assignment from the request's PeriodsNeeded so the rest of
+        // the pipeline is uniform. Safe to remove this branch after all
+        // legacy requests have expired (late 2026).
+        if (assignments.Count == 0)
+        {
+            var legacyRequest = await context.TcSubRequests
+                .AsNoTracking()
+                .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+                .FirstOrDefaultAsync(r => r.AssignedSubEmployeeId == card.EmployeeId
+                                       && r.CampusId == card.CampusId
+                                       && acceptStatuses.Contains(r.Status)
+                                       && r.StartDate <= card.WorkDate
+                                       && r.EndDate >= card.WorkDate);
+            if (legacyRequest != null)
+            {
+                assignments.Add(new TcSubRequestAssignment
+                {
+                    SubRequestId = legacyRequest.SubRequestId,
+                    SubEmployeeId = legacyRequest.AssignedSubEmployeeId ?? 0,
+                    PeriodsCovered = legacyRequest.PeriodsNeeded ?? string.Empty,
+                    SubRequest = legacyRequest
+                });
+                _logger.LogDebug(
+                    "AutoPopulatePreAssignedAsync: synthesized legacy assignment from SubRequest {SubRequestId} for card {SubTimecardId}.",
+                    legacyRequest.SubRequestId, subTimecardId);
+            }
+        }
+
+        if (assignments.Count == 0)
         {
             _logger.LogDebug(
-                "AutoPopulatePreAssignedAsync: no confirmed SubRequest matches card {SubTimecardId} (employee {EmployeeId}, campus {CampusId}, date {Date}). Walk-in — nothing to pre-assign.",
+                "AutoPopulatePreAssignedAsync: no assignments or legacy request match card {SubTimecardId} (employee {EmployeeId}, campus {CampusId}, date {Date}). Walk-in — nothing to pre-assign.",
                 subTimecardId, card.EmployeeId, card.CampusId, card.WorkDate);
             return;
         }
 
-        // Parse PeriodsNeeded like "P1,P2,P3,P4" or "P1, P3, P5".
-        var wantedPeriodNumbers = ParsePeriodsNeeded(request.PeriodsNeeded);
-        if (wantedPeriodNumbers.Count == 0)
-        {
-            _logger.LogWarning(
-                "AutoPopulatePreAssignedAsync: request {SubRequestId} has no parseable PeriodsNeeded ({Raw}). Nothing populated.",
-                request.SubRequestId, request.PeriodsNeeded ?? "(null)");
-            return;
-        }
+        // Cache bell schedules by session — a sub with both DAY and NIGHT
+        // assignments on the same day would otherwise hit the DB twice.
+        var scheduleCache = new Dictionary<string, Dictionary<int, TcBellPeriod>>(StringComparer.OrdinalIgnoreCase);
 
-        // Determine session from the request. "BOTH" populates from DAY schedule only by
-        // default — if a campus has separate evening classes, adjust the request to DAY
-        // or NIGHT explicitly. This avoids double-populating when the sub is only
-        // covering one half of the day.
-        var sessionType = string.IsNullOrWhiteSpace(request.SessionType)
-            ? "DAY"
-            : request.SessionType.Trim().ToUpperInvariant() switch
+        async Task<Dictionary<int, TcBellPeriod>?> GetBellPeriodsAsync(string sessionType)
+        {
+            if (scheduleCache.TryGetValue(sessionType, out var cached))
+                return cached;
+
+            var schedule = await context.TcBellSchedules
+                .AsNoTracking()
+                .Include(s => s.Periods)
+                .Where(s => s.CampusId == card.CampusId
+                         && s.SessionType == sessionType
+                         && s.IsActive)
+                .OrderByDescending(s => s.IsDefault)
+                .ThenByDescending(s => s.CreatedDate)
+                .FirstOrDefaultAsync();
+            if (schedule == null)
             {
-                "NIGHT" => "NIGHT",
-                "EVENING" => "NIGHT",
-                _ => "DAY"
-            };
+                scheduleCache[sessionType] = new Dictionary<int, TcBellPeriod>();
+                return null;
+            }
 
-        // Load the campus bell schedule (matching session) for period times + names.
-        var schedule = await context.TcBellSchedules
-            .AsNoTracking()
-            .Include(s => s.Periods)
-            .Where(s => s.CampusId == card.CampusId
-                     && s.SessionType == sessionType
-                     && s.IsActive)
-            .OrderByDescending(s => s.IsDefault)
-            .ThenByDescending(s => s.CreatedDate)
-            .FirstOrDefaultAsync();
-        if (schedule == null)
-        {
-            _logger.LogWarning(
-                "AutoPopulatePreAssignedAsync: no active {Session} bell schedule for campus {CampusId}. Request {SubRequestId} not auto-populated.",
-                sessionType, card.CampusId, request.SubRequestId);
-            return;
+            var map = schedule.Periods
+                .Where(p => p.IsActive && p.PeriodType == "CLASS")
+                .ToDictionary(p => p.PeriodNumber, p => p);
+            scheduleCache[sessionType] = map;
+            return map;
         }
-
-        var bellPeriodsByNumber = schedule.Periods
-            .Where(p => p.IsActive && p.PeriodType == "CLASS")
-            .ToDictionary(p => p.PeriodNumber, p => p);
 
         // Idempotency: skip periods already present on the card (any source, any session).
         var existingNumbers = card.PeriodEntries
@@ -631,75 +695,121 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
             .ToHashSet();
 
         var createdEntries = new List<TcSubstitutePeriodEntry>();
+        var touchedRequestIds = new HashSet<long>();
 
-        foreach (var periodNumber in wantedPeriodNumbers)
+        foreach (var assignment in assignments)
         {
-            if (existingNumbers.Contains(periodNumber))
-                continue;
-            if (!bellPeriodsByNumber.TryGetValue(periodNumber, out var bellPeriod))
+            var request = assignment.SubRequest;
+            if (request == null) continue;
+
+            // Parse PeriodsCovered for THIS assignment (not the request's global
+            // PeriodsNeeded). Ensures a partial accept doesn't silently claim
+            // periods another sub is covering under the same request.
+            var wantedPeriodNumbers = ParsePeriodsNeeded(assignment.PeriodsCovered);
+            if (wantedPeriodNumbers.Count == 0)
             {
                 _logger.LogWarning(
-                    "AutoPopulatePreAssignedAsync: period P{Period} not found in {Session} schedule for campus {CampusId} — skipping.",
-                    periodNumber, sessionType, card.CampusId);
+                    "AutoPopulatePreAssignedAsync: assignment {AssignmentId} for request {SubRequestId} has unparseable PeriodsCovered ({Raw}) — skipping.",
+                    assignment.AssignmentId, request.SubRequestId, assignment.PeriodsCovered ?? "(null)");
                 continue;
             }
 
-            // Master-schedule snapshot (teacher / course / room / content).
-            int? masterScheduleId = null;
-            string? teacherName = null;
-            string? courseName = null;
-            string? contentArea = null;
-            string? room = null;
-            try
-            {
-                var slots = await _scheduleLookup.GetTeachersForPeriodAsync(
-                    card.CampusId, card.WorkDate, periodNumber, sessionType);
-                // Prefer the teacher being replaced (the requester) if found in the slots.
-                var matched = slots.FirstOrDefault(s =>
-                    string.Equals(s.TeacherName, request.RequestingEmployee?.Staff?.FullName,
-                                  StringComparison.OrdinalIgnoreCase))
-                            ?? slots.FirstOrDefault();
-                if (matched != null)
+            // Session resolution: "BOTH"/"EVENING" collapses to NIGHT; everything
+            // else defaults to DAY. Applied per-assignment so a day+night sub
+            // gets both schedules loaded independently.
+            var sessionType = string.IsNullOrWhiteSpace(request.SessionType)
+                ? "DAY"
+                : request.SessionType.Trim().ToUpperInvariant() switch
                 {
-                    masterScheduleId = matched.MasterScheduleId;
-                    teacherName = matched.TeacherName;
-                    courseName = matched.CourseName ?? matched.ContentArea;
-                    contentArea = matched.ContentArea;
-                    room = matched.Room;
+                    "NIGHT" => "NIGHT",
+                    "EVENING" => "NIGHT",
+                    _ => "DAY"
+                };
+
+            var bellPeriodsByNumber = await GetBellPeriodsAsync(sessionType);
+            if (bellPeriodsByNumber == null || bellPeriodsByNumber.Count == 0)
+            {
+                _logger.LogWarning(
+                    "AutoPopulatePreAssignedAsync: no active {Session} bell schedule for campus {CampusId}. Request {SubRequestId} not auto-populated.",
+                    sessionType, card.CampusId, request.SubRequestId);
+                continue;
+            }
+
+            foreach (var periodNumber in wantedPeriodNumbers)
+            {
+                if (existingNumbers.Contains(periodNumber))
+                    continue;
+                if (!bellPeriodsByNumber.TryGetValue(periodNumber, out var bellPeriod))
+                {
+                    _logger.LogWarning(
+                        "AutoPopulatePreAssignedAsync: period P{Period} not found in {Session} schedule for campus {CampusId} — skipping.",
+                        periodNumber, sessionType, card.CampusId);
+                    continue;
                 }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex,
-                    "AutoPopulatePreAssignedAsync: master-schedule lookup failed for campus {CampusId} P{Period} {Session}. Entry created without snapshot.",
-                    card.CampusId, periodNumber, sessionType);
-            }
 
-            var entry = new TcSubstitutePeriodEntry
-            {
-                SubTimecardId = card.SubTimecardId,
-                BellPeriodId = bellPeriod.PeriodId,
-                MasterScheduleId = masterScheduleId,
-                SubRequestId = request.SubRequestId,
-                PeriodNumber = bellPeriod.PeriodNumber,
-                PeriodName = bellPeriod.PeriodName,
-                StartTime = bellPeriod.StartTime,
-                EndTime = bellPeriod.EndTime,
-                TeacherReplaced = teacherName
-                                 ?? request.RequestingEmployee?.Staff?.FullName,
-                CourseName = courseName,
-                ContentArea = contentArea ?? request.SubjectArea,
-                Room = room,
-                SessionType = sessionType,
-                EntrySource = "PRE_ASSIGNED",
-                IsVerified = false,
-                Notes = null,
-                CreatedDate = DateTime.Now
-            };
+                // Master-schedule snapshot (teacher / course / room / content).
+                int? masterScheduleId = null;
+                string? teacherName = null;
+                string? courseName = null;
+                string? contentArea = null;
+                string? room = null;
+                try
+                {
+                    var slots = await _scheduleLookup.GetTeachersForPeriodAsync(
+                        card.CampusId, card.WorkDate, periodNumber, sessionType);
+                    // Prefer the teacher being replaced (the requester) if found in the slots.
+                    var matched = slots.FirstOrDefault(s =>
+                        string.Equals(s.TeacherName, request.RequestingEmployee?.Staff?.FullName,
+                                      StringComparison.OrdinalIgnoreCase))
+                                ?? slots.FirstOrDefault();
+                    if (matched != null)
+                    {
+                        masterScheduleId = matched.MasterScheduleId;
+                        teacherName = matched.TeacherName;
+                        courseName = matched.CourseName ?? matched.ContentArea;
+                        contentArea = matched.ContentArea;
+                        room = matched.Room;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "AutoPopulatePreAssignedAsync: master-schedule lookup failed for campus {CampusId} P{Period} {Session}. Entry created without snapshot.",
+                        card.CampusId, periodNumber, sessionType);
+                }
 
-            context.TcSubstitutePeriodEntries.Add(entry);
-            createdEntries.Add(entry);
-            existingNumbers.Add(periodNumber);
+                // TeacherReplacedEmployeeId is always the requesting teacher's
+                // TC_Employees.EmployeeId (the absentee) — NOT whoever happens
+                // to be in the master-schedule slot for that period. This is
+                // what HR needs to reconcile against the Ascender PTO record.
+                var entry = new TcSubstitutePeriodEntry
+                {
+                    SubTimecardId = card.SubTimecardId,
+                    BellPeriodId = bellPeriod.PeriodId,
+                    MasterScheduleId = masterScheduleId,
+                    SubRequestId = request.SubRequestId,
+                    PeriodNumber = bellPeriod.PeriodNumber,
+                    PeriodName = bellPeriod.PeriodName,
+                    StartTime = bellPeriod.StartTime,
+                    EndTime = bellPeriod.EndTime,
+                    TeacherReplaced = teacherName
+                                     ?? request.RequestingEmployee?.Staff?.FullName,
+                    TeacherReplacedEmployeeId = request.RequestingEmployeeId,
+                    CourseName = courseName,
+                    ContentArea = contentArea ?? request.SubjectArea,
+                    Room = room,
+                    SessionType = sessionType,
+                    EntrySource = "PRE_ASSIGNED",
+                    IsVerified = false,
+                    Notes = null,
+                    CreatedDate = DateTime.Now
+                };
+
+                context.TcSubstitutePeriodEntries.Add(entry);
+                createdEntries.Add(entry);
+                existingNumbers.Add(periodNumber);
+                touchedRequestIds.Add(request.SubRequestId);
+            }
         }
 
         if (createdEntries.Count == 0)
@@ -732,13 +842,14 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
                     entry.PeriodName,
                     entry.SessionType,
                     entry.TeacherReplaced,
+                    entry.TeacherReplacedEmployeeId,
                     entry.CourseName,
                     entry.ContentArea,
                     entry.Room,
                     entry.MasterScheduleId,
                     entry.EntrySource
                 },
-                deltaSummary: $"Auto-populated P{entry.PeriodNumber} ({entry.SessionType}) from sub request #{request.SubRequestId}",
+                deltaSummary: $"Auto-populated P{entry.PeriodNumber} ({entry.SessionType}) from sub request #{entry.SubRequestId}",
                 source: AuditSource.System,
                 employeeId: card.EmployeeId,
                 campusId: card.CampusId);

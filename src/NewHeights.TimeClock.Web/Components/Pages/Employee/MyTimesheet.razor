@@ -287,6 +287,36 @@
                                             </div>
                                         }
 
+                                        @* ── Short-day reason (migration 052) ──────────── *@
+                                        <div class="short-day-reason" @onclick:stopPropagation="true">
+                                            <label class="sdr-label">Reason for short / non-work day (optional):</label>
+                                            <div class="sdr-row">
+                                                <select class="sdr-select"
+                                                        value="@(day.ShortDayReason ?? "")"
+                                                        @onchange="e => OnShortDayReasonChangedAsync(day, e.Value?.ToString())"
+                                                        disabled="@weeklyTimesheet.IsSubmitted">
+                                                    <option value="">— None —</option>
+                                                    <option value="WeatherClosure">Weather Closure</option>
+                                                    <option value="PTO">PTO</option>
+                                                    <option value="Sick">Sick</option>
+                                                    <option value="Personal">Personal</option>
+                                                    <option value="Holiday">Holiday</option>
+                                                    <option value="ProfessionalDev">Professional Dev</option>
+                                                    <option value="Other">Other</option>
+                                                </select>
+                                                <input type="text" class="sdr-note"
+                                                       placeholder="Optional note (e.g. 'Dr appointment 1:30')"
+                                                       maxlength="500"
+                                                       value="@(day.ShortDayNote ?? "")"
+                                                       @onchange="e => OnShortDayNoteChangedAsync(day, e.Value?.ToString())"
+                                                       disabled="@weeklyTimesheet.IsSubmitted" />
+                                            </div>
+                                            @if (!string.IsNullOrEmpty(day.ShortDayReason))
+                                            {
+                                                <span class="sdr-chip">@FormatReason(day.ShortDayReason)</span>
+                                            }
+                                        </div>
+
                                         @* ── Correction Request Button ────────────────────── *@
                                         @if (!weeklyTimesheet.IsSubmitted)
                                         {
@@ -871,6 +901,47 @@
             await LoadTimesheet();
         }
     }
+
+    // ── Feature B (migration 052): employee-set ShortDayReason / Note ────
+    // Saves directly to TC_DailyTimecards via TimesheetService.SetShortDayReasonAsync.
+    // Auto-saves on change; no explicit "save" button. Disabled once the
+    // timesheet is submitted (the @bind disabled flag does that upstream).
+
+    private async Task OnShortDayReasonChangedAsync(DailyTimesheetEntry day, string? newReason)
+    {
+        day.ShortDayReason = string.IsNullOrWhiteSpace(newReason) ? null : newReason;
+        try
+        {
+            await TimesheetService.SetShortDayReasonAsync(
+                employeeId, day.Date, day.ShortDayReason, day.ShortDayNote, currentUserEmail);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SetShortDayReason failed for {EmployeeId} {Date}", employeeId, day.Date);
+        }
+    }
+
+    private async Task OnShortDayNoteChangedAsync(DailyTimesheetEntry day, string? newNote)
+    {
+        day.ShortDayNote = string.IsNullOrWhiteSpace(newNote) ? null : newNote;
+        try
+        {
+            await TimesheetService.SetShortDayReasonAsync(
+                employeeId, day.Date, day.ShortDayReason, day.ShortDayNote, currentUserEmail);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SetShortDayNote failed for {EmployeeId} {Date}", employeeId, day.Date);
+        }
+    }
+
+    // Display helper for the chip — turns "WeatherClosure" into "Weather Closure" etc.
+    private static string FormatReason(string? reasonCode) => reasonCode switch
+    {
+        "WeatherClosure"  => "Weather Closure",
+        "ProfessionalDev" => "Professional Dev",
+        _                 => reasonCode ?? ""
+    };
 
     private async Task SubmitTimesheet()
     {

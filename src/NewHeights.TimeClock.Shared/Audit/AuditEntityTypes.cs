@@ -22,4 +22,6 @@ public static class AuditEntityTypes
     public const string SubTimecard        = "SUB_TIMECARD";
     public const string SubPeriodEntry     = "SUB_PERIOD_ENTRY";
     public const string AttendanceTx       = "ATTENDANCE_TX";
+    public const string BellSchedule       = "BELL_SCHEDULE";
+    public const string BellPeriod         = "BELL_PERIOD";
 }

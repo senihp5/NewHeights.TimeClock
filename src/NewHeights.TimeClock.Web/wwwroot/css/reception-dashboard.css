@@ -254,6 +254,21 @@
 .onsite-table-wrapper {
     flex: 1;
     overflow-y: auto;
+    /* Explicit viewport-relative cap so the table scrolls when more people
+       are on-site than can fit on screen. The flex chain up to .kiosk-body
+       was failing because .kiosk-body uses min-height:100vh (not height:100vh),
+       which lets ancestors grow past the viewport and breaks inner overflow.
+       Numbers account for the reception-header (~72px) + section-toolbar
+       (~50px) + content padding (~40px) + a small margin; adjust if the
+       header height changes. */
+    max-height: calc(100vh - 180px);
+}
+
+/* Sticky header so column labels stay visible while scrolling */
+.onsite-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
 }
 
 .onsite-table {

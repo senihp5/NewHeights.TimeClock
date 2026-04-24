@@ -1,0 +1,482 @@
+@page "/admin/timecard-recalc"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ITimesheetService TimesheetService
+@inject ILogger<TimecardRecalc> Logger
+
+<PageTitle>Timecard Recalculation - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="admin-page recalc-admin">
+    <div class="admin-header">
+        <div>
+            <h1>Timecard Recalculation Tool</h1>
+            <p class="admin-subtitle">
+                Force daily-timecard hours to recompute from current active punches. Use after a bulk
+                punch cleanup (void/repair operation) — the timesheet display reads stored
+                <code>TC_DailyTimecards.TotalHours</code> so a recalc is required before the new
+                numbers show up on <em>My Timesheet</em> or <em>Team Timesheets</em>.
+            </p>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-error">@errorMessage</div>
+    }
+
+    <!-- ── Section A: cleanup-affected bulk recalc ───────────────────────── -->
+    <div class="admin-card wide">
+        <h2>Cleanup-affected bulk recalc</h2>
+        <p class="section-help">
+            Every (employee, date) pair where a punch was voided by the 2026-04-23 auto-checkout
+            cleanup. Click <strong>Recalculate All</strong> to run
+            <code>RecalculateDailyTimecardAsync</code> for each row.
+        </p>
+
+        <div class="row-actions">
+            <button class="btn-secondary" @onclick="LoadAffectedAsync" disabled="@isWorking">
+                @(isWorking ? "Loading…" : "Refresh List")
+            </button>
+            <button class="btn-primary" @onclick="RecalcAllAffectedAsync"
+                    disabled="@(isWorking || affectedPairs.Count == 0)">
+                @(isWorking ? "Recalculating…" : $"Recalculate All ({affectedPairs.Count})")
+            </button>
+            <span class="row-count">@affectedPairs.Count pair(s) pending</span>
+        </div>
+
+        @if (affectedPairs.Count > 0)
+        {
+            <div class="table-wrapper">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Employee</th>
+                            <th>Work Date</th>
+                            <th>Campus</th>
+                            <th>Hours Before</th>
+                            <th>Hours After</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in affectedPairs)
+                        {
+                            <tr class="@(row.HasCompleted ? "recalc-done" : "")">
+                                <td>@row.EmployeeDisplay <span class="muted-id">#@row.EmployeeId</span></td>
+                                <td>@row.WorkDate.ToString("yyyy-MM-dd ddd")</td>
+                                <td>@(row.CampusName ?? "—")</td>
+                                <td>@(row.HoursBefore?.ToString("F2") ?? "—")</td>
+                                <td>
+                                    @if (row.HoursAfter.HasValue)
+                                    {
+                                        <strong>@row.HoursAfter.Value.ToString("F2")</strong>
+                                    }
+                                    else
+                                    {
+                                        <span>—</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (row.HasCompleted)
+                                    {
+                                        <span class="status-chip success">✓ Recalced</span>
+                                    }
+                                    else if (!string.IsNullOrEmpty(row.Error))
+                                    {
+                                        <span class="status-chip error" title="@row.Error">✗ Error</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="status-chip pending">Pending</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else if (!isWorking)
+        {
+            <div class="empty-state">
+                <p>No cleanup-affected pairs found. The affected list is built from punches voided
+                   with the note marker <code>duplicate or orphan auto-checkout</code> in the last 60 days.</p>
+            </div>
+        }
+    </div>
+
+    <!-- ── Section B: manual recalc ──────────────────────────────────────── -->
+    <div class="admin-card wide">
+        <h2>Manual recalc — specific employee + date range</h2>
+        <p class="section-help">
+            Recalculate one employee's daily timecards across a date range. Useful for individual
+            fixes outside the cleanup batch.
+        </p>
+
+        <div class="manual-form">
+            <div class="form-field">
+                <label for="manual-employee">Employee</label>
+                <select id="manual-employee" class="form-input" @bind="manualEmployeeId" disabled="@isWorking">
+                    <option value="0">— Select employee —</option>
+                    @foreach (var emp in allEmployees)
+                    {
+                        <option value="@emp.EmployeeId">
+                            @emp.DisplayName — @emp.Email (#@emp.EmployeeId)
+                        </option>
+                    }
+                </select>
+            </div>
+            <div class="form-field">
+                <label for="manual-start">Start Date</label>
+                <input id="manual-start" type="date" class="form-input"
+                       value="@manualStartDate.ToString("yyyy-MM-dd")"
+                       @onchange="e => OnManualStartChanged(e.Value?.ToString())"
+                       disabled="@isWorking" />
+            </div>
+            <div class="form-field">
+                <label for="manual-end">End Date</label>
+                <input id="manual-end" type="date" class="form-input"
+                       value="@manualEndDate.ToString("yyyy-MM-dd")"
+                       @onchange="e => OnManualEndChanged(e.Value?.ToString())"
+                       disabled="@isWorking" />
+            </div>
+            <div class="form-field form-field-action">
+                <button class="btn-primary"
+                        @onclick="RunManualRecalcAsync"
+                        disabled="@(isWorking || manualEmployeeId <= 0)">
+                    @(isWorking ? "Recalculating…" : "Recalculate")
+                </button>
+            </div>
+        </div>
+
+        @if (manualResults.Count > 0)
+        {
+            <div class="table-wrapper">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Work Date</th>
+                            <th>Hours Before</th>
+                            <th>Hours After</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in manualResults)
+                        {
+                            <tr>
+                                <td>@r.WorkDate.ToString("yyyy-MM-dd ddd")</td>
+                                <td>@(r.HoursBefore?.ToString("F2") ?? "—")</td>
+                                <td>
+                                    @if (r.HoursAfter.HasValue)
+                                    {
+                                        <strong>@r.HoursAfter.Value.ToString("F2")</strong>
+                                    }
+                                    else
+                                    {
+                                        <span>—</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (!string.IsNullOrEmpty(r.Error))
+                                    {
+                                        <span class="status-chip error" title="@r.Error">✗ Error</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="status-chip success">✓ Recalced</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private bool isWorking = false;
+    private string successMessage = "";
+    private string errorMessage = "";
+
+    private List<AffectedRow> affectedPairs = new();
+    private List<TcEmployee> allEmployees = new();
+
+    // Manual recalc state
+    private int manualEmployeeId = 0;
+    private DateOnly manualStartDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-14));
+    private DateOnly manualEndDate = DateOnly.FromDateTime(DateTime.Today);
+    private List<ManualResultRow> manualResults = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadEmployeesAsync();
+        await LoadAffectedAsync();
+    }
+
+    private async Task LoadEmployeesAsync()
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        allEmployees = await ctx.TcEmployees
+            .AsNoTracking()
+            .Where(e => e.IsActive)
+            .OrderBy(e => e.DisplayName)
+            .ToListAsync();
+    }
+
+    // Queries the audit trail left by the 2026-04-23 cleanup: punches with
+    // IsAutoCheckout=1 + PunchStatus=Voided + the marker note. Groups by
+    // (employee, date). Joins to TC_DailyTimecards for before-hours display.
+    private async Task LoadAffectedAsync()
+    {
+        isWorking = true;
+        errorMessage = "";
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            var cutoff = DateTime.Today.AddDays(-60);
+
+            var voidedPunches = await ctx.TcTimePunches
+                .AsNoTracking()
+                .Where(p => p.IsAutoCheckout
+                         && p.PunchStatus == PunchStatus.Voided
+                         && p.PunchDateTime >= cutoff
+                         && p.Notes != null
+                         && p.Notes.Contains("duplicate or orphan auto-checkout"))
+                .Select(p => new { p.EmployeeId, p.PunchDateTime })
+                .ToListAsync();
+
+            // Group by (employee, date). We deliberately do NOT carry the voided
+            // punch's CampusId here — auto-checkout punches inherit CampusId from
+            // whatever IN punch they paired with, and earlier bad pairings left
+            // those values scrambled (every voided row showed Stop Six even for
+            // McCart employees). Campus for display comes from the employee's
+            // HomeCampus or their daily timecard's CampusId below.
+            var pairs = voidedPunches
+                .GroupBy(p => new { p.EmployeeId, WorkDate = DateOnly.FromDateTime(p.PunchDateTime) })
+                .Select(g => new { g.Key.EmployeeId, g.Key.WorkDate })
+                .OrderByDescending(p => p.WorkDate)
+                .ThenBy(p => p.EmployeeId)
+                .ToList();
+
+            affectedPairs.Clear();
+            if (pairs.Count == 0) return;
+
+            var empIds = pairs.Select(p => p.EmployeeId).Distinct().ToList();
+            var empLookup = await ctx.TcEmployees
+                .AsNoTracking()
+                .Where(e => empIds.Contains(e.EmployeeId))
+                .ToDictionaryAsync(e => e.EmployeeId, e => e);
+
+            var campusLookup = await ctx.Campuses
+                .AsNoTracking()
+                .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
+
+            // Prefetch current stored TotalHours from TC_DailyTimecards for the "before" column.
+            var dtRows = await ctx.TcDailyTimecards
+                .AsNoTracking()
+                .Where(t => empIds.Contains(t.EmployeeId)
+                         && pairs.Select(x => x.WorkDate).Contains(t.WorkDate))
+                .ToListAsync();
+
+            foreach (var p in pairs)
+            {
+                var emp = empLookup.GetValueOrDefault(p.EmployeeId);
+                var dt = dtRows.FirstOrDefault(t => t.EmployeeId == p.EmployeeId && t.WorkDate == p.WorkDate);
+
+                // Campus resolution priority:
+                //   1) Daily timecard's CampusId — where they actually worked that day
+                //   2) Employee's HomeCampusId  — their assigned campus
+                //   3) "—"                       — nothing known
+                int? resolvedCampusId = dt?.CampusId ?? emp?.HomeCampusId;
+                var resolvedCampusName = resolvedCampusId.HasValue
+                    ? campusLookup.GetValueOrDefault(resolvedCampusId.Value)
+                    : null;
+
+                affectedPairs.Add(new AffectedRow
+                {
+                    EmployeeId = p.EmployeeId,
+                    EmployeeDisplay = emp?.DisplayName ?? emp?.Email ?? $"Employee {p.EmployeeId}",
+                    WorkDate = p.WorkDate,
+                    CampusName = resolvedCampusName,
+                    HoursBefore = dt?.TotalHours
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load affected timecard pairs");
+            errorMessage = $"Failed to load affected pairs: {ex.Message}";
+        }
+        finally
+        {
+            isWorking = false;
+        }
+    }
+
+    private async Task RecalcAllAffectedAsync()
+    {
+        if (affectedPairs.Count == 0) return;
+        isWorking = true;
+        successMessage = "";
+        errorMessage = "";
+
+        int recalcedCount = 0;
+        int errorCount = 0;
+
+        try
+        {
+            foreach (var row in affectedPairs)
+            {
+                if (row.HasCompleted) continue;
+                try
+                {
+                    await TimesheetService.RecalculateDailyTimecardAsync(row.EmployeeId, row.WorkDate);
+
+                    // Read back to capture the new TotalHours for the UI
+                    using var ctx = await DbFactory.CreateDbContextAsync();
+                    var fresh = await ctx.TcDailyTimecards
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(t => t.EmployeeId == row.EmployeeId && t.WorkDate == row.WorkDate);
+
+                    row.HoursAfter = fresh?.TotalHours ?? 0m;
+                    row.HasCompleted = true;
+                    recalcedCount++;
+
+                    // Occasional render so the user sees progress live.
+                    if (recalcedCount % 3 == 0) StateHasChanged();
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError(ex,
+                        "Recalc failed for Employee {Id} Date {Date}",
+                        row.EmployeeId, row.WorkDate);
+                    row.Error = ex.Message;
+                    errorCount++;
+                }
+            }
+
+            successMessage = $"Recalculated {recalcedCount} timecard(s)" +
+                             (errorCount > 0 ? $" — {errorCount} error(s)." : ".");
+        }
+        finally
+        {
+            isWorking = false;
+            StateHasChanged();
+        }
+    }
+
+    // ── Manual section ────────────────────────────────────────────────────
+
+    private void OnManualStartChanged(string? raw)
+    {
+        if (DateOnly.TryParse(raw, out var d)) manualStartDate = d;
+    }
+
+    private void OnManualEndChanged(string? raw)
+    {
+        if (DateOnly.TryParse(raw, out var d)) manualEndDate = d;
+    }
+
+    private async Task RunManualRecalcAsync()
+    {
+        if (manualEmployeeId <= 0) return;
+        if (manualEndDate < manualStartDate)
+        {
+            errorMessage = "End date must be on or after start date.";
+            return;
+        }
+
+        isWorking = true;
+        errorMessage = "";
+        successMessage = "";
+        manualResults.Clear();
+
+        try
+        {
+            // Build list of dates in range.
+            var dates = new List<DateOnly>();
+            for (var d = manualStartDate; d <= manualEndDate; d = d.AddDays(1))
+                dates.Add(d);
+
+            // Load "before" hours in a single query.
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var beforeRows = await ctx.TcDailyTimecards
+                .AsNoTracking()
+                .Where(t => t.EmployeeId == manualEmployeeId
+                         && t.WorkDate >= manualStartDate
+                         && t.WorkDate <= manualEndDate)
+                .ToListAsync();
+
+            foreach (var d in dates)
+            {
+                var before = beforeRows.FirstOrDefault(t => t.WorkDate == d)?.TotalHours;
+                var row = new ManualResultRow { WorkDate = d, HoursBefore = before };
+                try
+                {
+                    await TimesheetService.RecalculateDailyTimecardAsync(manualEmployeeId, d);
+
+                    using var ctx2 = await DbFactory.CreateDbContextAsync();
+                    var fresh = await ctx2.TcDailyTimecards
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(t => t.EmployeeId == manualEmployeeId && t.WorkDate == d);
+                    row.HoursAfter = fresh?.TotalHours ?? 0m;
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError(ex, "Manual recalc failed for Employee {Id} Date {Date}", manualEmployeeId, d);
+                    row.Error = ex.Message;
+                }
+                manualResults.Add(row);
+            }
+
+            successMessage = $"Manual recalc complete — {manualResults.Count} date(s) processed.";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Manual recalc failed: {ex.Message}";
+        }
+        finally
+        {
+            isWorking = false;
+            StateHasChanged();
+        }
+    }
+
+    // ── Row models ────────────────────────────────────────────────────────
+
+    private class AffectedRow
+    {
+        public int EmployeeId { get; set; }
+        public string EmployeeDisplay { get; set; } = "";
+        public DateOnly WorkDate { get; set; }
+        public string? CampusName { get; set; }
+        public decimal? HoursBefore { get; set; }
+        public decimal? HoursAfter { get; set; }
+        public bool HasCompleted { get; set; }
+        public string? Error { get; set; }
+    }
+
+    private class ManualResultRow
+    {
+        public DateOnly WorkDate { get; set; }
+        public decimal? HoursBefore { get; set; }
+        public decimal? HoursAfter { get; set; }
+        public string? Error { get; set; }
+    }
+}

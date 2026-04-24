@@ -22,6 +22,16 @@ public class TcSubstitutePeriodEntry
 
     // Denormalized snapshot of the class being covered.
     public string? TeacherReplaced { get; set; }
+
+    /// <summary>
+    /// TC_Employees.EmployeeId of the teacher being replaced. NULL when the
+    /// teacher is a walk-in free-text entry (Task C), not yet synced into
+    /// TC_Employees, or for rows created before migration 051. Auto-populated
+    /// from the master-schedule slot when resolvable. Used by HR for Ascender
+    /// PTO reconciliation — match by payroll ID instead of fuzzy name.
+    /// </summary>
+    public int? TeacherReplacedEmployeeId { get; set; }
+
     public string? CourseName { get; set; }
     public string? ContentArea { get; set; }
     public string? Room { get; set; }
@@ -45,4 +55,5 @@ public class TcSubstitutePeriodEntry
     public TcBellPeriod? BellPeriod { get; set; }
     public TcMasterSchedule? MasterScheduleEntry { get; set; }
     public TcSubRequest? SubRequest { get; set; }
+    public TcEmployee? TeacherReplacedEmployee { get; set; }
 }

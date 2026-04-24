@@ -1,0 +1,1299 @@
+@page "/admin/bell-schedules"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<BellSchedules> Logger
+
+<PageTitle>Bell Schedules - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="admin-page bell-admin">
+    <div class="admin-header">
+        <div>
+            <h1>Bell Schedules</h1>
+            <p class="admin-subtitle">
+                Configure class-period bell times per campus and session. These drive the
+                substitute period picker, auto-populated sub timecards, and session-based
+                reporting.
+            </p>
+        </div>
+        <div class="admin-header-actions">
+            <button class="btn-import" @onclick="OpenCloneModal" disabled="@(selectedScheduleId == 0)">Clone…</button>
+            <button class="btn-primary" @onclick="OpenNewScheduleModal">+ New Schedule</button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-error">@errorMessage</div>
+    }
+
+    <div class="admin-card wide">
+        <div class="filter-row">
+            <label class="filter-label">Campus</label>
+            <select class="form-input campus-select"
+                    @bind="filterCampusId"
+                    @bind:after="ReloadSchedulesAsync">
+                <option value="0">— Select campus —</option>
+                @foreach (var c in campuses)
+                {
+                    <option value="@c.CampusId">@c.CampusName</option>
+                }
+            </select>
+
+            <label class="filter-label">Session</label>
+            <div class="session-toggle" role="radiogroup" aria-label="Session">
+                <button type="button"
+                        class="toggle-btn @(filterSession == "DAY" ? "active" : "")"
+                        @onclick='() => SetSession("DAY")'>Day</button>
+                <button type="button"
+                        class="toggle-btn @(filterSession == "NIGHT" ? "active" : "")"
+                        @onclick='() => SetSession("NIGHT")'>Night</button>
+            </div>
+
+            <label class="filter-label">School Year</label>
+            <select class="form-input year-select"
+                    @bind="filterYear"
+                    @bind:after="ReloadSchedulesAsync">
+                @foreach (var y in allYears)
+                {
+                    <option value="@y">@y</option>
+                }
+            </select>
+        </div>
+
+        @if (filterCampusId == 0)
+        {
+            <div class="empty-state">
+                <p>Pick a campus to view or create bell schedules.</p>
+            </div>
+        }
+        else if (isLoading)
+        {
+            <div class="loading-msg">Loading…</div>
+        }
+        else if (schedules.Count == 0)
+        {
+            <div class="empty-state">
+                <p>
+                    No <strong>@filterSession</strong> schedules found for
+                    <strong>@CurrentCampusName</strong> in school year
+                    <strong>@filterYear</strong>.
+                    Click <em>+ New Schedule</em> to create one.
+                </p>
+            </div>
+        }
+        else
+        {
+            <div class="schedule-tabs">
+                @foreach (var s in schedules.OrderByDescending(x => x.IsDefault).ThenBy(x => x.ScheduleName))
+                {
+                    <button type="button"
+                            class="sched-tab @(selectedScheduleId == s.BellScheduleId ? "active" : "") @(s.IsDefault ? "is-default" : "")"
+                            @onclick="() => SelectSchedule(s.BellScheduleId)">
+                        @s.ScheduleName
+                        @if (s.IsDefault)
+                        {
+                            <span class="default-badge">Default</span>
+                        }
+                        @if (!s.IsActive)
+                        {
+                            <span class="inactive-badge">Inactive</span>
+                        }
+                    </button>
+                }
+            </div>
+
+            @if (selectedSchedule != null)
+            {
+                <div class="schedule-meta">
+                    <div class="meta-grid">
+                        <div class="meta-field">
+                            <label>Name</label>
+                            <input type="text" class="form-input"
+                                   @bind="selectedSchedule.ScheduleName"
+                                   @bind:event="onchange"
+                                   @bind:after="() => MarkScheduleDirty()" />
+                        </div>
+                        <div class="meta-field">
+                            <label>Type</label>
+                            <select class="form-input"
+                                    @bind="selectedSchedule.ScheduleType"
+                                    @bind:after="() => MarkScheduleDirty()">
+                                <option value="STANDARD">Standard</option>
+                                <option value="LATE_START">Late Start</option>
+                                <option value="EARLY_RELEASE">Early Release</option>
+                                <option value="TESTING">Testing</option>
+                                <option value="CUSTOM">Custom</option>
+                            </select>
+                        </div>
+                        <div class="meta-field">
+                            <label>Effective Start</label>
+                            <input type="date" class="form-input"
+                                   value="@FormatDateForInput(selectedSchedule.EffectiveStartDate)"
+                                   @onchange="e => OnEffectiveStartChanged(e.Value?.ToString())" />
+                        </div>
+                        <div class="meta-field">
+                            <label>Effective End</label>
+                            <input type="date" class="form-input"
+                                   value="@FormatDateForInput(selectedSchedule.EffectiveEndDate)"
+                                   @onchange="e => OnEffectiveEndChanged(e.Value?.ToString())" />
+                        </div>
+                        <div class="meta-field checkbox-field">
+                            <label>
+                                <input type="checkbox"
+                                       checked="@selectedSchedule.IsDefault"
+                                       @onchange="e => OnDefaultChanged(e.Value is bool b && b)" />
+                                Default for this campus + session
+                            </label>
+                        </div>
+                        <div class="meta-field checkbox-field">
+                            <label>
+                                <input type="checkbox"
+                                       checked="@selectedSchedule.IsActive"
+                                       @onchange="e => OnActiveChanged(e.Value is bool b && b)" />
+                                Active
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="meta-actions">
+                        @if (isScheduleDirty)
+                        {
+                            <span class="dirty-hint">⚠ Unsaved schedule changes</span>
+                        }
+                        <button class="btn-primary"
+                                disabled="@(!isScheduleDirty || isSaving)"
+                                @onclick="SaveScheduleAsync">
+                            @(isSaving ? "Saving…" : "Save Schedule")
+                        </button>
+                        <button class="btn-danger"
+                                @onclick="() => confirmingDeleteScheduleId = selectedSchedule.BellScheduleId">
+                            Delete
+                        </button>
+                    </div>
+                </div>
+
+                <div class="period-section">
+                    <div class="period-header">
+                        <h3>Periods</h3>
+                        <button class="btn-primary" @onclick="AddPeriodRow">+ Add Period</button>
+                    </div>
+
+                    @if (workingPeriods.Count == 0)
+                    {
+                        <div class="empty-state">
+                            <p>No periods yet. Click <em>+ Add Period</em> to add one.</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="table-wrapper">
+                            <table class="data-table period-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width:60px">#</th>
+                                        <th>Name</th>
+                                        <th style="width:120px">Type</th>
+                                        <th style="width:110px">Start</th>
+                                        <th style="width:110px">End</th>
+                                        <th style="width:90px" title="Minutes late before flagged tardy">Tardy min</th>
+                                        <th style="width:90px" title="Minutes late before counted absent">Absent min</th>
+                                        <th style="width:70px">Active</th>
+                                        <th style="width:80px">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var row in workingPeriods.OrderBy(p => p.PeriodNumber))
+                                    {
+                                        var isDirty = dirtyPeriodIds.Contains(row.LocalRowId);
+                                        <tr class="@(isDirty ? "dirty-row" : "")">
+                                            <td>
+                                                <input type="number" min="1" max="20"
+                                                       class="form-input period-num-input"
+                                                       value="@row.PeriodNumber"
+                                                       @onchange="e => OnPeriodNumberChanged(row, e.Value?.ToString())" />
+                                            </td>
+                                            <td>
+                                                <input type="text" class="form-input"
+                                                       value="@row.PeriodName"
+                                                       @onchange="e => OnPeriodNameChanged(row, e.Value?.ToString())" />
+                                            </td>
+                                            <td>
+                                                <select class="form-input"
+                                                        value="@row.PeriodType"
+                                                        @onchange="e => OnPeriodTypeChanged(row, e.Value?.ToString())">
+                                                    <option value="CLASS">Class</option>
+                                                    <option value="LUNCH">Lunch</option>
+                                                    <option value="ADVISORY">Advisory</option>
+                                                    <option value="BREAK">Break</option>
+                                                </select>
+                                            </td>
+                                            <td>
+                                                <input type="time" class="form-input"
+                                                       value="@row.StartTime.ToString("HH:mm")"
+                                                       @onchange="e => OnStartChanged(row, e.Value?.ToString())" />
+                                            </td>
+                                            <td>
+                                                <input type="time" class="form-input"
+                                                       value="@row.EndTime.ToString("HH:mm")"
+                                                       @onchange="e => OnEndChanged(row, e.Value?.ToString())" />
+                                            </td>
+                                            <td>
+                                                <input type="number" min="0" max="60"
+                                                       class="form-input threshold-input"
+                                                       value="@row.TardyThresholdMinutes"
+                                                       @onchange="e => OnTardyChanged(row, e.Value?.ToString())" />
+                                            </td>
+                                            <td>
+                                                <input type="number" min="0" max="120"
+                                                       class="form-input threshold-input"
+                                                       value="@row.AbsentThresholdMinutes"
+                                                       @onchange="e => OnAbsentChanged(row, e.Value?.ToString())" />
+                                            </td>
+                                            <td style="text-align:center">
+                                                <input type="checkbox"
+                                                       checked="@row.IsActive"
+                                                       @onchange="e => OnRowActiveChanged(row, e.Value is bool b && b)" />
+                                            </td>
+                                            <td>
+                                                <button class="btn-danger-sm"
+                                                        @onclick="() => RemovePeriodRow(row)">
+                                                    Del
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="period-actions">
+                            @if (dirtyPeriodIds.Count > 0 || removedPeriodIds.Count > 0)
+                            {
+                                <span class="dirty-hint">
+                                    ⚠ @dirtyPeriodIds.Count row change(s),
+                                    @removedPeriodIds.Count delete(s) pending
+                                </span>
+                            }
+                            <button class="btn-primary"
+                                    disabled="@(!HasPeriodChanges() || isSaving)"
+                                    @onclick="SavePeriodsAsync">
+                                @(isSaving ? "Saving…" : "Save Periods")
+                            </button>
+                            <button class="btn-secondary"
+                                    disabled="@(!HasPeriodChanges() || isSaving)"
+                                    @onclick="DiscardPeriodChanges">
+                                Discard
+                            </button>
+                        </div>
+                    }
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@if (showNewScheduleModal)
+{
+    <div class="modal-overlay" @onclick="CloseNewScheduleModal">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:540px">
+            <div class="modal-header">
+                <h2>New Bell Schedule</h2>
+                <button class="modal-close" @onclick="CloseNewScheduleModal">✕</button>
+            </div>
+            <div class="modal-body">
+                @if (!string.IsNullOrEmpty(modalError))
+                {
+                    <div class="alert alert-error">@modalError</div>
+                }
+                <div class="form-row">
+                    <label>Campus</label>
+                    <div class="readonly-value">@CurrentCampusName</div>
+                </div>
+                <div class="form-row">
+                    <label>Session</label>
+                    <div class="readonly-value">@filterSession</div>
+                </div>
+                <div class="form-row">
+                    <label for="new-name">Schedule Name</label>
+                    <input id="new-name" type="text" class="form-input" @bind="newScheduleName"
+                           placeholder="e.g. Standard 2025-2026" />
+                </div>
+                <div class="form-row">
+                    <label for="new-year">School Year</label>
+                    <input id="new-year" type="text" class="form-input" @bind="newScheduleYear"
+                           placeholder="e.g. 2025-2026" />
+                </div>
+                <div class="form-row">
+                    <label for="new-type">Type</label>
+                    <select id="new-type" class="form-input" @bind="newScheduleType">
+                        <option value="STANDARD">Standard</option>
+                        <option value="LATE_START">Late Start</option>
+                        <option value="EARLY_RELEASE">Early Release</option>
+                        <option value="TESTING">Testing</option>
+                        <option value="CUSTOM">Custom</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label class="checkbox-label">
+                        <input type="checkbox" @bind="newScheduleIsDefault" />
+                        Make this the default for @filterSession at @CurrentCampusName
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseNewScheduleModal">Cancel</button>
+                <button class="btn-primary" @onclick="CreateScheduleAsync" disabled="@isSaving">
+                    @(isSaving ? "Creating…" : "Create")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showCloneModal && selectedSchedule != null)
+{
+    <div class="modal-overlay" @onclick="CloseCloneModal">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:540px">
+            <div class="modal-header">
+                <h2>Clone "@selectedSchedule.ScheduleName"</h2>
+                <button class="modal-close" @onclick="CloseCloneModal">✕</button>
+            </div>
+            <div class="modal-body">
+                @if (!string.IsNullOrEmpty(modalError))
+                {
+                    <div class="alert alert-error">@modalError</div>
+                }
+                <p class="modal-hint">
+                    Copy every period row to a new schedule at a different campus or session.
+                </p>
+                <div class="form-row">
+                    <label for="clone-campus">Target Campus</label>
+                    <select id="clone-campus" class="form-input" @bind="cloneTargetCampusId">
+                        <option value="0">— Select —</option>
+                        @foreach (var c in campuses)
+                        {
+                            <option value="@c.CampusId">@c.CampusName</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label for="clone-session">Target Session</label>
+                    <select id="clone-session" class="form-input" @bind="cloneTargetSession">
+                        <option value="DAY">Day</option>
+                        <option value="NIGHT">Night</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label for="clone-name">New Schedule Name</label>
+                    <input id="clone-name" type="text" class="form-input" @bind="cloneTargetName"
+                           placeholder="@($"Clone of {selectedSchedule.ScheduleName}")" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseCloneModal">Cancel</button>
+                <button class="btn-primary" @onclick="CloneScheduleAsync" disabled="@isSaving">
+                    @(isSaving ? "Cloning…" : "Clone")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (confirmingDeleteScheduleId > 0 && selectedSchedule != null)
+{
+    <div class="modal-overlay" @onclick="() => confirmingDeleteScheduleId = 0">
+        <div class="modal-content" @onclick:stopPropagation style="max-width:460px">
+            <div class="modal-header">
+                <h2>Delete Schedule?</h2>
+            </div>
+            <div class="modal-body">
+                <p>
+                    Delete <strong>@selectedSchedule.ScheduleName</strong>
+                    (@selectedSchedule.SessionType, @CurrentCampusName) and all of its
+                    @workingPeriods.Count period(s)?
+                </p>
+                <p class="warn-text">
+                    Sub timecards referencing these periods will <em>not</em> be rewritten —
+                    they'll keep the snapshot times already on each entry. Historical data is safe.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="() => confirmingDeleteScheduleId = 0">Cancel</button>
+                <button class="btn-danger" @onclick="DeleteScheduleAsync" disabled="@isSaving">
+                    @(isSaving ? "Deleting…" : "Delete")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ── State ─────────────────────────────────────────────────────────────
+    private List<Campus> campuses = new();
+    private List<TcBellSchedule> schedules = new();
+    private int filterCampusId = 0;
+    private string filterSession = "DAY";
+    private string filterYear = "";
+    private List<string> allYears = new();
+
+    private int selectedScheduleId = 0;
+    private TcBellSchedule? selectedSchedule;
+    private List<PeriodRow> workingPeriods = new();
+    private HashSet<Guid> dirtyPeriodIds = new();
+    private List<int> removedPeriodIds = new();
+    private bool isScheduleDirty = false;
+
+    private bool isLoading = false;
+    private bool isSaving = false;
+    private string successMessage = "";
+    private string errorMessage = "";
+    private string modalError = "";
+
+    // ── New-schedule modal ────────────────────────────────────────────────
+    private bool showNewScheduleModal = false;
+    private string newScheduleName = "";
+    private string newScheduleYear = "";
+    private string newScheduleType = "STANDARD";
+    private bool newScheduleIsDefault = false;
+
+    // ── Clone modal ───────────────────────────────────────────────────────
+    private bool showCloneModal = false;
+    private int cloneTargetCampusId = 0;
+    private string cloneTargetSession = "DAY";
+    private string cloneTargetName = "";
+
+    // ── Delete-confirm ────────────────────────────────────────────────────
+    private int confirmingDeleteScheduleId = 0;
+
+    private string currentUserEmail = "";
+
+    private string CurrentCampusName =>
+        campuses.FirstOrDefault(c => c.CampusId == filterCampusId)?.CampusName ?? "—";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
+                        ?? authState.User.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "unknown";
+
+        // School-year default: Aug-Dec uses current-year → next-year;
+        // Jan-Jul (spring semester) uses previous-year → current-year.
+        // Without this month-aware pick, an admin opening the page in April
+        // lands on the NEXT school year by default and sees "no schedules"
+        // even when the current year is fully seeded.
+        var today = DateTime.Today;
+        var anchorYear = today.Month >= 8 ? today.Year : today.Year - 1;
+        for (int y = anchorYear - 2; y <= anchorYear + 2; y++)
+            allYears.Add($"{y}-{y + 1}");
+        filterYear = $"{anchorYear}-{anchorYear + 1}";
+
+        await LoadCampusesAsync();
+    }
+
+    private async Task LoadCampusesAsync()
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        // District Office is a payroll/HR rollup; excluded from the campus picker.
+        campuses = await ctx.Campuses
+            .AsNoTracking()
+            .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
+            .OrderBy(c => c.CampusName)
+            .ToListAsync();
+    }
+
+    private async Task ReloadSchedulesAsync()
+    {
+        ClearMessages();
+        if (filterCampusId == 0)
+        {
+            schedules.Clear();
+            selectedScheduleId = 0;
+            selectedSchedule = null;
+            workingPeriods.Clear();
+            return;
+        }
+
+        isLoading = true;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            schedules = await ctx.TcBellSchedules
+                .AsNoTracking()
+                .Where(s => s.CampusId == filterCampusId
+                         && s.SessionType == filterSession
+                         && s.SchoolYear == filterYear)
+                .OrderByDescending(s => s.IsDefault)
+                .ThenBy(s => s.ScheduleName)
+                .ToListAsync();
+
+            if (schedules.Count > 0 && !schedules.Any(s => s.BellScheduleId == selectedScheduleId))
+            {
+                await SelectScheduleInternalAsync(schedules[0].BellScheduleId);
+            }
+            else if (schedules.Count == 0)
+            {
+                selectedScheduleId = 0;
+                selectedSchedule = null;
+                workingPeriods.Clear();
+            }
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SetSession(string session)
+    {
+        if (session == filterSession) return;
+        filterSession = session;
+        await ReloadSchedulesAsync();
+    }
+
+    private async Task SelectSchedule(int id)
+    {
+        if (id == selectedScheduleId) return;
+        await SelectScheduleInternalAsync(id);
+    }
+
+    private async Task SelectScheduleInternalAsync(int id)
+    {
+        ClearMessages();
+        selectedScheduleId = id;
+        isScheduleDirty = false;
+        dirtyPeriodIds.Clear();
+        removedPeriodIds.Clear();
+
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        selectedSchedule = await ctx.TcBellSchedules
+            .Include(s => s.Periods)
+            .FirstOrDefaultAsync(s => s.BellScheduleId == id);
+
+        if (selectedSchedule == null)
+        {
+            workingPeriods.Clear();
+            return;
+        }
+
+        workingPeriods = selectedSchedule.Periods
+            .OrderBy(p => p.PeriodNumber)
+            .Select(p => PeriodRow.FromEntity(p))
+            .ToList();
+    }
+
+    // ── Schedule-level change handlers ────────────────────────────────────
+    private void MarkScheduleDirty() => isScheduleDirty = true;
+
+    private void OnEffectiveStartChanged(string? raw)
+    {
+        if (selectedSchedule == null) return;
+        selectedSchedule.EffectiveStartDate = ParseDate(raw);
+        MarkScheduleDirty();
+    }
+
+    private void OnEffectiveEndChanged(string? raw)
+    {
+        if (selectedSchedule == null) return;
+        selectedSchedule.EffectiveEndDate = ParseDate(raw);
+        MarkScheduleDirty();
+    }
+
+    private void OnDefaultChanged(bool isDefault)
+    {
+        if (selectedSchedule == null) return;
+        selectedSchedule.IsDefault = isDefault;
+        MarkScheduleDirty();
+    }
+
+    private void OnActiveChanged(bool isActive)
+    {
+        if (selectedSchedule == null) return;
+        selectedSchedule.IsActive = isActive;
+        MarkScheduleDirty();
+    }
+
+    private async Task SaveScheduleAsync()
+    {
+        if (selectedSchedule == null || !isScheduleDirty) return;
+        ClearMessages();
+        isSaving = true;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var tracked = await ctx.TcBellSchedules
+                .FirstOrDefaultAsync(s => s.BellScheduleId == selectedSchedule.BellScheduleId);
+            if (tracked == null)
+            {
+                errorMessage = "Schedule no longer exists — refresh the page.";
+                return;
+            }
+
+            var oldValues = new
+            {
+                tracked.ScheduleName,
+                tracked.ScheduleType,
+                tracked.SessionType,
+                tracked.IsActive,
+                tracked.IsDefault,
+                tracked.EffectiveStartDate,
+                tracked.EffectiveEndDate
+            };
+
+            tracked.ScheduleName         = selectedSchedule.ScheduleName;
+            tracked.ScheduleType         = selectedSchedule.ScheduleType;
+            tracked.IsActive             = selectedSchedule.IsActive;
+            tracked.EffectiveStartDate   = selectedSchedule.EffectiveStartDate;
+            tracked.EffectiveEndDate     = selectedSchedule.EffectiveEndDate;
+            tracked.ModifiedDate         = DateTime.Now;
+
+            // If we're flipping this one to default, clear the default flag on
+            // its siblings so the uniqueness invariant "one default per campus+session"
+            // is preserved.
+            if (selectedSchedule.IsDefault && !tracked.IsDefault)
+            {
+                var siblings = await ctx.TcBellSchedules
+                    .Where(s => s.CampusId == tracked.CampusId
+                             && s.SessionType == tracked.SessionType
+                             && s.BellScheduleId != tracked.BellScheduleId
+                             && s.IsDefault)
+                    .ToListAsync();
+                foreach (var sib in siblings)
+                {
+                    sib.IsDefault = false;
+                    sib.ModifiedDate = DateTime.Now;
+                }
+
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.BellSchedule.SetDefault,
+                    entityType: AuditEntityTypes.BellSchedule,
+                    entityId: tracked.BellScheduleId.ToString(),
+                    newValues: new { tracked.CampusId, tracked.SessionType, DefaultScheduleId = tracked.BellScheduleId },
+                    deltaSummary: $"Set '{tracked.ScheduleName}' as default for {tracked.SessionType} at campus {tracked.CampusId}",
+                    source: AuditSource.AdminUi);
+            }
+            tracked.IsDefault = selectedSchedule.IsDefault;
+
+            await ctx.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.BellSchedule.Modified,
+                entityType: AuditEntityTypes.BellSchedule,
+                entityId: tracked.BellScheduleId.ToString(),
+                oldValues: oldValues,
+                newValues: new
+                {
+                    tracked.ScheduleName,
+                    tracked.ScheduleType,
+                    tracked.SessionType,
+                    tracked.IsActive,
+                    tracked.IsDefault,
+                    tracked.EffectiveStartDate,
+                    tracked.EffectiveEndDate
+                },
+                deltaSummary: $"Bell schedule '{tracked.ScheduleName}' modified",
+                source: AuditSource.AdminUi);
+
+            isScheduleDirty = false;
+            successMessage = "Schedule saved.";
+            await ReloadSchedulesAsync();
+            await SelectScheduleInternalAsync(tracked.BellScheduleId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SaveScheduleAsync failed for schedule {Id}", selectedSchedule.BellScheduleId);
+            errorMessage = $"Save failed: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    // ── Period-row handlers ───────────────────────────────────────────────
+    private void AddPeriodRow()
+    {
+        var nextNum = workingPeriods.Count == 0 ? 1 : workingPeriods.Max(p => p.PeriodNumber) + 1;
+        var fresh = new PeriodRow
+        {
+            LocalRowId = Guid.NewGuid(),
+            PeriodId = 0,
+            PeriodNumber = nextNum,
+            PeriodName = $"Period {nextNum}",
+            PeriodType = "CLASS",
+            StartTime = new TimeOnly(8, 0),
+            EndTime = new TimeOnly(8, 45),
+            TardyThresholdMinutes = 5,
+            AbsentThresholdMinutes = 20,
+            IsActive = true
+        };
+        workingPeriods.Add(fresh);
+        dirtyPeriodIds.Add(fresh.LocalRowId);
+    }
+
+    private void RemovePeriodRow(PeriodRow row)
+    {
+        workingPeriods.Remove(row);
+        dirtyPeriodIds.Remove(row.LocalRowId);
+        if (row.PeriodId > 0)
+            removedPeriodIds.Add(row.PeriodId);
+    }
+
+    private void DiscardPeriodChanges()
+    {
+        if (selectedSchedule == null) return;
+        workingPeriods = selectedSchedule.Periods
+            .OrderBy(p => p.PeriodNumber)
+            .Select(p => PeriodRow.FromEntity(p))
+            .ToList();
+        dirtyPeriodIds.Clear();
+        removedPeriodIds.Clear();
+    }
+
+    private bool HasPeriodChanges() =>
+        dirtyPeriodIds.Count > 0 || removedPeriodIds.Count > 0;
+
+    private void OnPeriodNumberChanged(PeriodRow row, string? raw)
+    {
+        if (int.TryParse(raw, out var n) && n > 0 && n <= 20)
+        {
+            row.PeriodNumber = n;
+            dirtyPeriodIds.Add(row.LocalRowId);
+        }
+    }
+
+    private void OnPeriodNameChanged(PeriodRow row, string? raw)
+    {
+        row.PeriodName = raw ?? "";
+        dirtyPeriodIds.Add(row.LocalRowId);
+    }
+
+    private void OnPeriodTypeChanged(PeriodRow row, string? raw)
+    {
+        row.PeriodType = string.IsNullOrWhiteSpace(raw) ? "CLASS" : raw;
+        dirtyPeriodIds.Add(row.LocalRowId);
+    }
+
+    private void OnStartChanged(PeriodRow row, string? raw)
+    {
+        if (TimeOnly.TryParse(raw, out var t))
+        {
+            row.StartTime = t;
+            dirtyPeriodIds.Add(row.LocalRowId);
+        }
+    }
+
+    private void OnEndChanged(PeriodRow row, string? raw)
+    {
+        if (TimeOnly.TryParse(raw, out var t))
+        {
+            row.EndTime = t;
+            dirtyPeriodIds.Add(row.LocalRowId);
+        }
+    }
+
+    private void OnTardyChanged(PeriodRow row, string? raw)
+    {
+        if (int.TryParse(raw, out var n) && n >= 0 && n <= 60)
+        {
+            row.TardyThresholdMinutes = n;
+            dirtyPeriodIds.Add(row.LocalRowId);
+        }
+    }
+
+    private void OnAbsentChanged(PeriodRow row, string? raw)
+    {
+        if (int.TryParse(raw, out var n) && n >= 0 && n <= 120)
+        {
+            row.AbsentThresholdMinutes = n;
+            dirtyPeriodIds.Add(row.LocalRowId);
+        }
+    }
+
+    private void OnRowActiveChanged(PeriodRow row, bool isActive)
+    {
+        row.IsActive = isActive;
+        dirtyPeriodIds.Add(row.LocalRowId);
+    }
+
+    private async Task SavePeriodsAsync()
+    {
+        if (selectedSchedule == null || !HasPeriodChanges()) return;
+        ClearMessages();
+
+        // Validate
+        foreach (var row in workingPeriods)
+        {
+            if (string.IsNullOrWhiteSpace(row.PeriodName))
+            {
+                errorMessage = $"Period {row.PeriodNumber} has no name.";
+                return;
+            }
+            if (row.EndTime <= row.StartTime)
+            {
+                errorMessage = $"Period {row.PeriodNumber} end time must be after start time.";
+                return;
+            }
+        }
+
+        var dupeGroup = workingPeriods.GroupBy(p => p.PeriodNumber).FirstOrDefault(g => g.Count() > 1);
+        if (dupeGroup != null)
+        {
+            errorMessage = $"Period number {dupeGroup.Key} is used {dupeGroup.Count()} times — each number must be unique.";
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var tracked = await ctx.TcBellSchedules
+                .Include(s => s.Periods)
+                .FirstOrDefaultAsync(s => s.BellScheduleId == selectedSchedule.BellScheduleId);
+            if (tracked == null)
+            {
+                errorMessage = "Schedule no longer exists — refresh the page.";
+                return;
+            }
+
+            // Removals
+            foreach (var pid in removedPeriodIds)
+            {
+                var gone = tracked.Periods.FirstOrDefault(p => p.PeriodId == pid);
+                if (gone != null)
+                {
+                    ctx.TcBellPeriods.Remove(gone);
+                    await Audit.LogActionAsync(
+                        actionCode: AuditActions.BellSchedule.PeriodDeleted,
+                        entityType: AuditEntityTypes.BellPeriod,
+                        entityId: gone.PeriodId.ToString(),
+                        oldValues: new { gone.PeriodNumber, gone.PeriodName, gone.StartTime, gone.EndTime },
+                        deltaSummary: $"Deleted P{gone.PeriodNumber} ({gone.PeriodName}) from schedule '{tracked.ScheduleName}'",
+                        source: AuditSource.AdminUi);
+                }
+            }
+
+            // Upserts
+            foreach (var row in workingPeriods)
+            {
+                if (!dirtyPeriodIds.Contains(row.LocalRowId)) continue;
+
+                if (row.PeriodId == 0)
+                {
+                    // Insert
+                    var fresh = new TcBellPeriod
+                    {
+                        BellScheduleId = tracked.BellScheduleId,
+                        PeriodNumber = row.PeriodNumber,
+                        PeriodName = row.PeriodName,
+                        PeriodType = row.PeriodType,
+                        StartTime = row.StartTime,
+                        EndTime = row.EndTime,
+                        TardyThresholdMinutes = row.TardyThresholdMinutes,
+                        AbsentThresholdMinutes = row.AbsentThresholdMinutes,
+                        IsActive = row.IsActive
+                    };
+                    ctx.TcBellPeriods.Add(fresh);
+                    await ctx.SaveChangesAsync();
+                    row.PeriodId = fresh.PeriodId;
+
+                    await Audit.LogActionAsync(
+                        actionCode: AuditActions.BellSchedule.PeriodAdded,
+                        entityType: AuditEntityTypes.BellPeriod,
+                        entityId: fresh.PeriodId.ToString(),
+                        newValues: new { fresh.PeriodNumber, fresh.PeriodName, fresh.StartTime, fresh.EndTime, fresh.PeriodType },
+                        deltaSummary: $"Added P{fresh.PeriodNumber} ({fresh.PeriodName}) to schedule '{tracked.ScheduleName}'",
+                        source: AuditSource.AdminUi);
+                }
+                else
+                {
+                    // Update
+                    var trackedPeriod = tracked.Periods.FirstOrDefault(p => p.PeriodId == row.PeriodId);
+                    if (trackedPeriod == null) continue;
+
+                    var oldValues = new
+                    {
+                        trackedPeriod.PeriodNumber,
+                        trackedPeriod.PeriodName,
+                        trackedPeriod.PeriodType,
+                        trackedPeriod.StartTime,
+                        trackedPeriod.EndTime,
+                        trackedPeriod.TardyThresholdMinutes,
+                        trackedPeriod.AbsentThresholdMinutes,
+                        trackedPeriod.IsActive
+                    };
+
+                    trackedPeriod.PeriodNumber = row.PeriodNumber;
+                    trackedPeriod.PeriodName = row.PeriodName;
+                    trackedPeriod.PeriodType = row.PeriodType;
+                    trackedPeriod.StartTime = row.StartTime;
+                    trackedPeriod.EndTime = row.EndTime;
+                    trackedPeriod.TardyThresholdMinutes = row.TardyThresholdMinutes;
+                    trackedPeriod.AbsentThresholdMinutes = row.AbsentThresholdMinutes;
+                    trackedPeriod.IsActive = row.IsActive;
+
+                    await Audit.LogActionAsync(
+                        actionCode: AuditActions.BellSchedule.PeriodModified,
+                        entityType: AuditEntityTypes.BellPeriod,
+                        entityId: trackedPeriod.PeriodId.ToString(),
+                        oldValues: oldValues,
+                        newValues: new
+                        {
+                            trackedPeriod.PeriodNumber,
+                            trackedPeriod.PeriodName,
+                            trackedPeriod.PeriodType,
+                            trackedPeriod.StartTime,
+                            trackedPeriod.EndTime,
+                            trackedPeriod.TardyThresholdMinutes,
+                            trackedPeriod.AbsentThresholdMinutes,
+                            trackedPeriod.IsActive
+                        },
+                        deltaSummary: $"P{trackedPeriod.PeriodNumber} ({trackedPeriod.PeriodName}) modified in '{tracked.ScheduleName}'",
+                        source: AuditSource.AdminUi);
+                }
+            }
+
+            tracked.ModifiedDate = DateTime.Now;
+            await ctx.SaveChangesAsync();
+
+            dirtyPeriodIds.Clear();
+            removedPeriodIds.Clear();
+            successMessage = "Periods saved.";
+            await SelectScheduleInternalAsync(tracked.BellScheduleId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SavePeriodsAsync failed for schedule {Id}", selectedSchedule.BellScheduleId);
+            errorMessage = $"Save failed: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    // ── New schedule modal ────────────────────────────────────────────────
+    private void OpenNewScheduleModal()
+    {
+        if (filterCampusId == 0)
+        {
+            errorMessage = "Pick a campus first.";
+            return;
+        }
+        modalError = "";
+        newScheduleName = $"Standard {filterYear}";
+        newScheduleYear = filterYear;
+        newScheduleType = "STANDARD";
+        newScheduleIsDefault = schedules.Count == 0; // auto-default on first schedule
+        showNewScheduleModal = true;
+    }
+
+    private void CloseNewScheduleModal() => showNewScheduleModal = false;
+
+    private async Task CreateScheduleAsync()
+    {
+        modalError = "";
+        if (string.IsNullOrWhiteSpace(newScheduleName))
+        {
+            modalError = "Name is required.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(newScheduleYear))
+        {
+            modalError = "School year is required.";
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            if (newScheduleIsDefault)
+            {
+                var existingDefaults = await ctx.TcBellSchedules
+                    .Where(s => s.CampusId == filterCampusId
+                             && s.SessionType == filterSession
+                             && s.IsDefault)
+                    .ToListAsync();
+                foreach (var d in existingDefaults)
+                {
+                    d.IsDefault = false;
+                    d.ModifiedDate = DateTime.Now;
+                }
+            }
+
+            var fresh = new TcBellSchedule
+            {
+                CampusId = filterCampusId,
+                SchoolYear = newScheduleYear.Trim(),
+                ScheduleName = newScheduleName.Trim(),
+                SessionType = filterSession,
+                ScheduleType = newScheduleType,
+                IsDefault = newScheduleIsDefault,
+                IsActive = true,
+                UploadedBy = currentUserEmail,
+                UploadedDate = DateTime.Now,
+                CreatedDate = DateTime.Now,
+                ModifiedDate = DateTime.Now
+            };
+            ctx.TcBellSchedules.Add(fresh);
+            await ctx.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.BellSchedule.Created,
+                entityType: AuditEntityTypes.BellSchedule,
+                entityId: fresh.BellScheduleId.ToString(),
+                newValues: new
+                {
+                    fresh.CampusId,
+                    fresh.ScheduleName,
+                    fresh.SessionType,
+                    fresh.ScheduleType,
+                    fresh.SchoolYear,
+                    fresh.IsDefault,
+                    fresh.IsActive
+                },
+                deltaSummary: $"Bell schedule '{fresh.ScheduleName}' created for {fresh.SessionType} at campus {fresh.CampusId}",
+                source: AuditSource.AdminUi);
+
+            showNewScheduleModal = false;
+            successMessage = "Schedule created. Now add periods.";
+            await ReloadSchedulesAsync();
+            await SelectScheduleInternalAsync(fresh.BellScheduleId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "CreateScheduleAsync failed");
+            modalError = $"Create failed: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    // ── Clone modal ───────────────────────────────────────────────────────
+    private void OpenCloneModal()
+    {
+        if (selectedSchedule == null) return;
+        modalError = "";
+        cloneTargetCampusId = selectedSchedule.CampusId;
+        cloneTargetSession = selectedSchedule.SessionType == "DAY" ? "NIGHT" : "DAY";
+        cloneTargetName = $"Clone of {selectedSchedule.ScheduleName}";
+        showCloneModal = true;
+    }
+
+    private void CloseCloneModal() => showCloneModal = false;
+
+    private async Task CloneScheduleAsync()
+    {
+        modalError = "";
+        if (selectedSchedule == null) return;
+        if (cloneTargetCampusId == 0)
+        {
+            modalError = "Pick a target campus.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(cloneTargetName))
+        {
+            modalError = "Target schedule name is required.";
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var source = await ctx.TcBellSchedules
+                .AsNoTracking()
+                .Include(s => s.Periods)
+                .FirstOrDefaultAsync(s => s.BellScheduleId == selectedSchedule.BellScheduleId);
+            if (source == null)
+            {
+                modalError = "Source schedule missing — refresh.";
+                return;
+            }
+
+            var fresh = new TcBellSchedule
+            {
+                CampusId = cloneTargetCampusId,
+                SchoolYear = source.SchoolYear,
+                ScheduleName = cloneTargetName.Trim(),
+                SessionType = cloneTargetSession,
+                ScheduleType = source.ScheduleType,
+                IsDefault = false,
+                IsActive = true,
+                UploadedBy = currentUserEmail,
+                UploadedDate = DateTime.Now,
+                CreatedDate = DateTime.Now,
+                ModifiedDate = DateTime.Now
+            };
+            ctx.TcBellSchedules.Add(fresh);
+            await ctx.SaveChangesAsync();
+
+            foreach (var sp in source.Periods)
+            {
+                ctx.TcBellPeriods.Add(new TcBellPeriod
+                {
+                    BellScheduleId = fresh.BellScheduleId,
+                    PeriodNumber = sp.PeriodNumber,
+                    PeriodName = sp.PeriodName,
+                    PeriodType = sp.PeriodType,
+                    StartTime = sp.StartTime,
+                    EndTime = sp.EndTime,
+                    TardyThresholdMinutes = sp.TardyThresholdMinutes,
+                    AbsentThresholdMinutes = sp.AbsentThresholdMinutes,
+                    IsActive = sp.IsActive
+                });
+            }
+            await ctx.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.BellSchedule.Cloned,
+                entityType: AuditEntityTypes.BellSchedule,
+                entityId: fresh.BellScheduleId.ToString(),
+                newValues: new
+                {
+                    SourceScheduleId = source.BellScheduleId,
+                    fresh.CampusId,
+                    fresh.SessionType,
+                    fresh.ScheduleName,
+                    PeriodCount = source.Periods.Count
+                },
+                deltaSummary: $"Cloned '{source.ScheduleName}' → '{fresh.ScheduleName}' ({source.Periods.Count} periods) at campus {fresh.CampusId} {fresh.SessionType}",
+                source: AuditSource.AdminUi);
+
+            showCloneModal = false;
+            successMessage = $"Cloned {source.Periods.Count} period(s) to new schedule '{fresh.ScheduleName}'.";
+
+            // Jump the viewer to the new schedule.
+            filterCampusId = cloneTargetCampusId;
+            filterSession = cloneTargetSession;
+            await ReloadSchedulesAsync();
+            await SelectScheduleInternalAsync(fresh.BellScheduleId);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "CloneScheduleAsync failed");
+            modalError = $"Clone failed: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    // ── Delete ────────────────────────────────────────────────────────────
+    private async Task DeleteScheduleAsync()
+    {
+        if (selectedSchedule == null) return;
+        isSaving = true;
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var tracked = await ctx.TcBellSchedules
+                .Include(s => s.Periods)
+                .FirstOrDefaultAsync(s => s.BellScheduleId == selectedSchedule.BellScheduleId);
+            if (tracked == null)
+            {
+                errorMessage = "Already deleted — refresh.";
+                return;
+            }
+
+            var snapshot = new
+            {
+                tracked.BellScheduleId,
+                tracked.CampusId,
+                tracked.ScheduleName,
+                tracked.SessionType,
+                tracked.SchoolYear,
+                PeriodCount = tracked.Periods.Count
+            };
+
+            ctx.TcBellPeriods.RemoveRange(tracked.Periods);
+            ctx.TcBellSchedules.Remove(tracked);
+            await ctx.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.BellSchedule.Deleted,
+                entityType: AuditEntityTypes.BellSchedule,
+                entityId: snapshot.BellScheduleId.ToString(),
+                oldValues: snapshot,
+                deltaSummary: $"Deleted bell schedule '{snapshot.ScheduleName}' ({snapshot.SessionType}) and {snapshot.PeriodCount} period(s)",
+                source: AuditSource.AdminUi);
+
+            confirmingDeleteScheduleId = 0;
+            successMessage = $"Deleted '{snapshot.ScheduleName}'.";
+            selectedScheduleId = 0;
+            selectedSchedule = null;
+            workingPeriods.Clear();
+            await ReloadSchedulesAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "DeleteScheduleAsync failed for {Id}", selectedSchedule.BellScheduleId);
+            errorMessage = $"Delete failed: {ex.Message}";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private void ClearMessages()
+    {
+        successMessage = "";
+        errorMessage = "";
+    }
+
+    private static string FormatDateForInput(DateOnly? d) =>
+        d?.ToString("yyyy-MM-dd") ?? "";
+
+    private static DateOnly? ParseDate(string? raw) =>
+        DateOnly.TryParse(raw, out var d) ? d : (DateOnly?)null;
+
+    // ── Working row model ─────────────────────────────────────────────────
+    private class PeriodRow
+    {
+        public Guid LocalRowId { get; set; } = Guid.NewGuid();
+        public int PeriodId { get; set; }
+        public int PeriodNumber { get; set; }
+        public string PeriodName { get; set; } = "";
+        public string PeriodType { get; set; } = "CLASS";
+        public TimeOnly StartTime { get; set; }
+        public TimeOnly EndTime { get; set; }
+        public int TardyThresholdMinutes { get; set; } = 5;
+        public int AbsentThresholdMinutes { get; set; } = 20;
+        public bool IsActive { get; set; } = true;
+
+        public static PeriodRow FromEntity(TcBellPeriod p) => new()
+        {
+            LocalRowId = Guid.NewGuid(),
+            PeriodId = p.PeriodId,
+            PeriodNumber = p.PeriodNumber,
+            PeriodName = p.PeriodName,
+            PeriodType = p.PeriodType,
+            StartTime = p.StartTime,
+            EndTime = p.EndTime,
+            TardyThresholdMinutes = p.TardyThresholdMinutes,
+            AbsentThresholdMinutes = p.AbsentThresholdMinutes,
+            IsActive = p.IsActive
+        };
+    }
+}

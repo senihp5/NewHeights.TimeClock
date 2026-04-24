@@ -722,3 +722,275 @@
 .today-quick-label strong {
     color: #0c4a6e;
 }
+
+/* ── Phase 1 redesign: date-grouped cards, teacher-row matrix ─────────── */
+.day-card-header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.day-card-heading {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+}
+
+.day-card-header-bottom {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+    background: rgba(30, 58, 95, 0.04);
+    border-top: 1px solid #e5e7eb;
+    margin: 0.5rem -1rem -0.75rem;
+    padding: 0.55rem 1rem;
+    border-radius: 0 0 8px 8px;
+}
+
+.checkin-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: #fff;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 0.3rem 0.65rem;
+    font-size: 0.88rem;
+}
+
+.ci-label {
+    font-weight: 600;
+    color: #475569;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.ci-value {
+    color: #111827;
+    font-weight: 500;
+}
+
+.btn-fix-times {
+    margin-left: auto;
+    padding: 0.35rem 0.85rem;
+    background: #fff;
+    color: #1e3a5f;
+    border: 1px solid #1e3a5f;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+}
+
+.btn-fix-times:hover:not(:disabled) {
+    background: #1e3a5f;
+    color: #fff;
+}
+
+.btn-fix-times:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.cm-status {
+    display: inline-block;
+    padding: 0.22rem 0.8rem;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+/* coverage-matrix — replaces the old period-table */
+.coverage-matrix {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 0.5rem;
+}
+
+.coverage-matrix thead th {
+    background: #f3f4f6;
+    color: #374151;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: 0.74rem;
+    font-weight: 700;
+    padding: 0.55rem 0.5rem;
+    border-bottom: 2px solid #e5e7eb;
+    text-align: center;
+}
+
+.coverage-matrix thead th.col-teacher,
+.coverage-matrix thead th.col-content,
+.coverage-matrix thead th.col-room {
+    text-align: left;
+}
+
+.coverage-matrix thead th.col-period {
+    width: 3.5rem;
+}
+
+.coverage-matrix thead th.col-expand,
+.coverage-matrix thead th.col-notecount {
+    width: 2.5rem;
+}
+
+.teacher-summary-row {
+    cursor: pointer;
+    transition: background 100ms ease;
+}
+
+.teacher-summary-row:hover {
+    background: #f8fafc;
+}
+
+.teacher-summary-row.expanded {
+    background: #eff6ff;
+    border-bottom: none;
+}
+
+.teacher-summary-row td {
+    padding: 0.55rem 0.5rem;
+    border-bottom: 1px solid #f3f4f6;
+    font-size: 0.92rem;
+    text-align: center;
+}
+
+.teacher-summary-row td.teacher-cell,
+.teacher-summary-row td.content-cell,
+.teacher-summary-row td.room-cell {
+    text-align: left;
+}
+
+.teacher-cell strong {
+    color: #111827;
+}
+
+.teacher-id-chip {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.45rem;
+    background: rgba(245, 184, 28, 0.2);
+    color: #7c3e00;
+    border: 1px solid rgba(245, 184, 28, 0.45);
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.period-cell {
+    font-weight: 700;
+    font-size: 1.05rem;
+}
+
+.period-cell.checked {
+    color: #065f46;
+    background: rgba(16, 185, 129, 0.1);
+}
+
+.period-cell.empty {
+    color: #cbd5e1;
+}
+
+.note-badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 9999px;
+    background: #fef3c7;
+    color: #7c2d12;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.expand-cell {
+    color: #6b7280;
+    font-size: 0.85rem;
+}
+
+.expand-arrow {
+    font-size: 0.85rem;
+    color: #475569;
+}
+
+.teacher-detail-row td {
+    padding: 0;
+    background: #eff6ff;
+    border-bottom: 2px solid #bfdbfe;
+}
+
+.teacher-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+}
+
+.period-detail-card {
+    background: #fff;
+    border: 1px solid #bfdbfe;
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.88rem;
+}
+
+.period-detail-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.pd-period {
+    font-weight: 700;
+    color: #1e3a5f;
+}
+
+.pd-time {
+    color: #475569;
+    font-size: 0.82rem;
+}
+
+.pd-row {
+    margin: 0.2rem 0;
+    color: #374151;
+}
+
+.pd-lbl {
+    font-weight: 600;
+    color: #4b5563;
+    margin-right: 0.3rem;
+}
+
+.pd-notes {
+    margin: 0.35rem 0;
+    color: #374151;
+    line-height: 1.35;
+}
+
+.pd-notes-text {
+    color: #1f2937;
+    font-style: italic;
+}
+
+.pd-notes.editing .inline-notes {
+    display: block;
+    margin-top: 0.25rem;
+}
+
+.pd-actions {
+    display: flex;
+    gap: 0.3rem;
+    margin-top: 0.4rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid #f3f4f6;
+}

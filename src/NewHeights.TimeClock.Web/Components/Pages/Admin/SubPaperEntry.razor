@@ -1,0 +1,725 @@
+@page "/admin/sub-paper-entry"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using System.Security.Claims
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<SubPaperEntry> Logger
+
+<PageTitle>Sub Paper Entry - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="admin-page sub-paper">
+    <div class="sub-paper-topbar">
+        <div class="sp-title">
+            <h1>Substitute Paper Timesheet Entry</h1>
+            <span class="sp-hint">
+                Transcribe the handwritten sub timesheet PDFs. Each row = one coverage session
+                (date + absent teacher + sub + periods). Import creates sub timecards, period
+                entries, and first-in/last-out punches.
+            </span>
+        </div>
+        <div class="sp-actions">
+            <button class="btn-secondary" @onclick="AddBlankRow" disabled="@isWorking">+ Add Row</button>
+            <button class="btn-primary"
+                    @onclick="ImportAllAsync"
+                    disabled="@(isWorking || rows.All(r => !r.IsReady))">
+                @(isWorking ? "Importing…" : $"Import ({rows.Count(r => r.IsReady)})")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-error">@errorMessage</div>
+    }
+
+    <div class="admin-card wide tight-card">
+        <div class="table-wrapper">
+            <table class="sp-entry-table">
+                <thead>
+                    <tr>
+                        <th class="col-date">Date</th>
+                        <th class="col-campus">Campus</th>
+                        <th class="col-teacher">Teacher Covered (Absent)</th>
+                        <th class="col-sub">Sub / Covering Staff</th>
+                        <th class="col-period">P1</th>
+                        <th class="col-period">P2</th>
+                        <th class="col-period">P3</th>
+                        <th class="col-period">P4</th>
+                        <th class="col-period">P5</th>
+                        <th class="col-period">P6</th>
+                        <th class="col-content">Content</th>
+                        <th class="col-room">Room</th>
+                        <th class="col-reason">Coverage Reason</th>
+                        <th class="col-status">Status</th>
+                        <th class="col-actions">×</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in rows)
+                    {
+                        <tr class="@(row.HasCompleted ? "row-done" : "") @(!string.IsNullOrEmpty(row.Error) ? "row-error" : "")">
+                            <td>
+                                <input type="date" class="sp-input"
+                                       value="@row.WorkDate?.ToString("yyyy-MM-dd")"
+                                       @onchange="e => OnDateChanged(row, e.Value?.ToString())"
+                                       disabled="@(row.HasCompleted || isWorking)" />
+                            </td>
+                            <td>
+                                <select class="sp-input"
+                                        @bind="row.CampusId"
+                                        @bind:after="() => AutoFillFromMasterScheduleAsync(row)"
+                                        disabled="@(row.HasCompleted || isWorking)">
+                                    <option value="0">— Select —</option>
+                                    @foreach (var c in allCampuses)
+                                    {
+                                        <option value="@c.CampusId">@c.CampusName</option>
+                                    }
+                                </select>
+                            </td>
+                            <td>
+                                <select class="sp-input"
+                                        @bind="row.TeacherEmployeeId"
+                                        @bind:after="() => AutoFillFromMasterScheduleAsync(row)"
+                                        disabled="@(row.HasCompleted || isWorking)">
+                                    <option value="0">— Select —</option>
+                                    @foreach (var t in allTeachers)
+                                    {
+                                        <option value="@t.EmployeeId">@TeacherDisplay(t)</option>
+                                    }
+                                </select>
+                            </td>
+                            <td>
+                                <select class="sp-input" @bind="row.SubEmployeeId" disabled="@(row.HasCompleted || isWorking)">
+                                    <option value="0">— Select —</option>
+                                    @foreach (var s in allSubs)
+                                    {
+                                        <option value="@s.EmployeeId">@CoveringStaffDisplay(s)</option>
+                                    }
+                                </select>
+                            </td>
+                            @for (int i = 0; i < 6; i++)
+                            {
+                                var idx = i;
+                                <td class="period-check">
+                                    <input type="checkbox" checked="@row.Periods[idx]"
+                                           @onchange="e => row.Periods[idx] = e.Value is bool b && b"
+                                           disabled="@(row.HasCompleted || isWorking)" />
+                                </td>
+                            }
+                            <td>
+                                <input type="text" class="sp-input" placeholder="auto (per period)"
+                                       @bind="row.ContentArea"
+                                       title="Auto-derived per period from the master schedule (LAUNCH / ENG / MATH / etc.). Type here to override for all periods in this row."
+                                       disabled="@(row.HasCompleted || isWorking)" />
+                            </td>
+                            <td>
+                                <input type="text" class="sp-input sp-input-sm" placeholder="auto"
+                                       @bind="row.Room"
+                                       title="Leave blank to auto-pull the teacher's room from the master schedule; type to override."
+                                       disabled="@(row.HasCompleted || isWorking)" />
+                            </td>
+                            <td>
+                                <select class="sp-input" @bind="row.CoverageReason"
+                                        disabled="@(row.HasCompleted || isWorking)">
+                                    <option value="TeacherAbsent">Teacher Absent</option>
+                                    <option value="STAARTesting">STAAR Testing</option>
+                                    <option value="MAPTesting">MAP Testing</option>
+                                    <option value="ProfessionalDev">Prof. Dev</option>
+                                    <option value="TeacherMeeting">Meeting</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                            </td>
+                            <td class="col-status">
+                                @if (row.HasCompleted)
+                                {
+                                    <span class="status-chip ok">✓ Imported</span>
+                                }
+                                else if (!string.IsNullOrEmpty(row.Error))
+                                {
+                                    <span class="status-chip err" title="@row.Error">✗ Error</span>
+                                }
+                                else if (row.IsReady)
+                                {
+                                    <span class="status-chip ready">Ready</span>
+                                }
+                                else
+                                {
+                                    <span class="status-chip pending">Fill in</span>
+                                }
+                            </td>
+                            <td>
+                                <button class="btn-remove" @onclick="() => rows.Remove(row)" disabled="@isWorking" title="Remove row">×</button>
+                            </td>
+                        </tr>
+                    }
+                    @if (rows.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="15" class="empty-row">
+                                Click <em>+ Add Row</em> to start. Each row represents one coverage session from the paper PDF.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    @if (importResults.Count > 0)
+    {
+        <div class="admin-card wide">
+            <h2>Last import results</h2>
+            <ul class="results-list">
+                @foreach (var res in importResults)
+                {
+                    <li class="@(res.Success ? "res-ok" : "res-err")">
+                        @res.WorkDate.ToString("yyyy-MM-dd") — Sub #@res.SubEmployeeId covering teacher #@res.TeacherEmployeeId:
+                        <strong>@(res.Success ? $"{res.PeriodsCreated} period(s) + card #{res.TimecardId}" : res.Error)</strong>
+                    </li>
+                }
+            </ul>
+        </div>
+    }
+</div>
+
+@code {
+    private List<Campus> allCampuses = new();
+    private List<TcEmployee> allTeachers = new();
+    private List<TcEmployee> allSubs = new();
+
+    private List<EntryRow> rows = new();
+    private List<ImportResultRow> importResults = new();
+
+    private bool isWorking = false;
+    private string successMessage = "";
+    private string errorMessage = "";
+    private string currentUserEmail = "unknown";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = auth.User.FindFirst("preferred_username")?.Value
+                        ?? auth.User.FindFirst(ClaimTypes.Email)?.Value
+                        ?? "unknown";
+
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        allCampuses = await ctx.Campuses
+            .AsNoTracking()
+            .Where(c => c.CampusCode != AppConstants.Campus.DistrictCode)
+            .OrderBy(c => c.CampusName)
+            .ToListAsync();
+
+        // "Teacher" isn't an EmployeeType — it's anyone with at least one row
+        // in TC_MasterSchedule (i.e., someone actually scheduled to teach
+        // classes). Pull those Staff.Dcids once and reuse for both the Absent
+        // Teacher dropdown and the fallback-teacher option in Sub / Covering.
+        var teacherDcids = await ctx.TcMasterSchedules
+            .AsNoTracking()
+            .Where(ms => ms.IsActive && ms.TeacherStaffDcid != null)
+            .Select(ms => ms.TeacherStaffDcid!.Value)
+            .Distinct()
+            .ToListAsync();
+
+        // Absent-teacher dropdown: only employees whose Staff.Dcid shows up in
+        // the master schedule. Excludes hourly office staff, admins, and
+        // supervisors even when they happen to be SalariedStaff.
+        allTeachers = await ctx.TcEmployees
+            .AsNoTracking()
+            .Include(e => e.Staff)
+            .Where(e => e.IsActive
+                     && e.StaffDcid.HasValue
+                     && teacherDcids.Contains(e.StaffDcid.Value))
+            .OrderBy(e => e.DisplayName)
+            .ToListAsync();
+
+        // Sub / Covering Staff: Substitutes (always) + actual teachers via the
+        // master-schedule join (fallback "teacher covered during plan period"
+        // scenario). No hourly / admin / supervisor rows here — they shouldn't
+        // be subbing classes.
+        allSubs = await ctx.TcEmployees
+            .AsNoTracking()
+            .Include(e => e.Staff)
+            .Where(e => e.IsActive && (
+                   e.EmployeeType == EmployeeType.Substitute
+                || (e.StaffDcid.HasValue && teacherDcids.Contains(e.StaffDcid.Value))))
+            .OrderBy(e => e.EmployeeType == EmployeeType.Substitute ? 0 : 1)
+            .ThenBy(e => e.DisplayName)
+            .ToListAsync();
+
+        AddBlankRow();
+    }
+
+    private void AddBlankRow()
+    {
+        var prev = rows.LastOrDefault();
+        rows.Add(new EntryRow
+        {
+            // Copy date + campus + coverage reason from previous row to speed
+            // up bulk entry. If the admin is transcribing a day of STAAR testing,
+            // chances are the next row is also STAAR.
+            WorkDate = prev?.WorkDate,
+            CampusId = prev?.CampusId ?? 0,
+            CoverageReason = prev?.CoverageReason ?? "TeacherAbsent"
+        });
+    }
+
+    private void OnDateChanged(EntryRow row, string? raw)
+    {
+        if (DateOnly.TryParse(raw, out var d)) row.WorkDate = d;
+    }
+
+    // Fires whenever Campus or Teacher changes. Looks up the teacher's most
+    // recent active master-schedule row at the chosen campus, and fills
+    // row.ContentArea + row.Room. Admin overrides (typed values) are
+    // preserved — we only fill fields that are currently empty. The per-period
+    // course name is still resolved at import time because it depends on the
+    // work date's day-of-week (MW vs TTh columns). This just surfaces the
+    // teacher-level content/room so the admin can eyeball the row before Apply.
+    private async Task AutoFillFromMasterScheduleAsync(EntryRow row)
+    {
+        if (row.TeacherEmployeeId <= 0 || row.CampusId <= 0) return;
+
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            var teacher = await ctx.TcEmployees
+                .AsNoTracking()
+                .FirstOrDefaultAsync(e => e.EmployeeId == row.TeacherEmployeeId);
+            if (teacher?.StaffDcid == null) return;
+
+            var masterSchedule = await ctx.TcMasterSchedules
+                .AsNoTracking()
+                .Where(ms => ms.CampusId == row.CampusId
+                          && ms.TeacherStaffDcid == teacher.StaffDcid
+                          && ms.IsActive)
+                .OrderByDescending(ms => ms.ImportedDate)
+                .FirstOrDefaultAsync();
+            if (masterSchedule == null) return;
+
+            // ContentArea is derived PER PERIOD at import time (not row level),
+            // because a teacher may teach PROF COMM (LAUNCH) in some periods and
+            // ENG 4B (ENG) in others. Auto-filling a single value at the row
+            // level would misrepresent mixed-subject days. Admin can still type
+            // a row-level override if they want a single label for every period.
+            if (string.IsNullOrWhiteSpace(row.Room))
+                row.Room = masterSchedule.Room;
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex,
+                "AutoFillFromMasterSchedule failed for teacher {TeacherId} campus {CampusId}",
+                row.TeacherEmployeeId, row.CampusId);
+            // Non-fatal — admin can still type content/room manually.
+        }
+    }
+
+    private static string TeacherDisplay(TcEmployee e)
+    {
+        var name = e.Staff?.FullName ?? e.DisplayName ?? e.Email ?? $"Employee {e.EmployeeId}";
+        return $"{name} — #{e.EmployeeId}";
+    }
+
+    // Covering-staff labels: [SUB] for formal substitutes, [TEACHER] for a
+    // regular classroom teacher covering a colleague. The query filter above
+    // restricts this dropdown to ONLY those two groups (no hourly/admin),
+    // so the tag decision is a simple Substitute check — anything else that
+    // made it past the filter has a master-schedule row, i.e., is a teacher.
+    private static string CoveringStaffDisplay(TcEmployee e)
+    {
+        var name = e.Staff?.FullName ?? e.DisplayName ?? e.Email ?? $"Employee {e.EmployeeId}";
+        var tag  = e.EmployeeType == EmployeeType.Substitute ? "[SUB]" : "[TEACHER]";
+        return $"{tag} {name} — #{e.EmployeeId}";
+    }
+
+    private async Task ImportAllAsync()
+    {
+        isWorking = true;
+        successMessage = "";
+        errorMessage = "";
+        importResults.Clear();
+
+        try
+        {
+            foreach (var row in rows.Where(r => r.IsReady && !r.HasCompleted).ToList())
+            {
+                var res = new ImportResultRow
+                {
+                    WorkDate = row.WorkDate!.Value,
+                    TeacherEmployeeId = row.TeacherEmployeeId,
+                    SubEmployeeId = row.SubEmployeeId
+                };
+                try
+                {
+                    var (timecardId, periodsCreated) = await ImportOneRowAsync(row);
+                    res.Success = true;
+                    res.TimecardId = timecardId;
+                    res.PeriodsCreated = periodsCreated;
+                    row.HasCompleted = true;
+                    row.Error = null;
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError(ex, "Sub paper entry import failed for row {Date}/{Sub}", row.WorkDate, row.SubEmployeeId);
+                    res.Success = false;
+                    res.Error = ex.Message;
+                    row.Error = ex.Message;
+                }
+                importResults.Add(res);
+            }
+            successMessage = $"Imported {importResults.Count(r => r.Success)} of {importResults.Count} row(s).";
+        }
+        finally
+        {
+            isWorking = false;
+        }
+    }
+
+    // Do the DB work inline — this is a one-off admin tool so we don't need a
+    // dedicated service. Creates a sub timecard if missing, period entries for
+    // each checked period, and first-in / last-out TcTimePunches for kiosk parity.
+    private async Task<(long TimecardId, int PeriodsCreated)> ImportOneRowAsync(EntryRow row)
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+
+        var checkedNums = row.Periods
+            .Select((covered, i) => (covered, num: i + 1))
+            .Where(x => x.covered)
+            .Select(x => x.num)
+            .ToList();
+
+        if (checkedNums.Count == 0) throw new InvalidOperationException("At least one period must be checked.");
+
+        // Split DAY (P1-P4) vs NIGHT (P5-P6). A single coverage session can only be
+        // one session type (bell schedule is per-session). If both are checked on the
+        // same row, split into two entries of the same card.
+        var dayPeriods   = checkedNums.Where(n => n <= 4).ToList();
+        var nightPeriods = checkedNums.Where(n => n >= 5).ToList();
+
+        // Load bell periods for this campus by session.
+        async Task<Dictionary<int, TcBellPeriod>?> LoadBell(string session)
+        {
+            var sched = await ctx.TcBellSchedules
+                .AsNoTracking()
+                .Include(s => s.Periods)
+                .Where(s => s.CampusId == row.CampusId && s.SessionType == session && s.IsActive)
+                .OrderByDescending(s => s.IsDefault)
+                .ThenByDescending(s => s.CreatedDate)
+                .FirstOrDefaultAsync();
+            return sched?.Periods
+                .Where(p => p.IsActive && p.PeriodType == "CLASS")
+                .ToDictionary(p => p.PeriodNumber, p => p);
+        }
+
+        var dayBell   = dayPeriods.Count   > 0 ? await LoadBell("DAY")   : null;
+        var nightBell = nightPeriods.Count > 0 ? await LoadBell("NIGHT") : null;
+
+        if (dayPeriods.Count   > 0 && dayBell   == null) throw new InvalidOperationException("No active DAY bell schedule for this campus.");
+        if (nightPeriods.Count > 0 && nightBell == null) throw new InvalidOperationException("No active NIGHT bell schedule for this campus.");
+
+        // Find or create the sub timecard.
+        var card = await ctx.TcSubstituteTimecards
+            .Include(t => t.PeriodEntries)
+            .FirstOrDefaultAsync(t => t.EmployeeId == row.SubEmployeeId
+                                   && t.CampusId == row.CampusId
+                                   && t.WorkDate == row.WorkDate);
+        if (card == null)
+        {
+            card = new TcSubstituteTimecard
+            {
+                EmployeeId = row.SubEmployeeId,
+                CampusId   = row.CampusId,
+                WorkDate   = row.WorkDate!.Value,
+                TotalPeriodsWorked = 0,
+                ApprovalStatus = ApprovalStatus.Pending,
+                CreatedDate = DateTime.Now,
+                ModifiedDate = DateTime.Now
+            };
+            ctx.TcSubstituteTimecards.Add(card);
+            await ctx.SaveChangesAsync();
+        }
+
+        // Find the absent-teacher name for the denormalized snapshot.
+        var teacher = await ctx.TcEmployees
+            .AsNoTracking()
+            .Include(e => e.Staff)
+            .FirstOrDefaultAsync(e => e.EmployeeId == row.TeacherEmployeeId);
+        var teacherName = teacher?.Staff?.FullName ?? teacher?.DisplayName ?? $"Employee {row.TeacherEmployeeId}";
+
+        // Master-schedule lookup: pull the teacher's course-per-period + room +
+        // content-area from TC_MasterSchedule. Joined by Staff.Dcid because
+        // TcMasterSchedule.TeacherStaffDcid is what the import tool populates.
+        // We take the most recently imported ACTIVE row for the campus — in
+        // normal operation that's the current term's schedule. Admin can
+        // still override per-row by typing into Content/Room.
+        TcMasterSchedule? masterSchedule = null;
+        if (teacher?.StaffDcid != null)
+        {
+            masterSchedule = await ctx.TcMasterSchedules
+                .AsNoTracking()
+                .Where(ms => ms.CampusId == row.CampusId
+                          && ms.TeacherStaffDcid == teacher.StaffDcid
+                          && ms.IsActive)
+                .OrderByDescending(ms => ms.ImportedDate)
+                .FirstOrDefaultAsync();
+        }
+
+        // Day-of-week determines which period column (MW vs TTh) to read.
+        // Adult school has no Friday classes — for F/Sa/Su we still try MW
+        // as a reasonable fallback since the master schedule stores MW/TTh only.
+        var isMwDay = row.WorkDate!.Value.DayOfWeek == DayOfWeek.Monday
+                   || row.WorkDate!.Value.DayOfWeek == DayOfWeek.Wednesday
+                   || row.WorkDate!.Value.DayOfWeek == DayOfWeek.Friday; // adult school no-class Fri → still try MW
+
+        string? CourseForPeriod(int n)
+        {
+            if (masterSchedule == null) return null;
+            return n switch
+            {
+                1 => isMwDay ? masterSchedule.MW_P1 : masterSchedule.TTh_P1,
+                2 => isMwDay ? masterSchedule.MW_P2 : masterSchedule.TTh_P2,
+                3 => isMwDay ? masterSchedule.MW_P3 : masterSchedule.TTh_P3,
+                4 => isMwDay ? masterSchedule.MW_P4 : masterSchedule.TTh_P4,
+                5 => isMwDay ? masterSchedule.MW_P5 : masterSchedule.TTh_P5,
+                6 => isMwDay ? masterSchedule.MW_P6 : masterSchedule.TTh_P6,
+                _ => null
+            };
+        }
+
+        // Admin override (typed value) wins; otherwise pull from master schedule.
+        string? resolvedContentArea = !string.IsNullOrWhiteSpace(row.ContentArea)
+            ? row.ContentArea.Trim()
+            : masterSchedule?.ContentArea;
+        string? resolvedRoom = !string.IsNullOrWhiteSpace(row.Room)
+            ? row.Room.Trim()
+            : masterSchedule?.Room;
+        int? resolvedMasterScheduleId = masterSchedule?.ScheduleId;
+
+        var existingNums = card.PeriodEntries.Select(e => e.PeriodNumber).ToHashSet();
+        var created = 0;
+
+        // Reason tag appended to Notes so HR can see why the sub covered
+        // (testing pull-out vs actual absence) when auditing timecards.
+        var reasonTag = row.CoverageReason switch
+        {
+            "STAARTesting"    => "STAAR Testing",
+            "MAPTesting"      => "MAP Testing",
+            "ProfessionalDev" => "Professional Development",
+            "TeacherMeeting"  => "Teacher Meeting",
+            "Other"           => "Other coverage reason",
+            _                 => "Teacher Absent"
+        };
+
+        // Detect teacher-covering-for-teacher scenario. A regular teacher picking
+        // up a period for an absent colleague needs to be flagged separately
+        // because (a) they're on the clock during their plan period instead of
+        // doing their own work, and (b) payroll treats these as extra pay.
+        var coveringEmployee = await ctx.TcEmployees
+            .AsNoTracking()
+            .FirstOrDefaultAsync(e => e.EmployeeId == row.SubEmployeeId);
+        var coveringIsTeacher = coveringEmployee != null
+                             && coveringEmployee.EmployeeType != EmployeeType.Substitute;
+        var coverTypeTag = coveringIsTeacher ? "TEACHER-COVERING" : "SUB";
+
+        var entryNote = coveringIsTeacher
+            ? $"Paper timesheet import — Reason: {reasonTag} — {coverTypeTag} (regular staff covering)"
+            : $"Paper timesheet import — Reason: {reasonTag}";
+
+        void AddEntries(List<int> nums, Dictionary<int, TcBellPeriod> bell, string session)
+        {
+            var adminOverride = !string.IsNullOrWhiteSpace(row.ContentArea) ? row.ContentArea.Trim() : null;
+
+            foreach (var n in nums)
+            {
+                if (existingNums.Contains(n)) continue;
+                if (!bell.TryGetValue(n, out var period)) continue;
+
+                // Per-period tag: LAUNCH vs ENG vs MATH depends on the actual
+                // course running at this teacher's period slot. Admin override
+                // (typed in the Content cell) wins across all periods; else
+                // derive from the course; else fall back to the teacher-level
+                // list on ms.ContentArea.
+                var courseForThisPeriod = CourseForPeriod(n);
+                var contentAreaForThisPeriod = adminOverride
+                    ?? CourseTagMapper.MapCourseToContentArea(courseForThisPeriod)
+                    ?? masterSchedule?.ContentArea;
+
+                ctx.TcSubstitutePeriodEntries.Add(new TcSubstitutePeriodEntry
+                {
+                    SubTimecardId = card.SubTimecardId,
+                    BellPeriodId  = period.PeriodId,
+                    MasterScheduleId = resolvedMasterScheduleId,
+                    PeriodNumber  = period.PeriodNumber,
+                    PeriodName    = period.PeriodName,
+                    StartTime     = period.StartTime,
+                    EndTime       = period.EndTime,
+                    TeacherReplaced = teacherName,
+                    TeacherReplacedEmployeeId = row.TeacherEmployeeId,
+                    CourseName    = courseForThisPeriod,
+                    ContentArea   = contentAreaForThisPeriod,
+                    Room          = resolvedRoom,
+                    SessionType   = session,
+                    EntrySource   = "PAPER_IMPORT",
+                    IsVerified    = false,
+                    Notes         = entryNote,
+                    CreatedDate   = DateTime.Now
+                });
+                existingNums.Add(n);
+                created++;
+            }
+        }
+
+        if (dayPeriods.Count > 0)   AddEntries(dayPeriods,   dayBell!,   "DAY");
+        if (nightPeriods.Count > 0) AddEntries(nightPeriods, nightBell!, "NIGHT");
+
+        card.TotalPeriodsWorked += created;
+        card.ModifiedDate = DateTime.Now;
+
+        // Create IN/OUT punches spanning the earliest period start to the latest
+        // period end, so the card has kiosk-parity first-in / last-out for HR
+        // and the check-in/out display on MySubTimesheet.
+        if (created > 0)
+        {
+            var allPeriods = new List<TcBellPeriod>();
+            if (dayBell   != null) allPeriods.AddRange(dayPeriods.Where(dayBell.ContainsKey).Select(n => dayBell[n]));
+            if (nightBell != null) allPeriods.AddRange(nightPeriods.Where(nightBell.ContainsKey).Select(n => nightBell[n]));
+
+            if (allPeriods.Count > 0)
+            {
+                var firstStart = allPeriods.Min(p => p.StartTime);
+                var lastEnd    = allPeriods.Max(p => p.EndTime);
+                var inDt  = row.WorkDate!.Value.ToDateTime(firstStart);
+                var outDt = row.WorkDate!.Value.ToDateTime(lastEnd);
+                var session = nightPeriods.Count > 0 && dayPeriods.Count == 0 ? "NIGHT" : "DAY";
+
+                var pIn = new TcTimePunch
+                {
+                    EmployeeId = row.SubEmployeeId,
+                    CampusId = row.CampusId,
+                    PunchType = PunchType.In,
+                    PunchDateTime = inDt,
+                    RoundedDateTime = inDt,
+                    PunchStatus = PunchStatus.Active,
+                    IsManualEntry = true,
+                    IsAutoCheckout = false,
+                    VerificationMethod = "SYSTEM",
+                    ScanMethod = "IMPORT",
+                    PunchSource = "PAPER_IMPORT",
+                    GeofenceStatus = GeofenceStatus.Manual,
+                    SessionType = session,
+                    Notes = $"Sub paper import — {coverTypeTag} — reason: {reasonTag} — covered {teacherName} — periods {string.Join(",", checkedNums)}",
+                    CreatedDate = DateTime.Now
+                };
+                var pOut = new TcTimePunch
+                {
+                    EmployeeId = row.SubEmployeeId,
+                    CampusId = row.CampusId,
+                    PunchType = PunchType.Out,
+                    PunchDateTime = outDt,
+                    RoundedDateTime = outDt,
+                    PunchStatus = PunchStatus.Active,
+                    IsManualEntry = true,
+                    IsAutoCheckout = false,
+                    VerificationMethod = "SYSTEM",
+                    ScanMethod = "IMPORT",
+                    PunchSource = "PAPER_IMPORT",
+                    GeofenceStatus = GeofenceStatus.Manual,
+                    SessionType = session,
+                    Notes = $"Sub paper import — {coverTypeTag} — reason: {reasonTag} — covered {teacherName} — periods {string.Join(",", checkedNums)}",
+                    CreatedDate = DateTime.Now
+                };
+                ctx.TcTimePunches.Add(pIn);
+                ctx.TcTimePunches.Add(pOut);
+                await ctx.SaveChangesAsync();
+
+                pIn.PairedPunchId = pOut.PunchId;
+                pOut.PairedPunchId = pIn.PunchId;
+
+                if (card.CheckInPunchId == null) card.CheckInPunchId = pIn.PunchId;
+                card.CheckOutPunchId = pOut.PunchId;
+            }
+        }
+
+        await ctx.SaveChangesAsync();
+
+        await Audit.LogActionAsync(
+            actionCode: AuditActions.SubTimecard.PeriodAdded,
+            entityType: AuditEntityTypes.SubTimecard,
+            entityId: card.SubTimecardId.ToString(),
+            newValues: new
+            {
+                card.EmployeeId,
+                card.CampusId,
+                WorkDate = card.WorkDate.ToString("yyyy-MM-dd"),
+                TeacherEmployeeId = row.TeacherEmployeeId,
+                CoverageReason = row.CoverageReason,
+                CoveringType = coverTypeTag,
+                CoveringEmployeeType = coveringEmployee?.EmployeeType.ToString(),
+                Periods = string.Join(",", checkedNums),
+                PeriodsCreated = created,
+                Source = "PAPER_IMPORT",
+                ImportedBy = currentUserEmail
+            },
+            deltaSummary: $"Paper sub import ({coverTypeTag}, {reasonTag}): {created} period(s) added to #{row.SubEmployeeId} covering #{row.TeacherEmployeeId} on {row.WorkDate:yyyy-MM-dd}",
+            source: AuditSource.AdminUi,
+            employeeId: row.SubEmployeeId,
+            campusId: row.CampusId);
+
+        return (card.SubTimecardId, created);
+    }
+
+    private class EntryRow
+    {
+        public DateOnly? WorkDate { get; set; }
+        public int CampusId { get; set; }
+        public int TeacherEmployeeId { get; set; }
+        public int SubEmployeeId { get; set; }
+        public bool[] Periods { get; set; } = new bool[6];
+        public string? ContentArea { get; set; }
+        public string? Room { get; set; }
+        /// <summary>
+        /// Why the sub was covering: TeacherAbsent (default), STAARTesting,
+        /// MAPTesting, ProfessionalDev, TeacherMeeting, Other. Recorded into
+        /// the period entry Notes + the time punch Notes so HR can distinguish
+        /// testing-coverage days from actual teacher absences during audit.
+        /// </summary>
+        public string CoverageReason { get; set; } = "TeacherAbsent";
+        public bool HasCompleted { get; set; }
+        public string? Error { get; set; }
+
+        public bool IsReady =>
+               !HasCompleted
+            && WorkDate.HasValue
+            && CampusId > 0
+            && TeacherEmployeeId > 0
+            && SubEmployeeId > 0
+            && Periods.Any(p => p);
+    }
+
+    private class ImportResultRow
+    {
+        public DateOnly WorkDate { get; set; }
+        public int TeacherEmployeeId { get; set; }
+        public int SubEmployeeId { get; set; }
+        public bool Success { get; set; }
+        public long TimecardId { get; set; }
+        public int PeriodsCreated { get; set; }
+        public string? Error { get; set; }
+    }
+}

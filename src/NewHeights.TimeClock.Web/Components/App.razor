@@ -10,6 +10,13 @@
     <link rel="stylesheet" href="css/safety-dashboard.css" />
     <link rel="stylesheet" href="css/reception-dashboard.css" />
     <link rel="stylesheet" href="css/timesheet.css" />
+    @* Blazor scoped-CSS bundle. Aggregates every .razor.css file in the project
+       (BellSchedules, MySubTimesheet, SubPeriodPickerModal, etc.). Without this
+       link, ANY style declared in a scoped .razor.css file silently fails to
+       load in the browser — which is exactly why earlier scoped-CSS work for
+       the substitute timesheet and bell schedule pages had no visible effect
+       until 2026-04-23. *@
+    <link rel="stylesheet" href="NewHeights.TimeClock.Web.styles.css" />
     <link rel="icon" type="image/png" href="favicon.png" />
     <HeadOutlet />
 </head>

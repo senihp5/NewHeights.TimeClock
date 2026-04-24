@@ -1,0 +1,107 @@
+.recalc-admin .section-help {
+    color: #475569;
+    font-size: 0.92rem;
+    margin-bottom: 0.85rem;
+}
+
+.recalc-admin h2 {
+    margin-top: 0;
+    margin-bottom: 0.4rem;
+    font-size: 1.15rem;
+    color: #1e3a5f;
+}
+
+.recalc-admin .row-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding-bottom: 0.85rem;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 0.85rem;
+    flex-wrap: wrap;
+}
+
+.recalc-admin .row-count {
+    margin-left: auto;
+    color: #475569;
+    font-size: 0.88rem;
+    font-style: italic;
+}
+
+.recalc-admin tr.recalc-done {
+    background: #f0fdf4;
+}
+
+.recalc-admin .muted-id {
+    color: #9ca3af;
+    font-size: 0.8rem;
+    margin-left: 0.25rem;
+}
+
+.recalc-admin .status-chip {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.recalc-admin .status-chip.success {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.recalc-admin .status-chip.error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.recalc-admin .status-chip.pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.recalc-admin .manual-form {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr auto;
+    gap: 0.75rem;
+    align-items: end;
+    margin-bottom: 0.85rem;
+}
+
+.recalc-admin .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.recalc-admin .form-field label {
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.recalc-admin .form-field-action {
+    justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+    .recalc-admin .manual-form {
+        grid-template-columns: 1fr;
+    }
+    .recalc-admin .form-field-action {
+        justify-content: flex-start;
+    }
+}
+
+.recalc-admin code {
+    background: #f3f4f6;
+    padding: 0.05rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.88rem;
+    color: #1f2937;
+}

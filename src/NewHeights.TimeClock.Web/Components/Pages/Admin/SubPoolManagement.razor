@@ -77,12 +77,11 @@
                                 @(s.Email ?? "—")
                             </td>
                             <td style="padding:.5rem .75rem; border-bottom:1px solid #e2e8f0; text-align:right; white-space:nowrap;">
-                                <button type="button"
-                                        style="margin-right:.4rem; padding:.35rem .6rem; background:#0369a1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.82rem;"
-                                        title="Manually tag this sub as ADMIN_SUB. Normally admin subs should be in the SubstituteAdmin Entra group; this is a manual override."
-                                        @onclick="() => ManualSetAdminSubAsync(s.EmployeeId)">
-                                    Set Admin Sub
-                                </button>
+                                @* "Set Admin Sub" removed 2026-04-23: admin subs should only come
+                                   from the SubstituteAdmin Entra group sync. Manual-override button
+                                   confused reception staff who accidentally tagged regular teacher
+                                   subs as admins. Unset is still available on the Admin Subs table
+                                   for rollback. *@
                                 <button type="button"
                                         style="padding:.35rem .75rem; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-size:.85rem;"
                                         @onclick="() => OpenExcludeModal(s.EmployeeId)">

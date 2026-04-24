@@ -455,7 +455,18 @@
     {
         await using var db = await DbFactory.CreateDbContextAsync();
         campuses = await db.Campuses.OrderBy(c => c.CampusName).ToListAsync();
-        allStaff = await db.Staff.OrderBy(s => s.LastName).ToListAsync();
+
+        // IsActive-only filter: former/inactive staff clog last-name uniqueness
+        // checks. A retired teacher sharing a last name with a current one (e.g.
+        // former "Cunningham, Rose" vs current "Cunningham, Ryan") makes exact.Count
+        // == 2 in MatchTeacher, and when the first-initial is the same, the
+        // disambiguator fails and the row lands as Unmatched. Filtering to active
+        // staff reflects the reality that a schedule upload only ever targets
+        // current teachers.
+        allStaff = await db.Staff
+            .Where(s => s.IsActive)
+            .OrderBy(s => s.LastName)
+            .ToListAsync();
     }
 
     // ── File ──────────────────────────────────────────────────────────────────
@@ -639,35 +650,74 @@
         if (string.IsNullOrWhiteSpace(rawName))
             return (null, null, "Unmatched");
 
-        // Extract last name — handles "Last, First", "Last, T", and plain "Last"
-        string lastName = (rawName.Contains(",")
-            ? rawName.Split(',')[0]
-            : rawName).Trim().ToUpper();
+        // Normalize both sides consistently. Staff.LastName/FirstName may carry
+        // trailing whitespace from upstream IDSuite, and some teachers' schedule
+        // cells land with double-spaces or stray punctuation after StripSuffix.
+        static string Norm(string? s) => (s ?? string.Empty).Trim().ToUpper();
 
-        // Handle compound last names without spaces: "GarrettSmith" won't match "Garrett" —
-        // try exact first, then progressively shorter prefixes
-        var exact = allStaff.Where(s => s.LastName?.ToUpper() == lastName).ToList();
+        // Parse "Last, First" | "Last, First MI" | "Last, F" | plain "Last".
+        var parts = rawName.Split(',', 2);
+        var rawLast  = Norm(parts[0]);
+        var rawFirst = parts.Length > 1 ? Norm(parts[1]) : string.Empty;
+        // First-name initial (single character) drives disambiguation when
+        // the raw cell only has an abbreviation.
+        char firstInit = rawFirst.Length > 0 ? rawFirst[0] : '\0';
+
+        // Step 1: Exact last-name match, normalized on both sides.
+        var exact = allStaff.Where(s => Norm(s.LastName) == rawLast).ToList();
         if (exact.Count == 1)
             return (exact[0].Dcid, $"{exact[0].LastName}, {exact[0].FirstName}", "LastName");
 
-        // Multiple exact matches — disambiguate by first-name initial
-        if (exact.Count > 1 && rawName.Contains(","))
+        // Step 2: Multiple last-name matches — narrow by first-name initial.
+        if (exact.Count > 1 && firstInit != '\0')
         {
-            string firstInit = rawName.Split(',').Skip(1).FirstOrDefault()?.Trim().ToUpper() ?? string.Empty;
-            if (firstInit.Length > 0)
+            var byInit = exact
+                .Where(s => Norm(s.FirstName).StartsWith(firstInit.ToString()))
+                .ToList();
+            if (byInit.Count == 1)
+                return (byInit[0].Dcid, $"{byInit[0].LastName}, {byInit[0].FirstName}", "Exact");
+
+            // Still ambiguous — try a longer first-name prefix when the raw
+            // cell supplied more than one character (e.g. "Cunningham, Ryan").
+            if (byInit.Count > 1 && rawFirst.Length >= 2)
             {
-                var byInit = exact.Where(s => s.FirstName?.ToUpper().StartsWith(firstInit[0].ToString()) == true).ToList();
-                if (byInit.Count == 1)
-                    return (byInit[0].Dcid, $"{byInit[0].LastName}, {byInit[0].FirstName}", "Exact");
+                var byPrefix = byInit
+                    .Where(s => Norm(s.FirstName).StartsWith(rawFirst))
+                    .ToList();
+                if (byPrefix.Count == 1)
+                    return (byPrefix[0].Dcid, $"{byPrefix[0].LastName}, {byPrefix[0].FirstName}", "Exact");
+            }
+
+            // Still ambiguous — surface a best-guess Fuzzy rather than hard-fail.
+            // Admin keeps the yellow review-me row and can swap if we picked wrong.
+            if (byInit.Count >= 1)
+            {
+                var best = byInit[0];
+                return (best.Dcid, $"{best.LastName}, {best.FirstName}", "Fuzzy");
             }
         }
 
-        // Fuzzy: staff last name starts with the token or token starts with staff last name
+        // Step 3: Fuzzy — last-name starts with raw, or raw starts with last-name.
         var fuzzy = allStaff.Where(s =>
-            (s.LastName?.ToUpper().StartsWith(lastName) == true) ||
-            (lastName.Length >= 4 && lastName.StartsWith(s.LastName?.ToUpper() ?? string.Empty))).ToList();
+            Norm(s.LastName).StartsWith(rawLast) ||
+            (rawLast.Length >= 4 && rawLast.StartsWith(Norm(s.LastName)))).ToList();
         if (fuzzy.Count == 1)
             return (fuzzy[0].Dcid, $"{fuzzy[0].LastName}, {fuzzy[0].FirstName}", "Fuzzy");
+
+        // Multi-candidate fuzzy — narrow by first-initial one more time.
+        if (fuzzy.Count > 1 && firstInit != '\0')
+        {
+            var fuzzyByInit = fuzzy
+                .Where(s => Norm(s.FirstName).StartsWith(firstInit.ToString()))
+                .ToList();
+            if (fuzzyByInit.Count == 1)
+                return (fuzzyByInit[0].Dcid, $"{fuzzyByInit[0].LastName}, {fuzzyByInit[0].FirstName}", "Fuzzy");
+            if (fuzzyByInit.Count >= 1)
+            {
+                var best = fuzzyByInit[0];
+                return (best.Dcid, $"{best.LastName}, {best.FirstName}", "Fuzzy");
+            }
+        }
 
         return (null, rawName, "Unmatched");
     }
@@ -754,7 +804,9 @@
                     Room                = row.Room,
                     DayPattern          = row.DayPattern,
                     Shift               = row.Shift,
-                    ContentArea         = row.ContentArea,
+                    ContentArea         = CourseTagMapper.DeriveForTeacherRow(
+                                              row.MW_P1, row.MW_P2, row.MW_P3, row.MW_P4, row.MW_P5, row.MW_P6,
+                                              row.TTh_P1, row.TTh_P2, row.TTh_P3, row.TTh_P4, row.TTh_P5, row.TTh_P6),
                     MW_P1  = row.MW_P1,  MW_P2  = row.MW_P2,  MW_P3  = row.MW_P3,
                     MW_P4  = row.MW_P4,  MW_P5  = row.MW_P5,  MW_P6  = row.MW_P6,
                     TTh_P1 = row.TTh_P1, TTh_P2 = row.TTh_P2, TTh_P3 = row.TTh_P3,

@@ -23,8 +23,12 @@
 <div class="supervisor-page">
     <header class="supervisor-header">
         <div class="header-left">
-            <h1>Team Time Sheets</h1>
-            <p class="subtitle">Review and approve your team's time sheets</p>
+            <h1>@(isAdmin ? "All Team Time Sheets" : "Team Time Sheets")</h1>
+            <p class="subtitle">
+                @(isAdmin
+                    ? "Admin view — every active hourly / part-time / sub employee across all supervisors."
+                    : "Review and approve your team's time sheets")
+            </p>
         </div>
         <div class="header-right">
             <div class="period-nav">
@@ -48,26 +52,49 @@
 
     <div class="summary-stats">
         <div class="stat-card">
-            <span class="stat-value">@teamSummaries.Count</span>
-            <span class="stat-label">Team Members</span>
+            <span class="stat-value">@FilteredSummaries.Count</span>
+            <span class="stat-label">@(isAdmin ? "Employees (filtered)" : "Team Members")</span>
         </div>
         <div class="stat-card success">
-            <span class="stat-value">@teamSummaries.Count(t => t.SupervisorApproved)</span>
+            <span class="stat-value">@FilteredSummaries.Count(t => t.SupervisorApproved)</span>
             <span class="stat-label">Approved</span>
         </div>
         <div class="stat-card warning">
-            <span class="stat-value">@teamSummaries.Count(t => t.EmployeeApproved && !t.SupervisorApproved)</span>
+            <span class="stat-value">@FilteredSummaries.Count(t => t.EmployeeApproved && !t.SupervisorApproved)</span>
             <span class="stat-label">Ready to Approve</span>
         </div>
         <div class="stat-card pending">
-            <span class="stat-value">@teamSummaries.Count(t => !t.EmployeeApproved)</span>
+            <span class="stat-value">@FilteredSummaries.Count(t => !t.EmployeeApproved)</span>
             <span class="stat-label">Awaiting Employee</span>
         </div>
         <div class="stat-card">
-            <span class="stat-value">@teamSummaries.Sum(t => t.TotalHours).ToString("F2")</span>
+            <span class="stat-value">@FilteredSummaries.Sum(t => t.TotalHours).ToString("F2")</span>
             <span class="stat-label">Total Hours</span>
         </div>
     </div>
+
+    @if (isAdmin)
+    {
+        <div class="admin-filter-bar">
+            <label>Campus:</label>
+            <select @bind="filterCampusId" @bind:after="StateHasChanged">
+                <option value="0">All Campuses</option>
+                @foreach (var c in campusOptions)
+                {
+                    <option value="@c.Id">@c.Name</option>
+                }
+            </select>
+            <label>Supervisor:</label>
+            <select @bind="filterSupervisorId" @bind:after="StateHasChanged">
+                <option value="0">All Supervisors</option>
+                @foreach (var s in supervisorOptions)
+                {
+                    <option value="@s.Id">@s.Name</option>
+                }
+            </select>
+            <span class="filter-count">@FilteredSummaries.Count of @teamSummaries.Count shown</span>
+        </div>
+    }
 
     @if (isLoading)
     {
@@ -76,24 +103,41 @@
             <p>Loading team data...</p>
         </div>
     }
-    else if (!teamSummaries.Any())
+    else if (!FilteredSummaries.Any())
     {
         <div class="empty-state">
             <div class="empty-icon">👥</div>
             <h3>No Team Members Found</h3>
-            <p>No hourly employees are assigned to you for this pay period.</p>
+            <p>
+                @(isAdmin
+                    ? "No employees match the current filter."
+                    : "No hourly employees are assigned to you for this pay period.")
+            </p>
         </div>
     }
     else
     {
         <div class="team-grid">
-            @foreach (var member in teamSummaries.OrderBy(m => m.SupervisorApproved).ThenBy(m => m.EmployeeName))
+            @foreach (var member in FilteredSummaries.OrderBy(m => m.SupervisorApproved).ThenBy(m => m.EmployeeName))
             {
                 <div class="team-card @GetCardClass(member)">
                     <div class="card-header">
                         <div class="member-info">
                             <span class="member-name">@member.EmployeeName</span>
                             <span class="member-id">ID: @member.IdNumber</span>
+                            @if (isAdmin)
+                            {
+                                <span class="member-context">
+                                    @if (!string.IsNullOrEmpty(member.CampusName))
+                                    {
+                                        <span class="campus-chip">@member.CampusName</span>
+                                    }
+                                    @if (!string.IsNullOrEmpty(member.SupervisorName))
+                                    {
+                                        <span class="supervisor-chip" title="Supervisor">@member.SupervisorName</span>
+                                    }
+                                </span>
+                            }
                         </div>
                         @if (member.SupervisorApproved)
                         {
@@ -139,6 +183,17 @@
                                 <span class="exception-count">@member.ExceptionCount day(s)</span>
                             </div>
                         }
+
+                        @if (member.ShortDayReasons.Count > 0)
+                        {
+                            <div class="short-day-reasons">
+                                <span class="sdr-summary-label">Reasons:</span>
+                                @foreach (var r in member.ShortDayReasons)
+                                {
+                                    <span class="sdr-chip">@FormatReason(r)</span>
+                                }
+                            </div>
+                        }
                     </div>
                     
                     <div class="card-actions">
@@ -171,9 +226,24 @@
     private string currentUserEmail = "";
     private string currentUserEntraOid = "";
     private int currentSupervisorId = 0;
+    private bool isAdmin = false;
     private UserContext? userCtx;
     private PayPeriodInfo? currentPayPeriod;
     private List<TeamTimesheetSummary> teamSummaries = new();
+
+    // Admin-only filter state. Dropdowns populated from teamSummaries after
+    // the admin-scope load — no separate DB query needed.
+    private int filterCampusId = 0;
+    private int filterSupervisorId = 0;
+    private List<(int Id, string Name)> supervisorOptions = new();
+    private List<(int Id, string Name)> campusOptions = new();
+
+    // Client-side filtered view — summary stats and the grid both render from this.
+    private List<TeamTimesheetSummary> FilteredSummaries =>
+        teamSummaries
+            .Where(s => filterCampusId == 0 || s.CampusId == filterCampusId)
+            .Where(s => filterSupervisorId == 0 || s.SupervisorEmployeeId == filterSupervisorId)
+            .ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -183,6 +253,12 @@
         currentUserEntraOid = authState.User.FindFirst("oid")?.Value
                            ?? authState.User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
                            ?? "";
+
+        // TimeClock.Admin sees the cross-supervisor roster. Regular supervisors
+        // still hit the supervisor-scoped service call. Admin also satisfies
+        // RequireSupervisor in Program.cs so admins land on this page via the
+        // same nav link — we just widen the scope once they're here.
+        isAdmin = authState.User.IsInRole("TimeClock.Admin");
 
         userCtx = await UserContextSvc.GetCurrentUserAsync();
         currentUserEmail = userCtx.Email;
@@ -221,14 +297,34 @@
         isLoading = true;
         try
         {
+            // Anchor date shifts by 14 days per period offset so the ← / → nav
+            // actually moves between pay periods. The page previously kept
+            // periodAnchorDate pinned to today and only mutated periodOffset,
+            // which silently no-oped navigation. Bi-weekly pay periods are the
+            // norm (Apr 13 – Apr 26, etc.), so 14 days back lands reliably in
+            // the previous period for GetPayPeriodForDateAsync to resolve.
+            periodAnchorDate = DateTime.Today.AddDays(14 * periodOffset);
             currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
-            
-            if (currentSupervisorId > 0)
+
+            if (isAdmin)
+            {
+                // Admin scope: every active hourly / PT / sub across all supervisors.
+                teamSummaries = await TimesheetService.GetAllTeamTimesheetsAsync(
+                    currentPayPeriod.StartDate,
+                    currentPayPeriod.EndDate);
+
+                RebuildAdminFilterOptions();
+            }
+            else if (currentSupervisorId > 0)
             {
                 teamSummaries = await TimesheetService.GetTeamTimesheetsAsync(
                     currentSupervisorId,
                     currentPayPeriod.StartDate,
                     currentPayPeriod.EndDate);
+            }
+            else
+            {
+                teamSummaries = new();
             }
         }
         catch (Exception ex)
@@ -240,6 +336,26 @@
             isLoading = false;
             StateHasChanged();
         }
+    }
+
+    // Build campus + supervisor dropdowns from the admin-scope result set.
+    // Simpler than a separate DB query; guarantees every option has at least
+    // one matching employee so picking it never empties the grid unexpectedly.
+    private void RebuildAdminFilterOptions()
+    {
+        campusOptions = teamSummaries
+            .Where(s => s.CampusId.HasValue && !string.IsNullOrEmpty(s.CampusName))
+            .Select(s => (Id: s.CampusId!.Value, Name: s.CampusName!))
+            .Distinct()
+            .OrderBy(c => c.Name)
+            .ToList();
+
+        supervisorOptions = teamSummaries
+            .Where(s => s.SupervisorEmployeeId.HasValue && !string.IsNullOrEmpty(s.SupervisorName))
+            .Select(s => (Id: s.SupervisorEmployeeId!.Value, Name: s.SupervisorName!))
+            .Distinct()
+            .OrderBy(s => s.Name)
+            .ToList();
     }
 
     private async Task PreviousPeriod()
@@ -333,5 +449,13 @@
         if (member.EmployeeApproved) return "status-ready";
         return "status-pending";
     }
+
+    // Migration 052: display helper mirroring MyTimesheet's version.
+    private static string FormatReason(string reasonCode) => reasonCode switch
+    {
+        "WeatherClosure"  => "Weather Closure",
+        "ProfessionalDev" => "Professional Dev",
+        _                 => reasonCode
+    };
 }
 

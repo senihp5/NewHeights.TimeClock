@@ -159,103 +159,179 @@
             var isApproved = card.ApprovalStatus == ApprovalStatus.Approved;
             var isLocked = card.ApprovalStatus == ApprovalStatus.Locked;
             var isEditable = !isApproved && !isLocked;
+            var times = checkInOutByCardId.TryGetValue(card.SubTimecardId, out var t) ? t : (In: (TimeOnly?)null, Out: (TimeOnly?)null);
+            var teacherGroups = GroupEntriesByTeacher(card).ToList();
 
             <div class="day-card @(isApproved ? "approved" : "") @(isLocked ? "locked" : "")">
                 <div class="day-card-header">
-                    <span class="day-date">@card.WorkDate.ToString("dddd, MMM d")</span>
-                    <span class="day-campus">@(card.Campus?.CampusName ?? GetCampusName(card.CampusId))</span>
-                    <span class="day-status status-@card.ApprovalStatus.ToString().ToLower()">
-                        @card.ApprovalStatus
-                    </span>
+                    <div class="day-card-header-top">
+                        <div class="day-card-heading">
+                            <span class="day-date">@card.WorkDate.ToString("dddd, MMM d")</span>
+                            <span class="day-campus">@(card.Campus?.CampusName ?? GetCampusName(card.CampusId))</span>
+                        </div>
+                        <span class="cm-status status-@card.ApprovalStatus.ToString().ToLower()"
+                              title="Campus Manager approval">
+                            CM: @card.ApprovalStatus
+                        </span>
+                    </div>
+                    <div class="day-card-header-bottom">
+                        <span class="checkin-pill">
+                            <span class="ci-label">Check-In:</span>
+                            <span class="ci-value">@(times.In?.ToString("h:mm tt") ?? "—")</span>
+                        </span>
+                        <span class="checkin-pill">
+                            <span class="ci-label">Check-Out:</span>
+                            <span class="ci-value">@(times.Out?.ToString("h:mm tt") ?? "—")</span>
+                        </span>
+                        <button type="button" class="btn-fix-times"
+                                disabled="@(!isEditable)"
+                                title="Submit a correction if your check-in or check-out time is wrong">
+                            Fix Times
+                        </button>
+                    </div>
                 </div>
 
                 <div class="day-card-body">
-                    @if (card.PeriodEntries.Count == 0)
+                    @if (teacherGroups.Count == 0)
                     {
-                        <p class="no-periods">No periods logged yet.</p>
+                        <p class="no-periods">No periods logged yet for this day.</p>
                     }
                     else
                     {
-                        <table class="period-table">
+                        <table class="coverage-matrix">
                             <thead>
                                 <tr>
-                                    <th>Period</th>
-                                    <th>Time</th>
-                                    <th>Session</th>
-                                    <th>Teacher</th>
-                                    <th>Room</th>
-                                    <th>Content</th>
-                                    <th>Notes</th>
-                                    <th class="col-actions">Actions</th>
+                                    <th class="col-teacher">Teacher Covered</th>
+                                    @foreach (var p in PeriodColumns)
+                                    {
+                                        <th class="col-period">P@(p)</th>
+                                    }
+                                    <th class="col-content">Content</th>
+                                    <th class="col-room">Room</th>
+                                    <th class="col-notecount">Notes</th>
+                                    <th class="col-expand"></th>
                                 </tr>
                             </thead>
                             <tbody>
-                                @foreach (var entry in card.PeriodEntries.OrderBy(e => e.PeriodNumber))
+                                @foreach (var tg in teacherGroups)
                                 {
-                                    var isEditingThisNotes = editingNotesEntryId == entry.EntryId;
-                                    var isConfirmingThisRemove = confirmingRemoveEntryId == entry.EntryId;
-                                    <tr>
-                                        <td><strong>P@(entry.PeriodNumber)</strong> — @entry.PeriodName</td>
-                                        <td>
-                                            @entry.StartTime.ToString("h:mm") –
-                                            @entry.EndTime.ToString("h:mm tt")
-                                        </td>
-                                        <td><span class="session-badge session-@entry.SessionType.ToLower()">@entry.SessionType</span></td>
-                                        <td>@(entry.TeacherReplaced ?? "—")</td>
-                                        <td>@(entry.Room ?? "—")</td>
-                                        <td>@(entry.ContentArea ?? "—")</td>
-                                        <td class="notes-cell @(isEditingThisNotes ? "editing" : "")">
-                                            @if (isEditingThisNotes)
+                                    var expanded = IsTeacherExpanded(tg.CardId, tg.TeacherEmployeeId, tg.TeacherName);
+                                    var noteCount = tg.Entries.Count(e => !string.IsNullOrWhiteSpace(e.Notes));
+                                    <tr class="teacher-summary-row @(expanded ? "expanded" : "")"
+                                        @onclick="() => ToggleTeacherExpand(tg.CardId, tg.TeacherEmployeeId, tg.TeacherName)">
+                                        <td class="teacher-cell">
+                                            <strong>@tg.TeacherName</strong>
+                                            @if (tg.TeacherEmployeeId.HasValue)
                                             {
-                                                <textarea class="inline-notes"
-                                                          @bind="editedNotes"
-                                                          rows="2"
-                                                          maxlength="500"
-                                                          disabled="@isSavingNotes"></textarea>
+                                                <span class="teacher-id-chip" title="HR Ascender match">#@tg.TeacherEmployeeId</span>
+                                            }
+                                        </td>
+                                        @foreach (var p in PeriodColumns)
+                                        {
+                                            var entry = tg.EntryFor(p);
+                                            <td class="period-cell @(entry != null ? "checked" : "empty")">
+                                                @(entry != null ? "✓" : "—")
+                                            </td>
+                                        }
+                                        <td class="content-cell">@(tg.ContentArea ?? "—")</td>
+                                        <td class="room-cell">@(tg.Room ?? "—")</td>
+                                        <td class="notecount-cell">
+                                            @if (noteCount > 0)
+                                            {
+                                                <span class="note-badge">@noteCount</span>
                                             }
                                             else
                                             {
-                                                @(entry.Notes ?? "")
+                                                <span class="muted">0</span>
                                             }
                                         </td>
-                                        <td class="actions-cell">
-                                            @if (!isEditable)
-                                            {
-                                                <span class="muted">—</span>
-                                            }
-                                            else if (isEditingThisNotes)
-                                            {
-                                                <button type="button" class="btn-inline-save"
-                                                        @onclick="() => SaveNotesAsync(entry)"
-                                                        disabled="@isSavingNotes">
-                                                    @(isSavingNotes ? "Saving…" : "Save")
-                                                </button>
-                                                <button type="button" class="btn-inline-cancel"
-                                                        @onclick="CancelEditNotes"
-                                                        disabled="@isSavingNotes">Cancel</button>
-                                            }
-                                            else if (isConfirmingThisRemove)
-                                            {
-                                                <button type="button" class="btn-confirm-remove"
-                                                        @onclick="() => ConfirmRemoveAsync(entry)"
-                                                        disabled="@isRemoving">
-                                                    @(isRemoving ? "Removing…" : "Confirm Remove")
-                                                </button>
-                                                <button type="button" class="btn-inline-cancel"
-                                                        @onclick="CancelRemove"
-                                                        disabled="@isRemoving">Cancel</button>
-                                            }
-                                            else
-                                            {
-                                                <button type="button" class="btn-inline-edit"
-                                                        @onclick="() => BeginEditNotes(entry)"
-                                                        title="Edit notes">Notes</button>
-                                                <button type="button" class="btn-inline-remove"
-                                                        @onclick="() => BeginRemove(entry.EntryId)"
-                                                        title="Remove this period">Remove</button>
-                                            }
+                                        <td class="expand-cell">
+                                            <span class="expand-arrow">@(expanded ? "▼" : "▶")</span>
                                         </td>
                                     </tr>
+                                    @if (expanded)
+                                    {
+                                        <tr class="teacher-detail-row">
+                                            <td colspan="@(PeriodColumns.Length + 5)">
+                                                <div class="teacher-detail-grid">
+                                                    @foreach (var entry in tg.Entries)
+                                                    {
+                                                        var isEditingThisNotes = editingNotesEntryId == entry.EntryId;
+                                                        var isConfirmingThisRemove = confirmingRemoveEntryId == entry.EntryId;
+                                                        <div class="period-detail-card">
+                                                            <div class="period-detail-head">
+                                                                <span class="pd-period">P@(entry.PeriodNumber) · @entry.PeriodName</span>
+                                                                <span class="pd-time">@entry.StartTime.ToString("h:mm") – @entry.EndTime.ToString("h:mm tt")</span>
+                                                                <span class="session-badge session-@entry.SessionType.ToLower()">@entry.SessionType</span>
+                                                            </div>
+                                                            @if (!string.IsNullOrWhiteSpace(entry.CourseName))
+                                                            {
+                                                                <div class="pd-row"><span class="pd-lbl">Course:</span> @entry.CourseName</div>
+                                                            }
+                                                            <div class="pd-notes @(isEditingThisNotes ? "editing" : "")">
+                                                                <span class="pd-lbl">Notes:</span>
+                                                                @if (isEditingThisNotes)
+                                                                {
+                                                                    <textarea class="inline-notes"
+                                                                              @bind="editedNotes"
+                                                                              rows="2"
+                                                                              maxlength="500"
+                                                                              disabled="@isSavingNotes"></textarea>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <span class="pd-notes-text">@(string.IsNullOrWhiteSpace(entry.Notes) ? "(none)" : entry.Notes)</span>
+                                                                }
+                                                            </div>
+                                                            <div class="pd-actions">
+                                                                @if (!isEditable)
+                                                                {
+                                                                    <span class="muted">Locked</span>
+                                                                }
+                                                                else if (isEditingThisNotes)
+                                                                {
+                                                                    <button type="button" class="btn-inline-save"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="() => SaveNotesAsync(entry)"
+                                                                            disabled="@isSavingNotes">
+                                                                        @(isSavingNotes ? "Saving…" : "Save")
+                                                                    </button>
+                                                                    <button type="button" class="btn-inline-cancel"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="CancelEditNotes"
+                                                                            disabled="@isSavingNotes">Cancel</button>
+                                                                }
+                                                                else if (isConfirmingThisRemove)
+                                                                {
+                                                                    <button type="button" class="btn-confirm-remove"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="() => ConfirmRemoveAsync(entry)"
+                                                                            disabled="@isRemoving">
+                                                                        @(isRemoving ? "Removing…" : "Confirm Remove")
+                                                                    </button>
+                                                                    <button type="button" class="btn-inline-cancel"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="CancelRemove"
+                                                                            disabled="@isRemoving">Cancel</button>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <button type="button" class="btn-inline-edit"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="() => BeginEditNotes(entry)"
+                                                                            title="Edit notes">Edit Notes</button>
+                                                                    <button type="button" class="btn-inline-remove"
+                                                                            @onclick:stopPropagation="true"
+                                                                            @onclick="() => BeginRemove(entry.EntryId)"
+                                                                            title="Remove this period">Remove</button>
+                                                                }
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    }
                                 }
                             </tbody>
                         </table>
@@ -264,6 +340,7 @@
                     <div class="day-card-footer">
                         <span class="period-count">
                             @card.TotalPeriodsWorked period@(card.TotalPeriodsWorked == 1 ? "" : "s") worked
+                            · @teacherGroups.Count @(teacherGroups.Count == 1 ? "teacher" : "teachers") covered
                         </span>
                         @if (isEditable)
                         {
@@ -343,6 +420,76 @@
     private int? todayCheckInCampusId;
 
     private Dictionary<int, string> campusNameById = new();
+
+    // ── Date-grouped redesign state (Phase 1) ─────────────────────────────
+    // Per-card check-in/out times derived from TcTimePunches (first-in, last-out).
+    private Dictionary<long, (TimeOnly? In, TimeOnly? Out)> checkInOutByCardId = new();
+    // Teacher-row expansion keys: "{cardId}:{teacherEmpId or 0}:{teacherName}"
+    private HashSet<string> expandedTeacherKeys = new();
+
+    private static readonly int[] PeriodColumns = new[] { 1, 2, 3, 4, 5, 6 };
+
+    private string BuildTeacherKey(long cardId, int? teacherEmployeeId, string teacherName)
+        => $"{cardId}:{teacherEmployeeId ?? 0}:{teacherName ?? ""}";
+
+    private bool IsTeacherExpanded(long cardId, int? teacherEmployeeId, string teacherName)
+        => expandedTeacherKeys.Contains(BuildTeacherKey(cardId, teacherEmployeeId, teacherName));
+
+    private void ToggleTeacherExpand(long cardId, int? teacherEmployeeId, string teacherName)
+    {
+        var key = BuildTeacherKey(cardId, teacherEmployeeId, teacherName);
+        if (!expandedTeacherKeys.Add(key))
+            expandedTeacherKeys.Remove(key);
+    }
+
+    /// <summary>Group a card's period entries by the teacher being covered.</summary>
+    private IEnumerable<TeacherCoverageGroup> GroupEntriesByTeacher(TcSubstituteTimecard card)
+    {
+        return card.PeriodEntries
+            .GroupBy(e => new {
+                Id   = e.TeacherReplacedEmployeeId,
+                Name = e.TeacherReplaced ?? "(Unknown teacher)"
+            })
+            .Select(g => new TeacherCoverageGroup
+            {
+                CardId            = card.SubTimecardId,
+                TeacherEmployeeId = g.Key.Id,
+                TeacherName       = g.Key.Name,
+                // Show ALL distinct content tags for this teacher's periods
+                // (e.g. "LAUNCH, ENG" when they teach PROF COMM in one period
+                // and ENG 4B in another). Previously collapsed to FirstOrDefault
+                // which hid the mixed-subject case entirely.
+                ContentArea       = FormatDistinctTags(g.Select(e => e.ContentArea)),
+                Room              = g.FirstOrDefault(e => !string.IsNullOrWhiteSpace(e.Room))?.Room,
+                Entries           = g.OrderBy(e => e.PeriodNumber).ToList()
+            })
+            .OrderBy(tg => tg.Entries.FirstOrDefault()?.PeriodNumber ?? 99)
+            .ThenBy(tg => tg.TeacherName);
+    }
+
+    private static string? FormatDistinctTags(IEnumerable<string?> values)
+    {
+        var distinct = values
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return distinct.Count == 0 ? null : string.Join(", ", distinct);
+    }
+
+    private class TeacherCoverageGroup
+    {
+        public long CardId { get; set; }
+        public int? TeacherEmployeeId { get; set; }
+        public string TeacherName { get; set; } = "";
+        public string? ContentArea { get; set; }
+        public string? Room { get; set; }
+        public List<TcSubstitutePeriodEntry> Entries { get; set; } = new();
+
+        /// <summary>Returns the entry for a given period number, or null.</summary>
+        public TcSubstitutePeriodEntry? EntryFor(int periodNumber)
+            => Entries.FirstOrDefault(e => e.PeriodNumber == periodNumber);
+    }
 
     // ── Picker modal state ────────────────────────────────────────────────
     private bool showPicker = false;
@@ -451,7 +598,12 @@
                 return;
             }
 
-            var anchorDate = DateTime.Today.AddDays(-15 * periodOffset);
+            // Positive coefficient on periodOffset so Previous (offset -1) lands
+            // the anchor 15 days in the past and GetPayPeriodForDateAsync resolves
+            // the prior period. Prior formula `-15 * offset` sent the anchor into
+            // the future and broke period navigation silently — fixed 2026-04-23
+            // in SupervisorSubTimesheets and MySubTimesheet together.
+            var anchorDate = DateTime.Today.AddDays(15 * periodOffset);
             currentPayPeriod = await PayPeriodService.GetPayPeriodForDateAsync(anchorDate);
             if (currentPayPeriod == null)
             {
@@ -467,7 +619,72 @@
                 .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
 
             var today = DateOnly.FromDateTime(DateTime.Today);
+
+            // Auto-populate from any matching TcSubRequestAssignments every time
+            // the sub loads their timesheet. Idempotent — the service only inserts
+            // periods that aren't already on the card, and skips Approved/Locked
+            // cards entirely. This self-heals the case where an assignment was
+            // created AFTER the sub's kiosk check-in fired (e.g., a supervisor
+            // assigned them manually later, or the assignment's campus was
+            // corrected). Only runs when we're viewing the current period to
+            // avoid doing rework on historical months.
+            if (periodOffset == 0)
+            {
+                foreach (var card in cards.Where(c =>
+                    c.ApprovalStatus != ApprovalStatus.Approved
+                 && c.ApprovalStatus != ApprovalStatus.Locked))
+                {
+                    try
+                    {
+                        await SubTimesheetService.AutoPopulatePreAssignedAsync(card.SubTimecardId);
+                    }
+                    catch (Exception autoEx)
+                    {
+                        // Never break timesheet load over auto-populate failure.
+                        Logger.LogWarning(autoEx,
+                            "AutoPopulatePreAssignedAsync failed on card {CardId} during timesheet load for {Email}",
+                            card.SubTimecardId, currentUserEmail);
+                    }
+                }
+
+                // Refresh the cards list if auto-populate added any period rows.
+                cards = await SubTimesheetService.GetCardsForPayPeriodAsync(
+                    employeeId, currentPayPeriod.StartDate, currentPayPeriod.EndDate);
+            }
+
             todayCard = cards.FirstOrDefault(c => c.WorkDate == today);
+
+            // Batch-fetch all active IN/OUT punches for the pay period so each
+            // date card can show first-in / last-out (Phase 1 of sub timesheet
+            // redesign — gives the sub and HR a single-glance "were they here?"
+            // reading instead of forcing drill-in). One query per period, not
+            // one per card.
+            checkInOutByCardId.Clear();
+            var periodStart = currentPayPeriod.StartDate.ToDateTime(TimeOnly.MinValue);
+            var periodEnd   = currentPayPeriod.EndDate.ToDateTime(TimeOnly.MaxValue);
+
+            var periodPunches = await context.TcTimePunches
+                .AsNoTracking()
+                .Where(p => p.EmployeeId == employeeId
+                         && p.PunchDateTime >= periodStart
+                         && p.PunchDateTime <= periodEnd
+                         && p.PunchStatus == PunchStatus.Active
+                         && (p.PunchType == PunchType.In || p.PunchType == PunchType.Out))
+                .OrderBy(p => p.PunchDateTime)
+                .ToListAsync();
+
+            foreach (var card in cards)
+            {
+                var forCard = periodPunches
+                    .Where(p => p.CampusId == card.CampusId
+                             && DateOnly.FromDateTime(p.PunchDateTime) == card.WorkDate)
+                    .ToList();
+                var firstIn = forCard.FirstOrDefault(p => p.PunchType == PunchType.In);
+                var lastOut = forCard.LastOrDefault(p => p.PunchType == PunchType.Out);
+                checkInOutByCardId[card.SubTimecardId] = (
+                    firstIn != null ? TimeOnly.FromDateTime(firstIn.PunchDateTime) : (TimeOnly?)null,
+                    lastOut != null ? TimeOnly.FromDateTime(lastOut.PunchDateTime) : (TimeOnly?)null);
+            }
 
             if (periodOffset == 0)
                 todayCheckInCampusId = await SubTimesheetService.GetCampusIdFromTodayCheckInAsync(employeeId);

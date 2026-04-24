@@ -1,0 +1,169 @@
+.email-test .settings-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.email-test .settings-table th {
+    text-align: left;
+    font-weight: 600;
+    color: #475569;
+    padding: 0.35rem 0.6rem;
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    width: 11rem;
+}
+
+.email-test .settings-table td {
+    padding: 0.35rem 0.6rem;
+    border: 1px solid #e5e7eb;
+    font-family: "Segoe UI Mono", "Consolas", monospace;
+}
+
+.email-test .tag-ok {
+    display: inline-block;
+    padding: 0.05rem 0.45rem;
+    background: #d1fae5;
+    color: #065f46;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.email-test .tag-bad {
+    display: inline-block;
+    padding: 0.05rem 0.45rem;
+    background: #fee2e2;
+    color: #991b1b;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.email-test .tag-warn {
+    display: inline-block;
+    margin-left: 0.35rem;
+    padding: 0.05rem 0.45rem;
+    background: #fef3c7;
+    color: #92400e;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+.email-test .muted {
+    color: #94a3b8;
+    font-size: 0.82rem;
+    margin-left: 0.35rem;
+}
+
+.email-test .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.85rem;
+    margin-bottom: 0.85rem;
+}
+
+.email-test .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.email-test .form-field label {
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.email-test .form-field-wide {
+    grid-column: 1 / -1;
+}
+
+.email-test .btn-row {
+    display: flex;
+    gap: 0.6rem;
+    margin-bottom: 1rem;
+}
+
+.email-test .result-block {
+    margin-top: 0.85rem;
+    padding: 0.85rem 1rem;
+    border-radius: 8px;
+    border-left: 4px solid transparent;
+}
+
+.email-test .result-block.ok {
+    background: #f0fdf4;
+    border-color: #10b981;
+}
+
+.email-test .result-block.err {
+    background: #fef2f2;
+    border-color: #dc2626;
+}
+
+.email-test .result-head {
+    font-size: 1rem;
+    margin-bottom: 0.45rem;
+}
+
+.email-test .exception-type {
+    font-family: "Segoe UI Mono", "Consolas", monospace;
+    font-size: 0.82rem;
+    color: #7f1d1d;
+    background: #fecaca;
+    padding: 0.25rem 0.55rem;
+    border-radius: 4px;
+    display: inline-block;
+    margin-bottom: 0.4rem;
+}
+
+.email-test .exception-msg {
+    white-space: pre-wrap;
+    background: #fff;
+    border: 1px solid #fecaca;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    font-family: "Segoe UI Mono", "Consolas", monospace;
+    font-size: 0.82rem;
+    color: #7f1d1d;
+    margin: 0 0 0.4rem 0;
+}
+
+.email-test .inner-label {
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 0.25rem;
+}
+
+.email-test .stack-trace {
+    white-space: pre-wrap;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    font-family: "Segoe UI Mono", "Consolas", monospace;
+    font-size: 0.75rem;
+    color: #475569;
+    max-height: 20rem;
+    overflow: auto;
+}
+
+.email-test details summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: #1e3a5f;
+    padding: 0.25rem 0;
+}
+
+.email-test .success-detail {
+    color: #065f46;
+    font-size: 0.92rem;
+}
