@@ -96,6 +96,7 @@
                                         @bind:after="() => AutoFillFromMasterScheduleAsync(row)"
                                         disabled="@(row.HasCompleted || isWorking)">
                                     <option value="0">— Select —</option>
+                                    <option value="-1">— N/A (Testing / No Specific Teacher) —</option>
                                     @foreach (var t in allTeachers)
                                     {
                                         <option value="@t.EmployeeId">@TeacherDisplay(t)</option>
@@ -187,7 +188,10 @@
                 @foreach (var res in importResults)
                 {
                     <li class="@(res.Success ? "res-ok" : "res-err")">
-                        @res.WorkDate.ToString("yyyy-MM-dd") — Sub #@res.SubEmployeeId covering teacher #@res.TeacherEmployeeId:
+                        @res.WorkDate.ToString("yyyy-MM-dd") — Sub #@res.SubEmployeeId
+                        @(res.TeacherEmployeeId == -1
+                            ? "covering testing / no-teacher"
+                            : $"covering teacher #{res.TeacherEmployeeId}"):
                         <strong>@(res.Success ? $"{res.PeriodsCreated} period(s) + card #{res.TimecardId}" : res.Error)</strong>
                     </li>
                 }
@@ -291,6 +295,8 @@
     // teacher-level content/room so the admin can eyeball the row before Apply.
     private async Task AutoFillFromMasterScheduleAsync(EntryRow row)
     {
+        // -1 = N/A (testing / no specific teacher) — nothing to look up.
+        // 0 = not yet selected.
         if (row.TeacherEmployeeId <= 0 || row.CampusId <= 0) return;
 
         try
@@ -456,20 +462,35 @@
         }
 
         // Find the absent-teacher name for the denormalized snapshot.
-        var teacher = await ctx.TcEmployees
-            .AsNoTracking()
-            .Include(e => e.Staff)
-            .FirstOrDefaultAsync(e => e.EmployeeId == row.TeacherEmployeeId);
-        var teacherName = teacher?.Staff?.FullName ?? teacher?.DisplayName ?? $"Employee {row.TeacherEmployeeId}";
+        // TeacherEmployeeId == -1 is the sentinel for "N/A — testing / no
+        // specific teacher" (STAAR, MAP, etc.) — skip the lookup and stamp
+        // a descriptive label so the period entry still reads meaningfully
+        // on reports and MySubTimesheet. TeacherReplacedEmployeeId on the
+        // entry will be null in this case (not -1), so HR Ascender matching
+        // isn't fooled into looking for a phantom employee.
+        var isNoTeacher = row.TeacherEmployeeId == -1;
+
+        TcEmployee? teacher = null;
+        string teacherName;
+        if (isNoTeacher)
+        {
+            teacherName = "N/A — no specific teacher";
+        }
+        else
+        {
+            teacher = await ctx.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .FirstOrDefaultAsync(e => e.EmployeeId == row.TeacherEmployeeId);
+            teacherName = teacher?.Staff?.FullName ?? teacher?.DisplayName ?? $"Employee {row.TeacherEmployeeId}";
+        }
 
         // Master-schedule lookup: pull the teacher's course-per-period + room +
         // content-area from TC_MasterSchedule. Joined by Staff.Dcid because
         // TcMasterSchedule.TeacherStaffDcid is what the import tool populates.
-        // We take the most recently imported ACTIVE row for the campus — in
-        // normal operation that's the current term's schedule. Admin can
-        // still override per-row by typing into Content/Room.
+        // Skipped entirely when no specific teacher was picked (testing coverage).
         TcMasterSchedule? masterSchedule = null;
-        if (teacher?.StaffDcid != null)
+        if (!isNoTeacher && teacher?.StaffDcid != null)
         {
             masterSchedule = await ctx.TcMasterSchedules
                 .AsNoTracking()
@@ -570,7 +591,10 @@
                     StartTime     = period.StartTime,
                     EndTime       = period.EndTime,
                     TeacherReplaced = teacherName,
-                    TeacherReplacedEmployeeId = row.TeacherEmployeeId,
+                    // NULL when testing / no-specific-teacher (sentinel -1).
+                    // Otherwise the real TC_Employees.EmployeeId so HR Ascender
+                    // reconciliation works.
+                    TeacherReplacedEmployeeId = isNoTeacher ? (int?)null : row.TeacherEmployeeId,
                     CourseName    = courseForThisPeriod,
                     ContentArea   = contentAreaForThisPeriod,
                     Room          = resolvedRoom,
@@ -676,7 +700,9 @@
                 Source = "PAPER_IMPORT",
                 ImportedBy = currentUserEmail
             },
-            deltaSummary: $"Paper sub import ({coverTypeTag}, {reasonTag}): {created} period(s) added to #{row.SubEmployeeId} covering #{row.TeacherEmployeeId} on {row.WorkDate:yyyy-MM-dd}",
+            deltaSummary: $"Paper sub import ({coverTypeTag}, {reasonTag}): {created} period(s) added to #{row.SubEmployeeId} " +
+                          (isNoTeacher ? "(no specific teacher — testing/coverage)" : $"covering #{row.TeacherEmployeeId}") +
+                          $" on {row.WorkDate:yyyy-MM-dd}",
             source: AuditSource.AdminUi,
             employeeId: row.SubEmployeeId,
             campusId: row.CampusId);
@@ -703,11 +729,16 @@
         public bool HasCompleted { get; set; }
         public string? Error { get; set; }
 
+        /// <summary>
+        /// -1 means "N/A - no specific teacher" (testing / coverage scenarios where
+        /// the sub isn't replacing a particular classroom teacher). 0 = not yet
+        /// selected. Any positive value = real TcEmployees.EmployeeId.
+        /// </summary>
         public bool IsReady =>
                !HasCompleted
             && WorkDate.HasValue
             && CampusId > 0
-            && TeacherEmployeeId > 0
+            && (TeacherEmployeeId > 0 || TeacherEmployeeId == -1)
             && SubEmployeeId > 0
             && Periods.Any(p => p);
     }

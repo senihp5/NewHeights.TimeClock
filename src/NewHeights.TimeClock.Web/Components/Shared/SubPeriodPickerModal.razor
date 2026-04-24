@@ -96,12 +96,18 @@
                             else
                             {
                                 <select id="teacher-select" @bind="selectedMasterScheduleId" disabled="@isSaving">
-                                    <option value="0">— Select teacher (optional) —</option>
+                                    <option value="0">— Select a teacher —</option>
+                                    <option value="-1">— N/A (Testing / No specific teacher) —</option>
                                     @foreach (var slot in masterSlots)
                                     {
                                         <option value="@slot.MasterScheduleId">@FormatSlotOption(slot)</option>
                                     }
                                 </select>
+                                <small class="help-hint">
+                                    Pick <em>N/A</em> when you were covering testing (STAAR, MAP) or general
+                                    supervision that wasn't tied to a specific teacher's class. Use the notes
+                                    field to describe the assignment.
+                                </small>
                             }
                         </div>
 
