@@ -1,128 +1,263 @@
+/* =========================================================================
+   Help page styles — matches the portal's navy + gold theme. Sections are
+   color-coded by role tier (everyone / hourly / supervisor / HR / reception
+   / admin) using the .help-section-{tier} + .help-policy-{tier} classes
+   emitted by Help.razor.
+   ========================================================================= */
+
 .help-page {
-    max-width: 960px;
+    max-width: 1000px;
     margin: 0 auto;
-    padding: 1.25rem 1.5rem;
+    padding: 1.25rem 1.5rem 2rem;
     color: #1f2937;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-.help-header h1 {
-    margin: 0 0 0.25rem 0;
-    color: #111827;
-    font-size: 1.5rem;
+/* ── Hero header — navy gradient + gold accent strip ─────────────────── */
+
+.help-hero {
+    position: relative;
+    background: linear-gradient(135deg, #1e3a5f 0%, #152840 100%);
+    border-radius: 12px;
+    margin-bottom: 1.25rem;
+    overflow: hidden;
+    box-shadow: 0 4px 14px rgba(21, 40, 64, 0.18);
+}
+
+.help-hero-accent {
+    height: 4px;
+    background: linear-gradient(90deg, #f5b81c 0%, #f5b81c 55%, #ffdf7a 100%);
+}
+
+.help-hero-inner {
+    display: flex;
+    align-items: center;
+    gap: 1.1rem;
+    padding: 1.25rem 1.6rem 1.4rem;
+}
+
+.help-hero-icon {
+    flex: 0 0 auto;
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(245, 184, 28, 0.45);
+    border-radius: 12px;
+    font-size: 1.85rem;
+}
+
+.help-hero-text {
+    flex: 1 1 auto;
+    color: #fff;
+}
+
+.help-hero-text h1 {
+    margin: 0 0 0.2rem 0;
+    color: #fff;
+    font-size: 1.6rem;
+    letter-spacing: 0.01em;
 }
 
 .help-subtitle {
-    margin: 0 0 1.25rem 0;
-    color: #6b7280;
+    margin: 0;
+    color: rgba(255, 255, 255, 0.85);
     font-size: 0.95rem;
     line-height: 1.5;
+    max-width: 56rem;
 }
 
-/* Search + admin toggle row. */
+/* ── Controls row: search + admin toggle ─────────────────────────────── */
+
 .help-controls {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.85rem;
     margin-bottom: 1.25rem;
     flex-wrap: wrap;
 }
 
 .help-search {
+    position: relative;
     flex: 1 1 280px;
     min-width: 220px;
 }
 
+.help-search-icon {
+    position: absolute;
+    left: 0.85rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 1rem;
+    pointer-events: none;
+    opacity: 0.7;
+}
+
 .help-search-input {
     width: 100%;
-    padding: 0.55rem 0.8rem;
-    border: 1px solid #d1d5db;
-    border-radius: 6px;
-    font-size: 0.95rem;
+    padding: 0.7rem 0.9rem 0.7rem 2.5rem;
+    border: 1.5px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 0.98rem;
     background: #fff;
     color: #111827;
     font-family: inherit;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.help-search-input::placeholder {
+    color: #9ca3af;
 }
 
 .help-search-input:focus {
-    outline: 2px solid #1e3a5f;
-    outline-offset: 1px;
+    outline: none;
     border-color: #1e3a5f;
+    box-shadow: 0 0 0 3px rgba(30, 58, 95, 0.12);
 }
 
 .help-admin-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    background: #fffbeb;
-    border: 1px solid #fde68a;
-    border-radius: 6px;
-    padding: 0.4rem 0.8rem;
+    gap: 0.5rem;
+    background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+    border: 1px solid #fbbf24;
+    border-radius: 8px;
+    padding: 0.55rem 0.9rem;
     font-size: 0.85rem;
-    color: #92400e;
+    font-weight: 600;
+    color: #78350f;
     cursor: pointer;
     user-select: none;
+    transition: background 0.15s ease;
+}
+
+.help-admin-toggle:hover {
+    background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
 }
 
 .help-admin-toggle input {
     margin: 0;
+    width: 16px;
+    height: 16px;
     cursor: pointer;
+    accent-color: #b45309;
 }
+
+/* ── Loading / empty / error states ──────────────────────────────────── */
 
 .help-loading,
 .help-empty,
 .help-error {
-    padding: 1rem 1.25rem;
-    border-radius: 8px;
+    padding: 1.5rem;
+    border-radius: 10px;
     text-align: center;
-    margin: 1rem 0;
+    margin: 1.25rem 0;
+    font-size: 0.95rem;
 }
 
-.help-loading { background: #f3f4f6; color: #4b5563; }
-.help-empty   { background: #f9fafb; border: 1px dashed #d1d5db; color: #6b7280; }
-.help-error   { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.help-loading {
+    background: #f3f4f6;
+    color: #4b5563;
+}
 
-.help-empty p { margin: 0 0 0.6rem; }
+.help-empty {
+    background: #fff;
+    border: 1.5px dashed #cbd5e1;
+    color: #6b7280;
+}
 
-/* Section block. */
+.help-error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+}
+
+.help-empty p {
+    margin: 0 0 0.75rem;
+}
+
+/* ── Section cards — color-coded by role tier ────────────────────────── */
+
 .help-section {
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.1rem;
     background: #fff;
     border: 1px solid #e5e7eb;
+    border-left: 5px solid #94a3b8;
     border-radius: 10px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
     overflow: hidden;
+    transition: box-shadow 0.2s ease;
 }
+
+.help-section:hover {
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+}
+
+/* Per-tier accents. Brighter color = more elevated role tier. */
+.help-section-everyone   { border-left-color: #2563eb; }
+.help-section-hourly     { border-left-color: #0891b2; }
+.help-section-supervisor { border-left-color: #d97706; }
+.help-section-hr         { border-left-color: #4338ca; }
+.help-section-reception  { border-left-color: #059669; }
+.help-section-admin      { border-left-color: #b91c1c; }
+
+/* ── Section header ──────────────────────────────────────────────────── */
 
 .help-section-header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.75rem;
-    padding: 0.75rem 1rem;
+    padding: 0.85rem 1.1rem;
     background: linear-gradient(180deg, #f9fafb 0%, #f3f4f6 100%);
     border-bottom: 1px solid #e5e7eb;
 }
 
+.help-section-icon {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.05rem;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+}
+
 .help-section-header h2 {
     margin: 0;
+    flex: 1 1 auto;
     font-size: 1.05rem;
     color: #1e3a5f;
+    font-weight: 700;
     letter-spacing: 0.01em;
 }
 
+/* Policy chips — also color-coded by tier. */
 .help-section-policy {
-    background: #1e3a5f;
-    color: #fff;
+    flex: 0 0 auto;
     font-size: 0.7rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    padding: 0.2rem 0.55rem;
+    padding: 0.25rem 0.65rem;
     border-radius: 9999px;
     white-space: nowrap;
+    border: 1px solid transparent;
 }
 
-/* Article accordion. */
+.help-policy-everyone   { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+.help-policy-hourly     { background: #cffafe; color: #155e75; border-color: #67e8f9; }
+.help-policy-supervisor { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.help-policy-hr         { background: #e0e7ff; color: #3730a3; border-color: #a5b4fc; }
+.help-policy-reception  { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+.help-policy-admin      { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+
+/* ── Article accordion ───────────────────────────────────────────────── */
+
 .help-article {
     border-top: 1px solid #f3f4f6;
 }
@@ -133,100 +268,122 @@
 
 .help-article-summary {
     cursor: pointer;
-    padding: 0.7rem 1rem;
+    padding: 0.8rem 1.1rem;
     list-style: none;
     display: block;
-    transition: background 0.1s ease;
+    transition: background 0.12s ease;
 }
 
 .help-article-summary::-webkit-details-marker { display: none; }
 
 .help-article-summary::before {
-    content: "▶";
+    content: "›";
     display: inline-block;
-    margin-right: 0.55rem;
-    color: #6b7280;
-    font-size: 0.7rem;
-    transition: transform 0.15s ease;
+    margin-right: 0.6rem;
+    color: #1e3a5f;
+    font-size: 1.15rem;
+    font-weight: 700;
+    line-height: 1;
+    transition: transform 0.18s ease;
 }
 
 .help-article[open] > .help-article-summary::before {
     transform: rotate(90deg);
 }
 
-.help-article-summary:hover {
+.help-article[open] > .help-article-summary {
     background: #f9fafb;
+    border-bottom: 1px solid #f3f4f6;
+}
+
+.help-article-summary:hover {
+    background: #eff6ff;
 }
 
 .help-article-title {
     font-weight: 600;
     color: #111827;
-    font-size: 0.96rem;
+    font-size: 0.98rem;
 }
 
 .help-article-blurb {
     display: block;
-    margin-top: 0.2rem;
-    margin-left: 1.25rem;
+    margin-top: 0.25rem;
+    margin-left: 1.55rem;
     color: #6b7280;
     font-size: 0.85rem;
-    line-height: 1.4;
+    line-height: 1.45;
 }
 
 .help-article-body {
-    padding: 0.5rem 1rem 1.1rem 1.85rem;
+    padding: 0.85rem 1.1rem 1.2rem 2.05rem;
     color: #1f2937;
     font-size: 0.95rem;
-    line-height: 1.55;
+    line-height: 1.6;
+    background: #fcfcfd;
 }
 
 .help-article-body h3 {
     color: #1e3a5f;
     font-size: 1rem;
-    margin: 0.85rem 0 0.4rem;
+    margin: 1rem 0 0.4rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.help-article-body h3:first-child {
+    margin-top: 0.2rem;
 }
 
 .help-article-body p {
-    margin: 0.45rem 0;
+    margin: 0.5rem 0;
 }
 
 .help-article-body ol,
 .help-article-body ul {
-    margin: 0.4rem 0 0.4rem 1.25rem;
+    margin: 0.5rem 0 0.5rem 1.35rem;
     padding: 0;
 }
 
 .help-article-body li {
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.3rem;
 }
 
 .help-article-body code {
-    background: #f3f4f6;
-    border: 1px solid #e5e7eb;
-    border-radius: 3px;
-    padding: 0.05rem 0.35rem;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    padding: 0.08rem 0.4rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.88em;
+    font-size: 0.85em;
     color: #1e3a5f;
 }
 
 .help-article-body a {
     color: #1d4ed8;
     text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
 .help-article-body a:hover {
     color: #1e3a5f;
+    text-decoration-thickness: 2px;
 }
 
-/* Admin edit bar. */
+.help-article-body strong {
+    color: #111827;
+    font-weight: 700;
+}
+
+/* ── Admin edit bar + form ───────────────────────────────────────────── */
+
 .help-admin-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    margin-top: 0.85rem;
-    padding-top: 0.6rem;
+    margin-top: 1rem;
+    padding-top: 0.7rem;
     border-top: 1px dashed #e5e7eb;
     font-size: 0.78rem;
     color: #6b7280;
@@ -236,17 +393,19 @@
 .help-meta {
     flex: 1;
     text-align: right;
+    font-style: italic;
 }
 
 .help-btn-edit {
     background: #fff;
     color: #1e3a5f;
-    border: 1px solid #1e3a5f;
-    padding: 0.3rem 0.85rem;
-    border-radius: 5px;
+    border: 1.5px solid #1e3a5f;
+    padding: 0.4rem 0.95rem;
+    border-radius: 6px;
     font-size: 0.82rem;
     font-weight: 600;
     cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
 }
 
 .help-btn-edit:hover {
@@ -254,62 +413,72 @@
     color: #fff;
 }
 
-/* Edit form. */
 .help-edit-form {
     display: flex;
     flex-direction: column;
-    gap: 0.7rem;
+    gap: 0.85rem;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
 .help-edit-form label {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.3rem;
     font-size: 0.85rem;
     color: #4b5563;
 }
 
 .help-edit-form label span {
     font-weight: 600;
+    color: #1e3a5f;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.75rem;
 }
 
 .help-edit-form input[type="text"],
 .help-edit-form textarea {
-    padding: 0.5rem 0.7rem;
+    padding: 0.55rem 0.75rem;
     border: 1px solid #d1d5db;
-    border-radius: 5px;
+    border-radius: 6px;
     font-family: inherit;
     font-size: 0.93rem;
     color: #111827;
     background: #fff;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .help-edit-form textarea {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.85rem;
     resize: vertical;
-    min-height: 8rem;
+    min-height: 10rem;
+    line-height: 1.5;
 }
 
 .help-edit-form input:focus,
 .help-edit-form textarea:focus {
-    outline: 2px solid #1e3a5f;
-    outline-offset: 1px;
+    outline: none;
     border-color: #1e3a5f;
+    box-shadow: 0 0 0 3px rgba(30, 58, 95, 0.12);
 }
 
 .help-edit-error {
     background: #fef2f2;
     border: 1px solid #fecaca;
     color: #991b1b;
-    border-radius: 5px;
-    padding: 0.5rem 0.7rem;
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
     font-size: 0.85rem;
 }
 
 .help-edit-actions {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.55rem;
     margin-top: 0.25rem;
 }
 
@@ -317,19 +486,24 @@
     background: #1e3a5f;
     color: #fff;
     border: none;
-    padding: 0.5rem 1.1rem;
-    border-radius: 5px;
+    padding: 0.55rem 1.2rem;
+    border-radius: 6px;
     font-weight: 600;
     cursor: pointer;
     font-size: 0.9rem;
+    transition: background 0.12s ease, transform 0.05s ease;
 }
 
 .help-btn-primary:hover:not(:disabled) {
     background: #152840;
 }
 
+.help-btn-primary:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
 .help-btn-primary:disabled {
-    opacity: 0.6;
+    opacity: 0.55;
     cursor: not-allowed;
 }
 
@@ -337,32 +511,50 @@
     background: #fff;
     color: #374151;
     border: 1px solid #d1d5db;
-    padding: 0.5rem 1.1rem;
-    border-radius: 5px;
+    padding: 0.55rem 1.2rem;
+    border-radius: 6px;
     font-weight: 600;
     cursor: pointer;
     font-size: 0.9rem;
+    transition: background 0.12s ease;
 }
 
 .help-btn-secondary:hover:not(:disabled) {
     background: #f3f4f6;
+    border-color: #9ca3af;
 }
 
-/* Mobile: tighten padding, full-width search, larger tap targets. */
+/* ── Mobile (<= 768 px) ─────────────────────────────────────────────── */
+
 @media (max-width: 768px) {
 
     .help-page {
-        padding: 0.85rem;
+        padding: 0.85rem 0.85rem 1.5rem;
+    }
+
+    .help-hero-inner {
+        padding: 1rem 1.1rem 1.15rem;
+        gap: 0.85rem;
+    }
+
+    .help-hero-icon {
+        width: 44px;
+        height: 44px;
+        font-size: 1.4rem;
+    }
+
+    .help-hero-text h1 {
+        font-size: 1.25rem;
+    }
+
+    .help-subtitle {
+        font-size: 0.88rem;
     }
 
     .help-controls {
         flex-direction: column;
         align-items: stretch;
-        gap: 0.6rem;
-    }
-
-    .help-search {
-        flex: 1 1 auto;
+        gap: 0.55rem;
     }
 
     .help-search-input {
@@ -372,19 +564,35 @@
 
     .help-admin-toggle {
         align-self: flex-start;
+        min-height: 44px;
     }
 
     .help-section-header {
-        padding: 0.7rem 0.85rem;
+        padding: 0.75rem 0.85rem;
+        flex-wrap: wrap;
+    }
+
+    .help-section-header h2 {
+        font-size: 1rem;
+    }
+
+    .help-section-icon {
+        width: 28px;
+        height: 28px;
+        font-size: 0.95rem;
     }
 
     .help-article-summary {
-        padding: 0.85rem 0.85rem;
+        padding: 0.95rem 0.85rem;
         min-height: 44px;
     }
 
     .help-article-body {
-        padding: 0.4rem 0.85rem 1rem 1.4rem;
+        padding: 0.7rem 0.85rem 1rem 1.55rem;
+    }
+
+    .help-edit-form {
+        padding: 0.85rem;
     }
 
     .help-edit-form textarea {

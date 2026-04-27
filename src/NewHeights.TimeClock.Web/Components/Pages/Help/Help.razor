@@ -15,16 +15,23 @@
 <PageTitle>Help &amp; Documentation - @AppConstants.Branding.ShortName</PageTitle>
 
 <div class="help-page">
-    <header class="help-header">
-        <h1>Help &amp; Documentation</h1>
-        <p class="help-subtitle">Find guidance on the features your account has access to. Articles you can see are filtered by your role.</p>
+    <header class="help-hero">
+        <div class="help-hero-accent"></div>
+        <div class="help-hero-inner">
+            <div class="help-hero-icon" aria-hidden="true">📖</div>
+            <div class="help-hero-text">
+                <h1>Help &amp; Documentation</h1>
+                <p class="help-subtitle">Find guidance on the features your account has access to. Articles are filtered by your role.</p>
+            </div>
+        </div>
     </header>
 
     <div class="help-controls">
         <div class="help-search">
+            <span class="help-search-icon" aria-hidden="true">🔍</span>
             <input type="search"
                    class="help-search-input"
-                   placeholder="Search help…"
+                   placeholder="Search help articles…"
                    @bind="filterText"
                    @bind:event="oninput"
                    autocomplete="off"
@@ -66,10 +73,12 @@
     {
         @foreach (var secGroup in visibleSections)
         {
-            <section class="help-section">
+            var policyClass = PolicyClass(secGroup.PolicyName);
+            <section class="help-section help-section-@policyClass">
                 <header class="help-section-header">
+                    <span class="help-section-icon" aria-hidden="true">@SectionIcon(secGroup.Key)</span>
                     <h2>@secGroup.Title</h2>
-                    <span class="help-section-policy" title="Visible to @PolicyDescription(secGroup.PolicyName)">
+                    <span class="help-section-policy help-policy-@policyClass" title="Visible to @PolicyDescription(secGroup.PolicyName)">
                         @PolicyChip(secGroup.PolicyName)
                     </span>
                 </header>
@@ -340,6 +349,36 @@
         "RequireReception"  => "Reception",
         "RequireAdmin"      => "Admins",
         _                    => policy
+    };
+
+    // CSS class suffix used to color-code each section by role tier. Mirrors
+    // the .help-section-{class} and .help-policy-{class} rules in the scoped
+    // CSS. Keep in sync if a new policy is added.
+    private static string PolicyClass(string policy) => policy switch
+    {
+        "RequireAnyStaff"   => "everyone",
+        "RequireHourly"     => "hourly",
+        "RequireSupervisor" => "supervisor",
+        "RequireHR"         => "hr",
+        "RequireReception"  => "reception",
+        "RequireAdmin"      => "admin",
+        _                    => "everyone"
+    };
+
+    // Section icon picked by SectionKey. Emoji to match the rest of the
+    // portal's home-card / dashboard iconography (no SVG sprite).
+    private static string SectionIcon(string sectionKey) => sectionKey switch
+    {
+        "getting-started"  => "🚀",
+        "my-time"          => "🕐",
+        "substitute-work"  => "📝",
+        "sub-requests"     => "🧑‍🏫",
+        "supervisor"       => "👥",
+        "reception"        => "🛡️",
+        "hr-payroll"       => "💰",
+        "admin"            => "🛠️",
+        "entra-groups"     => "🔐",
+        _                   => "📄"
     };
 
     private static string PolicyDescription(string policy) => policy switch
