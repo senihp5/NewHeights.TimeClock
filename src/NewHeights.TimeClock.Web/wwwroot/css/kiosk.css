@@ -367,3 +367,73 @@
         width: 80px;
     }
 }
+
+/* ============================================================================
+   Phase 5 mobile (2026-04-27)
+   ----------------------------------------------------------------------------
+   /mobile/checkin verification at <= 480 px (Galaxy S22 360 × 800 reference).
+   The page already runs under KioskLayout (no hamburger nav), but the
+   inherited kiosk widths overflow small phones:
+     - .result-display min-width 437 px clips on 360 px viewports
+     - 30-50 px padding on scan-area / scan-prompt / result-display eats
+       half the visible content area
+     - .employee-photo at 225 × 225 dominates the screen and pushes the
+       action button below the fold
+   Phase 5 fluidifies the result panel, shrinks the photo, tightens padding,
+   and bumps action-button tap targets.
+   ============================================================================ */
+
+@media (max-width: 480px) {
+
+    .kiosk-container,
+    .mobile-clock-container {
+        padding: 12px;
+    }
+
+    .scan-area {
+        padding: 12px 4px;
+    }
+
+    .scan-prompt {
+        padding: 1.5rem 1rem;
+        border-radius: 12px;
+    }
+
+    .scan-prompt h3 {
+        font-size: 1.3rem;
+    }
+
+    .scan-prompt p {
+        font-size: 0.95rem;
+    }
+
+    /* Biggest fix: desktop kiosk min-width 437 px overflows a 360 px viewport.
+       Drop to fluid so the panel matches the page width on small phones. */
+    .result-display {
+        min-width: 0;
+        width: 100%;
+        padding: 1.25rem 1rem;
+    }
+
+    .result-message h3 {
+        font-size: 1.25rem;
+    }
+
+    .employee-photo {
+        width: 140px;
+        height: 140px;
+        margin-bottom: 14px;
+    }
+
+    .mobile-header {
+        gap: 0.5rem;
+        padding: 8px 0;
+    }
+
+    /* Big check-in button uses inline padding from MobileCheckin.razor —
+       leave that alone, but ensure the fallback .btn class meets touch
+       target sizing. */
+    .btn {
+        min-height: 44px;
+    }
+}
