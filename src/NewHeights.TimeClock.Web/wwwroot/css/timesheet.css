@@ -1981,3 +1981,459 @@
     font-size: 0.78rem;
     margin-right: 0.25rem;
 }
+
+/* ============================================================================
+   Phase 2a mobile (2026-04-27)
+   ----------------------------------------------------------------------------
+   /my/timesheet table-to-card collapse at <= 768 px. The MyTimesheet markup
+   uses a single .timesheet-table with day-row tr / punch-detail-row tr / and
+   tfoot totals-row. We do NOT change markup — we restyle each row into a
+   CSS-grid card and label cells via :nth-child(n) ::before so the existing
+   @foreach loop renders correctly on phones.
+
+   Cell index for day-row (8 cells):
+     1 = col-date  (header band)
+     2 = col-status AM
+     3 = col-status PM
+     4 = col-status Evening
+     5 = col-hours Worked
+     6 = col-hours Leave
+     7 = col-hours Holiday
+     8 = col-total
+
+   Cell index for totals-row (5 cells):
+     1 = label (colspan=4)
+     2 = col-hours Worked
+     3 = col-hours Leave
+     4 = col-hours Holiday
+     5 = col-total
+
+   Punch-detail-row remains inline. Phase 2b will lift it into a full-screen
+   sheet on mobile. For 2a we just let it flow full-width below its day card
+   with horizontal scroll on the inner punch-pairs-table.
+   ============================================================================ */
+
+@media (max-width: 768px) {
+
+    .timesheet-page {
+        padding: 0.75rem;
+    }
+
+    .timesheet-header {
+        padding: 1rem;
+    }
+
+    .timesheet-header h1 {
+        font-size: 1.15rem;
+    }
+
+    .header-brand {
+        gap: 0.6rem;
+    }
+
+    .header-logo {
+        height: 40px;
+    }
+
+    .employee-info-bar {
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.85rem 1rem;
+    }
+
+    .info-item.deadline {
+        margin-left: 0;
+    }
+
+    .week-navigation {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+    }
+
+    .week-navigation .pp-select {
+        width: 100%;
+        min-height: 44px;
+    }
+
+    /* Container loses its rounded clip so card shadows render. */
+    .timesheet-table-container {
+        background: transparent;
+        box-shadow: none;
+        overflow: visible;
+        border-radius: 0;
+        padding: 0;
+        margin: 0;
+    }
+
+    /* Hide column headers — labels are inline via ::before tags. */
+    .timesheet-table thead {
+        display: none;
+    }
+
+    .timesheet-table,
+    .timesheet-table tbody,
+    .timesheet-table tfoot {
+        display: block;
+        width: 100%;
+    }
+
+    /* Each day row becomes a card with a 3-area grid. */
+    .timesheet-table tbody tr.day-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-areas:
+            "date date date"
+            "am pm evening"
+            "worked leave holiday"
+            "total total total";
+        gap: 0.5rem 0.4rem;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 0.75rem 0.85rem;
+        margin: 0 0 0.65rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+
+    .timesheet-table tbody tr.day-row.today {
+        border-color: #1d4ed8;
+        background: #eff6ff;
+    }
+
+    .timesheet-table tbody tr.day-row.has-exception {
+        border-color: #f59e0b;
+        background: #fef3c7;
+    }
+
+    .timesheet-table tbody tr.day-row.holiday-row {
+        background: #f0fdf4;
+        border-color: #16a34a;
+    }
+
+    .timesheet-table tbody tr.day-row > td {
+        display: block;
+        padding: 0.35rem 0.45rem;
+        border: none;
+        text-align: left;
+        font-size: 0.95rem;
+    }
+
+    /* Date band — header of card. */
+    .timesheet-table tbody tr.day-row > td.col-date {
+        grid-area: date;
+        padding: 0 0.1rem 0.5rem;
+        border-bottom: 1px solid #e5e7eb;
+        margin-bottom: 0.2rem;
+        font-size: 1rem;
+    }
+
+    .timesheet-table tbody tr.day-row .day-name {
+        font-size: 1.05rem;
+    }
+
+    .timesheet-table tbody tr.day-row .day-date {
+        display: inline;
+        margin-left: 0.4rem;
+        font-size: 0.9rem;
+    }
+
+    .timesheet-table tbody tr.day-row .expand-icon {
+        display: inline-block;
+        min-width: 28px;
+        font-size: 1rem;
+    }
+
+    .timesheet-table tbody tr.day-row .day-inout {
+        display: block;
+        margin-top: 0.3rem;
+        font-size: 0.85rem;
+    }
+
+    .timesheet-table tbody tr.day-row .holiday-badge {
+        display: inline-block;
+        margin-top: 0.2rem;
+    }
+
+    /* Grid-area assignment via nth-child. */
+    .timesheet-table tbody tr.day-row > td:nth-child(2) { grid-area: am; }
+    .timesheet-table tbody tr.day-row > td:nth-child(3) { grid-area: pm; }
+    .timesheet-table tbody tr.day-row > td:nth-child(4) { grid-area: evening; }
+    .timesheet-table tbody tr.day-row > td:nth-child(5) { grid-area: worked; }
+    .timesheet-table tbody tr.day-row > td:nth-child(6) { grid-area: leave; }
+    .timesheet-table tbody tr.day-row > td:nth-child(7) { grid-area: holiday; }
+    .timesheet-table tbody tr.day-row > td:nth-child(8) {
+        grid-area: total;
+        margin-top: 0.4rem;
+        padding-top: 0.5rem;
+        border-top: 1px dashed #d1d5db;
+        font-weight: 600;
+    }
+
+    /* ::before data-label tags above each value. */
+    .timesheet-table tbody tr.day-row > td:nth-child(2)::before { content: "AM"; }
+    .timesheet-table tbody tr.day-row > td:nth-child(3)::before { content: "PM"; }
+    .timesheet-table tbody tr.day-row > td:nth-child(4)::before { content: "Evening"; }
+    .timesheet-table tbody tr.day-row > td:nth-child(5)::before { content: "Worked"; }
+    .timesheet-table tbody tr.day-row > td:nth-child(6)::before { content: "Leave"; }
+    .timesheet-table tbody tr.day-row > td:nth-child(7)::before { content: "Holiday"; }
+    .timesheet-table tbody tr.day-row > td:nth-child(8)::before { content: "Total"; }
+
+    .timesheet-table tbody tr.day-row > td:nth-child(n+2)::before {
+        display: block;
+        font-size: 0.65rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #6b7280;
+        margin-bottom: 0.18rem;
+    }
+
+    .timesheet-table tbody tr.day-row .status-pill {
+        font-size: 0.78rem;
+    }
+
+    .timesheet-table tbody tr.day-row > td.col-hours,
+    .timesheet-table tbody tr.day-row > td.col-total {
+        font-variant-numeric: tabular-nums;
+        font-size: 1rem;
+    }
+
+    /* Punch detail row — full-width under its day card. */
+    .timesheet-table tbody tr.punch-detail-row {
+        display: block;
+        margin: -0.4rem 0 0.65rem;
+    }
+
+    .timesheet-table tbody tr.punch-detail-row > td {
+        display: block;
+        padding: 0;
+        border: none;
+    }
+
+    .punch-detail-panel {
+        border-radius: 10px;
+        margin: 0;
+    }
+
+    /* Inner punch-pairs-table allowed to scroll on mobile in 2a; 2b
+       replaces the panel with a full-screen sheet. */
+    .punch-detail-panel {
+        overflow-x: auto;
+    }
+
+    .punch-pairs-table {
+        font-size: 0.82rem;
+        min-width: 520px;
+    }
+
+    /* Totals footer — single summary card. */
+    .timesheet-table tfoot tr.totals-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.4rem 0.5rem;
+        background: #eff6ff;
+        border: 1px solid #1e3a5f;
+        border-radius: 10px;
+        padding: 0.85rem;
+        margin: 0.5rem 0;
+    }
+
+    .timesheet-table tfoot tr.totals-row > td {
+        display: block;
+        padding: 0;
+        border: none;
+        text-align: left;
+    }
+
+    .timesheet-table tfoot tr.totals-row > td:nth-child(1) {
+        grid-column: 1 / -1;
+        text-align: left !important;
+        font-size: 1rem;
+        color: #1e3a5f;
+        margin-bottom: 0.25rem;
+    }
+
+    .timesheet-table tfoot tr.totals-row > td:nth-child(2)::before { content: "Worked"; }
+    .timesheet-table tfoot tr.totals-row > td:nth-child(3)::before { content: "Leave"; }
+    .timesheet-table tfoot tr.totals-row > td:nth-child(4)::before { content: "Holiday"; }
+    .timesheet-table tfoot tr.totals-row > td:nth-child(5)::before { content: "Total"; }
+
+    .timesheet-table tfoot tr.totals-row > td:nth-child(n+2)::before {
+        display: block;
+        font-size: 0.65rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #4b5563;
+        margin-bottom: 0.1rem;
+    }
+
+    /* Tap-target sizing on action controls inside punch panel. */
+    .btn-correction {
+        min-height: 44px;
+        padding: 0.6rem 1rem;
+    }
+
+    .sdr-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .sdr-select,
+    .sdr-note {
+        width: 100%;
+        min-height: 44px;
+    }
+
+    /* Corrections box (pending correction requests panel) — compact on mobile. */
+    .corrections-box {
+        padding: 0.85rem;
+    }
+
+    .corrections-table {
+        font-size: 0.82rem;
+    }
+}
+
+/* ============================================================================
+   Phase 2b mobile sheet (2026-04-27)
+   ----------------------------------------------------------------------------
+   /my/timesheet punch detail becomes a bottom-docked full-screen sheet on
+   <= 768 px. The .punch-detail-row tr is repositioned via fixed/inset:0 with
+   display:flex, the inner td hosts the actual sheet panel. The .punch-sheet-
+   close button (added to MyTimesheet.razor markup) appears only on mobile
+   and shares the existing ToggleDayExpand handler so a single source of
+   truth controls open/close.
+
+   This block is a SECOND @media (max-width: 768px) rule placed AFTER the
+   Phase 2a block on purpose — equal-specificity later rules override the
+   inline-stack styling Phase 2a applied to .punch-detail-row.
+   ============================================================================ */
+
+.punch-sheet-close {
+    display: none;
+}
+
+@media (max-width: 768px) {
+
+    /* Override Phase 2a: punch-detail-row becomes the scrim/sheet wrapper. */
+    .timesheet-table tbody tr.punch-detail-row {
+        position: fixed;
+        inset: 0;
+        z-index: 1200;
+        display: flex;
+        align-items: flex-end;
+        justify-content: stretch;
+        background: rgba(0, 0, 0, 0.55);
+        margin: 0;
+        padding: 0;
+        animation: punch-sheet-fade-in 200ms ease-out;
+    }
+
+    .timesheet-table tbody tr.punch-detail-row > td {
+        display: block;
+        position: relative;
+        width: 100%;
+        max-height: 92vh;
+        overflow-y: auto;
+        background: #fff;
+        border-radius: 16px 16px 0 0;
+        box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.25);
+        padding: 0;
+        animation: punch-sheet-slide-up 200ms ease-out;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .punch-detail-panel {
+        padding: 0 0 1.25rem;
+        border-radius: 0;
+        border: none;
+        background: transparent;
+        margin: 0;
+        overflow-x: visible;
+    }
+
+    .punch-sheet-close {
+        display: flex;
+        position: sticky;
+        top: 0;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        width: 100%;
+        padding: 0.7rem 0.95rem;
+        background: #1e3a5f;
+        color: #fff;
+        border: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        font-size: 0.95rem;
+        font-weight: 600;
+        cursor: pointer;
+        min-height: 48px;
+        z-index: 5;
+    }
+
+    .punch-sheet-close-label {
+        color: rgba(255, 255, 255, 0.85);
+        font-weight: 500;
+    }
+
+    .punch-sheet-close-x {
+        color: #fff;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+    }
+
+    .punch-sheet-close:active {
+        background: #152840;
+    }
+
+    /* Inside the sheet, the punch-pairs-table can still scroll horizontally
+       if needed — the parent td now provides the vertical scroll. Drop the
+       Phase 2a min-width slightly so the table breathes in the sheet. */
+    .punch-pairs-table {
+        min-width: 480px;
+        margin: 0.85rem 0;
+    }
+
+    /* Sheet body content gets horizontal padding (the close button is
+       already padded). */
+    .punch-detail-panel > :not(.punch-sheet-close) {
+        margin-left: 0.95rem;
+        margin-right: 0.95rem;
+    }
+
+    /* The wrapping table (.punch-pairs-table) and the no-punches paragraph
+       both need that horizontal breathing room. */
+    .punch-detail-panel .holiday-notice,
+    .punch-detail-panel .exception-notice,
+    .punch-detail-panel .short-day-reason,
+    .punch-detail-panel .punch-actions,
+    .punch-detail-panel .no-punches {
+        margin-left: 0.95rem;
+        margin-right: 0.95rem;
+    }
+
+    /* Punch-pairs scrolls inside the sheet without confusing the vertical
+       sheet scroll. */
+    .punch-detail-panel {
+        overflow-x: hidden;
+    }
+
+    .punch-detail-panel .punch-pairs-table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+}
+
+@keyframes punch-sheet-fade-in {
+    from { background: rgba(0, 0, 0, 0); }
+    to { background: rgba(0, 0, 0, 0.55); }
+}
+
+@keyframes punch-sheet-slide-up {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+}

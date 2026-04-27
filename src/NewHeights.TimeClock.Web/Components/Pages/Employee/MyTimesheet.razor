@@ -204,6 +204,17 @@
                             <tr class="punch-detail-row">
                                 <td colspan="8">
                                     <div class="punch-detail-panel">
+                                        @* Mobile sheet header — visible only at <=768px via CSS.
+                                           Tapping it calls the same ToggleDayExpand handler that
+                                           the day-row uses, so the sheet closes without scrolling
+                                           back up. Hidden on desktop where panel is inline. *@
+                                        <button type="button" class="punch-sheet-close"
+                                                @onclick:stopPropagation="true"
+                                                @onclick="() => ToggleDayExpand(day.Date)"
+                                                aria-label="Close punch detail">
+                                            <span class="punch-sheet-close-label">@day.DayOfWeek.Substring(0, 3) @day.Date.ToString("M/d")</span>
+                                            <span class="punch-sheet-close-x">✕ Close</span>
+                                        </button>
                                         @if (day.Punches.Any())
                                         {
                                             <table class="punch-pairs-table">
