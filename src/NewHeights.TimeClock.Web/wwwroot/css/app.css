@@ -171,6 +171,19 @@ main {
     justify-content: center;
 }
 
+/* Nav scrollable container — fills the remaining sidebar height and
+   scrolls vertically when the menu has more items than fit. Critical
+   on mobile where the fixed-position sidebar is full viewport height
+   and the bottom Admin items would otherwise overflow off-screen with
+   no way to reach them. min-height: 0 is the standard flex trick that
+   lets a flex child be smaller than its content so overflow:auto works. */
+.nav-scrollable {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
 .nav-logo {
     width: auto;
     max-width: 140px;

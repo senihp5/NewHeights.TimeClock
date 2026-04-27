@@ -221,6 +221,31 @@
                         </Authorized>
                     </AuthorizeView>
 
+                    @* ── Dashboards (Reception + Safety) ───────────────────────────────────── *@
+                    @* RequireReception covers Reception, Supervisor, Supervisor.StopSix,
+                       Supervisor.McCart, and Admin — same policy that gates the live feed
+                       at top of page. The cards are useful even when the live feed is
+                       collapsed or the user wants the full dashboards. *@
+                    <AuthorizeView Context="roleCtx6" Policy="RequireReception">
+                        <Authorized>
+                            <div class="home-section">
+                                <h2 class="section-title">Dashboards</h2>
+                                <div class="home-card-grid">
+                                    <a class="home-card" href="/reception">
+                                        <span class="card-icon">🖥️</span>
+                                        <span class="card-label">Reception</span>
+                                        <span class="card-desc">Live activity feed</span>
+                                    </a>
+                                    <a class="home-card" href="/safety">
+                                        <span class="card-icon">🛡️</span>
+                                        <span class="card-label">Safety</span>
+                                        <span class="card-desc">Muster &amp; accountability</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </Authorized>
+                    </AuthorizeView>
+
                     @* ── Admin ──────────────────────────────────────────────────────────────── *@
                     <AuthorizeView Context="roleCtx7" Policy="RequireAdmin">
                         <Authorized>
