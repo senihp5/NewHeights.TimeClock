@@ -1,8 +1,24 @@
 @inherits LayoutComponentBase
 @using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Routing
+@implements IDisposable
+@inject NavigationManager Nav
 
 <CascadingAuthenticationState>
-<div class="page">
+<div class="page @(isNavOpen ? "nav-open" : "")">
+
+    <button class="nav-toggle"
+            type="button"
+            aria-label="Toggle navigation"
+            aria-expanded="@(isNavOpen ? "true" : "false")"
+            @onclick="ToggleNav">
+        <span class="nav-toggle-bar"></span>
+        <span class="nav-toggle-bar"></span>
+        <span class="nav-toggle-bar"></span>
+    </button>
+
+    <div class="nav-scrim" @onclick="CloseNav"></div>
+
     <div class="sidebar">
         <NavMenu />
     </div>
@@ -26,3 +42,30 @@
     </main>
 </div>
 </CascadingAuthenticationState>
+
+@code {
+    private bool isNavOpen;
+
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += HandleLocationChanged;
+    }
+
+    private void ToggleNav() => isNavOpen = !isNavOpen;
+
+    private void CloseNav() => isNavOpen = false;
+
+    private void HandleLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        if (isNavOpen)
+        {
+            isNavOpen = false;
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    public void Dispose()
+    {
+        Nav.LocationChanged -= HandleLocationChanged;
+    }
+}
