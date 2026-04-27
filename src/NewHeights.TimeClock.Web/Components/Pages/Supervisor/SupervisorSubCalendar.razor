@@ -53,6 +53,35 @@
     #sub-cal-root .cell.declined:hover { background: #fecaca; }
     #sub-cal-root .cell-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #sub-cal-root .cell-note { font-size: 0.7rem; color: inherit; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Stacked cell layout — used when 2+ teachers/subs share a (period × day)
+       slot. Each line is "Sub · Teacher" in compact text and is independently
+       clickable so a supervisor can drill into any specific entry, not just
+       the highest-priority one. cell-line is a real button element so we
+       strip the browser-default chrome and re-style it to look like a row. */
+    #sub-cal-root .cell.cell-multi { gap: 0.05rem; padding: 0.2rem 0.35rem; }
+    #sub-cal-root .cell-line {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: none;
+        padding: 0.05rem 0.2rem;
+        margin: 0;
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        font-size: 0.72rem;
+        line-height: 1.2;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        border-radius: 2px;
+    }
+    #sub-cal-root .cell-line:hover { background: rgba(0,0,0,0.08); }
+    #sub-cal-root .cell-line.line-selected { background: rgba(37, 99, 235, 0.15); outline: 1px solid #2563eb; outline-offset: -1px; }
+    #sub-cal-root .cell-sub { font-weight: 600; }
+    #sub-cal-root .cell-sep { margin: 0 0.2rem; opacity: 0.55; }
+    #sub-cal-root .cell-teacher { opacity: 0.85; font-weight: 500; }
     #sub-cal-root .cell.selected { outline: 2px solid #2563eb; outline-offset: -2px; }
     #sub-cal-root .legend { display: flex; gap: 1rem; flex-wrap: wrap; padding: 0.5rem 0.25rem; font-size: 0.82rem; color: #4b5563; }
     #sub-cal-root .legend-item { display: flex; align-items: center; gap: 0.35rem; }
@@ -136,11 +165,16 @@
     }
     else
     {
+        @* Phase 9a / Phase A: legend simplified to the three states that
+           matter in the current workflow — supervisors no longer initiate
+           sub requests, so the categories collapse to: covered + supervisor-
+           approved (Approved/green), covered + awaiting supervisor approval
+           (Needs approval/yellow), still finding a sub (Awaiting Sub
+           acceptance/orange). *@
         <div class="legend">
-            <div class="legend-item"><span class="legend-swatch confirmed"></span>Confirmed</div>
-            <div class="legend-item"><span class="legend-swatch awaiting"></span>Awaiting response</div>
-            <div class="legend-item"><span class="legend-swatch needs-sub"></span>Needs sub</div>
-            <div class="legend-item"><span class="legend-swatch declined"></span>Declined — re-assign</div>
+            <div class="legend-item"><span class="legend-swatch confirmed"></span>Approved</div>
+            <div class="legend-item"><span class="legend-swatch awaiting"></span>Needs approval</div>
+            <div class="legend-item"><span class="legend-swatch needs-sub"></span>Awaiting Sub acceptance</div>
         </div>
 
         @if (!dayAssignments.Any() && !nightAssignments.Any())
@@ -154,12 +188,12 @@
         {
             <div class="session-block">
                 <h2 class="session-title">Day Session</h2>
-                @RenderGrid("DAY", dayAssignments)
+                @RenderGrid("DAY", dayAssignments, DayPeriods)
             </div>
 
             <div class="session-block">
                 <h2 class="session-title">Night Session</h2>
-                @RenderGrid("NIGHT", nightAssignments)
+                @RenderGrid("NIGHT", nightAssignments, NightPeriods)
             </div>
         }
 
@@ -211,7 +245,11 @@
 
     private CellAssignment? selectedCell = null;
 
-    private static readonly int[] AllPeriods = new[] { 1, 2, 3, 4, 5, 6 };
+    // NH session period ranges — DAY runs P1–P4, NIGHT runs P5–P6. Splitting
+    // these into per-session arrays keeps each grid concise (no empty rows
+    // for periods that never run in that session).
+    private static readonly int[] DayPeriods   = new[] { 1, 2, 3, 4 };
+    private static readonly int[] NightPeriods = new[] { 5, 6 };
     private static readonly string[] DayLabels = new[] { "Mon", "Tue", "Wed", "Thu", "Fri" };
 
     // Week dropdown options. Built once on init relative to today: 8 weeks
@@ -383,7 +421,11 @@
 
     private CellAssignment BuildCellAssignment(TcSubRequest req, DateOnly workDate, string session, int periodNumber)
     {
+        // Same Staff.FullName → DisplayName → Email fallback chain as the
+        // sub-name lookup below. Prevents the cell from showing an email
+        // address when a teacher's Staff link hasn't been populated yet.
         var teacherName = req.RequestingEmployee?.Staff?.FullName
+                       ?? req.RequestingEmployee?.DisplayName
                        ?? req.RequestingEmployee?.Email;
 
         // Phase A (migration 048): with partial-accept, multiple subs may
@@ -401,49 +443,62 @@
                     .Select(s => s.Trim().ToUpperInvariant())
                     .Contains(periodToken));
 
+        // Name fallback chain — Staff.FullName (real name from PowerSchool) →
+        // TcEmployee.DisplayName (set by Entra sync, available even when the
+        // employee isn't linked to a Staff row, e.g. MANUAL-* test accounts) →
+        // Email (last resort). Matches the chain used in MySubTimesheet,
+        // MyTimesheet, and AbsenceRequest so display is consistent everywhere.
         string? perPeriodSubName = perPeriodAssignment?.SubEmployee?.Staff?.FullName
+                                ?? perPeriodAssignment?.SubEmployee?.DisplayName
                                 ?? perPeriodAssignment?.SubEmployee?.Email;
 
         // Legacy whole-request assignment (no per-period rows). Used as
         // fallback for older requests that never went through partial accept.
         string fallbackSubName = req.AssignedSubEmployee?.Staff?.FullName
+                              ?? req.AssignedSubEmployee?.DisplayName
                               ?? req.AssignedSubEmployee?.Email
                               ?? "(unassigned)";
 
         bool periodCovered = perPeriodAssignment != null;
 
-        // Status → CSS class. Phase 9a + Phase A semantics:
-        //   AbsenceApproved   = supervisor approved AFTER sub was confirmed —
-        //                       fully done. Render green/confirmed.
-        //   SubConfirmed      = all periods covered, awaiting supervisor sign-off.
-        //                       Render green/confirmed.
-        //   PartiallyAssigned = some periods covered, others still need a sub.
-        //                       This particular cell is green or orange depending
-        //                       on whether THIS period was claimed.
-        //   SubAssigned       = legacy state — sub assigned, awaiting their
-        //                       response. Amber.
-        //   AwaitingSub / Submitted / anything else = orange/needs-sub.
+        // Status → CSS class. Phase 9a / Phase A simplified to three states
+        // matching the legend ("Approved", "Needs approval", "Awaiting Sub
+        // acceptance"). Per-period semantics:
+        //
+        //   This period is COVERED:
+        //     AbsenceApproved   → "confirmed" (green = Approved)
+        //     SubConfirmed      → "awaiting"  (yellow = Needs supervisor approval)
+        //     PartiallyAssigned → "awaiting"  (this slot has a sub; supervisor
+        //                                       can't approve until all periods are
+        //                                       covered, so it's also "awaiting")
+        //     SubAssigned       → "awaiting"  (legacy)
+        //
+        //   This period is NOT covered:
+        //     anything → "needs-sub" (orange = Awaiting Sub acceptance)
+        //     except: legacy whole-request confirmed/approved without Assignment
+        //             rows → keep the legacy color so older data still renders.
         string cellClass;
-        if (periodCovered &&
-            (req.Status == SubRequestStatus.SubConfirmed
-             || req.Status == SubRequestStatus.AbsenceApproved
-             || req.Status == SubRequestStatus.PartiallyAssigned))
+        if (periodCovered)
         {
-            cellClass = "confirmed";
+            cellClass = req.Status switch
+            {
+                SubRequestStatus.AbsenceApproved   => "confirmed",
+                SubRequestStatus.SubConfirmed     => "awaiting",
+                SubRequestStatus.PartiallyAssigned => "awaiting",
+                SubRequestStatus.SubAssigned      => "awaiting",
+                _                                  => "awaiting"
+            };
         }
-        else if (!periodCovered &&
-                 (req.Status == SubRequestStatus.SubConfirmed
+        else if ((req.Status == SubRequestStatus.SubConfirmed
                   || req.Status == SubRequestStatus.AbsenceApproved)
                  && req.AssignedSubEmployeeId.HasValue)
         {
-            // Legacy whole-request: no Assignment rows, but the request is
-            // confirmed/approved overall. Show fallback name in green so the
-            // calendar doesn't regress for older non-partial requests.
-            cellClass = "confirmed";
-        }
-        else if (req.Status == SubRequestStatus.SubAssigned && req.AssignedSubEmployeeId.HasValue)
-        {
-            cellClass = "awaiting";
+            // Legacy whole-request: no per-period Assignment rows, but the
+            // request is confirmed/approved overall. Match the per-period
+            // mapping above so the visual stays consistent.
+            cellClass = req.Status == SubRequestStatus.AbsenceApproved
+                ? "confirmed"
+                : "awaiting";
         }
         else
         {
@@ -484,7 +539,7 @@
         };
     }
 
-    private RenderFragment RenderGrid(string session, Dictionary<(int dayIndex, int periodNumber), List<CellAssignment>> assignments) => __builder =>
+    private RenderFragment RenderGrid(string session, Dictionary<(int dayIndex, int periodNumber), List<CellAssignment>> assignments, int[] periods) => __builder =>
     {
         var todayIdx = ComputeTodayColumnIndex();
 
@@ -501,7 +556,7 @@
                 </tr>
             </thead>
             <tbody>
-                @foreach (var pn in AllPeriods)
+                @foreach (var pn in periods)
                 {
                     <tr>
                         <td class="period-label">P@(pn)</td>
@@ -522,18 +577,58 @@
                                 {
                                     <div class="cell empty"></div>
                                 }
-                                else
+                                else if (list == null || list.Count == 1)
                                 {
+                                    @* Single request on this period × day cell —
+                                       traditional two-line render: sub name + the
+                                       teacher being covered. *@
                                     <div class="cell @top.CssClass @(isSelected ? "selected" : "")"
                                          @onclick="() => SelectCell(top)">
                                         <span class="cell-name">@top.SubName</span>
-                                        @if (list != null && list.Count > 1)
-                                        {
-                                            <span class="cell-note">+@(list.Count - 1) more</span>
-                                        }
-                                        else if (!string.IsNullOrWhiteSpace(top.TeacherName))
+                                        @if (!string.IsNullOrWhiteSpace(top.TeacherName))
                                         {
                                             <span class="cell-note">covering @top.TeacherName</span>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    @* Multiple teachers need a sub for the same
+                                       period × day. Each line is INDEPENDENTLY
+                                       clickable — clicking a specific row drills
+                                       that request into the detail panel below,
+                                       while clicking blank space inside the cell
+                                       falls back to the highest-priority entry
+                                       (preserves the previous behavior). Cell
+                                       color reflects the WORST status in the
+                                       stack so unfilled slots aren't masked by
+                                       other teachers' confirmed coverage. *@
+                                    var ordered = list.OrderBy(c => CellOrdinal(c.Status)).ToList();
+                                    var worstCss = list.Any(c => c.CssClass == "needs-sub") ? "needs-sub"
+                                                 : list.Any(c => c.CssClass == "declined")  ? "declined"
+                                                 : list.Any(c => c.CssClass == "awaiting")  ? "awaiting"
+                                                 : "confirmed";
+                                    <div class="cell cell-multi @worstCss"
+                                         @onclick="() => SelectCell(top)">
+                                        @foreach (var entry in ordered)
+                                        {
+                                            var entryRef = entry; // capture for closure
+                                            var lineSelected = selectedCell != null
+                                                            && selectedCell.SubRequestId == entryRef.SubRequestId
+                                                            && selectedCell.SessionType == entryRef.SessionType
+                                                            && selectedCell.PeriodNumber == entryRef.PeriodNumber
+                                                            && selectedCell.WorkDate == entryRef.WorkDate;
+                                            <button type="button"
+                                                    class="cell-line @(lineSelected ? "line-selected" : "")"
+                                                    @onclick="() => SelectCell(entryRef)"
+                                                    @onclick:stopPropagation="true"
+                                                    title="@($"{entryRef.SubName} covering {entryRef.TeacherName ?? "—"}")">
+                                                <span class="cell-sub">@entryRef.SubName</span>
+                                                @if (!string.IsNullOrWhiteSpace(entryRef.TeacherName))
+                                                {
+                                                    <span class="cell-sep">·</span><span class="cell-teacher">@entryRef.TeacherName</span>
+                                                }
+                                            </button>
                                         }
                                     </div>
                                 }
@@ -613,16 +708,17 @@
         return result.Distinct().OrderBy(n => n).ToList();
     }
 
+    // Detail-panel label mapping. Matches the simplified 3-state legend
+    // ("Approved" / "Needs approval" / "Awaiting Sub acceptance") so the
+    // status text the supervisor reads matches the cell color they clicked.
     private static string FormatStatus(SubRequestStatus s) => s switch
     {
-        SubRequestStatus.Submitted          => "Submitted",
-        SubRequestStatus.AwaitingSub        => "Awaiting Sub",
-        // Phase 9a: AbsenceApproved is now the final supervisor-approved state
-        // (sub is already confirmed by the time it gets here in the new flow).
         SubRequestStatus.AbsenceApproved    => "Approved",
-        SubRequestStatus.SubAssigned        => "Sub Assigned — awaiting response",
-        SubRequestStatus.SubConfirmed       => "Sub Confirmed",
-        SubRequestStatus.PartiallyAssigned  => "Partially Assigned",
+        SubRequestStatus.SubConfirmed       => "Needs approval",
+        SubRequestStatus.PartiallyAssigned  => "Awaiting Sub acceptance (partial)",
+        SubRequestStatus.AwaitingSub        => "Awaiting Sub acceptance",
+        SubRequestStatus.SubAssigned        => "Awaiting Sub acceptance",
+        SubRequestStatus.Submitted          => "Submitted",
         SubRequestStatus.Denied             => "Denied",
         SubRequestStatus.Cancelled          => "Cancelled",
         _                                    => s.ToString()
