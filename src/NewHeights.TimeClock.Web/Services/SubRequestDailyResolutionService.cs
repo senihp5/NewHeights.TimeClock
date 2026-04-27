@@ -104,6 +104,7 @@ public class SubRequestDailyResolutionService : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var dbFactory    = scope.ServiceProvider.GetRequiredService<IDbContextFactory<TimeClockDbContext>>();
         var emailService = scope.ServiceProvider.GetRequiredService<IEmailService>();
+        var smsService   = scope.ServiceProvider.GetRequiredService<ISmsService>();
         var audit        = scope.ServiceProvider.GetRequiredService<IAuditService>();
 
         await using var ctx = await dbFactory.CreateDbContextAsync(ct);
@@ -146,19 +147,19 @@ public class SubRequestDailyResolutionService : BackgroundService
                 switch (req.Status)
                 {
                     case SubRequestStatus.SubConfirmed:
-                        await AutoApproveAsync(req, ctx, emailService, audit, ct);
+                        await AutoApproveAsync(req, ctx, emailService, smsService, audit, ct);
                         autoApproved++;
                         break;
 
                     case SubRequestStatus.PartiallyAssigned:
-                        await NotifyPartialAsync(req, ctx, emailService, audit, ct);
+                        await NotifyPartialAsync(req, ctx, emailService, smsService, audit, ct);
                         partialNotified++;
                         break;
 
                     case SubRequestStatus.AwaitingSub:
                     case SubRequestStatus.Submitted:
                     case SubRequestStatus.SubAssigned:
-                        await AutoCancelAsync(req, ctx, emailService, audit, ct);
+                        await AutoCancelAsync(req, ctx, emailService, smsService, audit, ct);
                         autoCancelled++;
                         break;
 
@@ -187,7 +188,7 @@ public class SubRequestDailyResolutionService : BackgroundService
 
     private async Task AutoApproveAsync(
         TcSubRequest req, TimeClockDbContext ctx,
-        IEmailService email, IAuditService audit, CancellationToken ct)
+        IEmailService email, ISmsService sms, IAuditService audit, CancellationToken ct)
     {
         var now = DateTime.Now;
         req.Status = SubRequestStatus.AbsenceApproved;
@@ -215,9 +216,10 @@ public class SubRequestDailyResolutionService : BackgroundService
         var subjectsLine = SubsCoveringLine(req);
         var dateLine = req.StartDate.ToString("dddd, MMM d, yyyy");
         var campusName = req.Campus?.CampusName ?? "New Heights";
+        var shortDate  = req.StartDate.ToString("MMM d");
 
-        var teacherEmail = req.RequestingEmployee?.Email;
-        var supervisorEmail = await ResolveSupervisorEmailAsync(ctx, req, ct);
+        var teacher    = req.RequestingEmployee;
+        var supervisor = await ResolveSupervisorEmployeeAsync(ctx, req, ct);
 
         var subject = $"Auto-approved: your sub for {dateLine}";
         var html = BuildEmailHtml(
@@ -232,29 +234,30 @@ public class SubRequestDailyResolutionService : BackgroundService
                 subjectsLine,
             req: req, periodsForEmail: req.PeriodsNeeded ?? "—");
 
-        if (!string.IsNullOrWhiteSpace(teacherEmail))
-            await TrySendAsync(email, teacherEmail!, subject, html);
-        if (!string.IsNullOrWhiteSpace(supervisorEmail))
-            await TrySendAsync(email, supervisorEmail!, subject, html);
+        var smsBody = $"New Heights: Your sub for {shortDate} is auto-approved (covered by all subs already). Reply STOP to opt out.";
+
+        await TrySendBothAsync(email, sms, teacher,    subject, html, smsBody);
+        await TrySendBothAsync(email, sms, supervisor, subject, html, smsBody);
     }
 
     // ── PartiallyAssigned → notify supervisor with Take-Over link ──────
 
     private async Task NotifyPartialAsync(
         TcSubRequest req, TimeClockDbContext ctx,
-        IEmailService email, IAuditService audit, CancellationToken ct)
+        IEmailService email, ISmsService sms, IAuditService audit, CancellationToken ct)
     {
-        var supervisorEmail = await ResolveSupervisorEmailAsync(ctx, req, ct);
-        if (string.IsNullOrWhiteSpace(supervisorEmail))
+        var supervisor = await ResolveSupervisorEmployeeAsync(ctx, req, ct);
+        if (supervisor == null)
         {
             _logger.LogWarning(
-                "PartiallyAssigned request {Id} has no resolvable supervisor email — skipping day-of notice.",
+                "PartiallyAssigned request {Id} has no resolvable supervisor — skipping day-of notice.",
                 req.SubRequestId);
             return;
         }
 
         var teacherName = TeacherName(req);
         var dateLine = req.StartDate.ToString("dddd, MMM d, yyyy");
+        var shortDate = req.StartDate.ToString("MMM d");
         var campusName = req.Campus?.CampusName ?? "New Heights";
 
         // Compute remaining periods so the email tells the supervisor
@@ -283,7 +286,10 @@ public class SubRequestDailyResolutionService : BackgroundService
                 $"<p style='color:#6b7280;font-size:.85rem;'>From the Sub Calendar, click the cell for this request and use <em>Take Over Request</em> to cancel pending outreach, flip to emergency, and manually assign a sub.</p>",
             req: req, periodsForEmail: req.PeriodsNeeded ?? "—");
 
-        await TrySendAsync(email, supervisorEmail!, subject, html);
+        var smsBody = $"New Heights: Sub coverage for {teacherName} on {shortDate} is INCOMPLETE. Open Sub Calendar to take over. Reply STOP to opt out.";
+        if (smsBody.Length > 320) smsBody = smsBody.Substring(0, 320);
+
+        await TrySendBothAsync(email, sms, supervisor, subject, html, smsBody);
 
         await audit.LogActionAsync(
             actionCode: AuditActions.SubOutreach.PartialDayOf,
@@ -292,7 +298,7 @@ public class SubRequestDailyResolutionService : BackgroundService
             newValues: new
             {
                 req.SubRequestId,
-                SupervisorEmail = supervisorEmail,
+                SupervisorEmail = supervisor.Email,
                 RemainingPeriods = string.Join(",", remaining),
                 CoveredPeriods = string.Join(",", covered.OrderBy(p => p))
             },
@@ -307,7 +313,7 @@ public class SubRequestDailyResolutionService : BackgroundService
 
     private async Task AutoCancelAsync(
         TcSubRequest req, TimeClockDbContext ctx,
-        IEmailService email, IAuditService audit, CancellationToken ct)
+        IEmailService email, ISmsService sms, IAuditService audit, CancellationToken ct)
     {
         var now = DateTime.Now;
         var priorStatus = req.Status;
@@ -345,10 +351,11 @@ public class SubRequestDailyResolutionService : BackgroundService
 
         var teacherName = TeacherName(req);
         var dateLine = req.StartDate.ToString("dddd, MMM d, yyyy");
+        var shortDate = req.StartDate.ToString("MMM d");
         var campusName = req.Campus?.CampusName ?? "New Heights";
 
-        var teacherEmail = req.RequestingEmployee?.Email;
-        var supervisorEmail = await ResolveSupervisorEmailAsync(ctx, req, ct);
+        var teacher    = req.RequestingEmployee;
+        var supervisor = await ResolveSupervisorEmployeeAsync(ctx, req, ct);
 
         var subject = $"Sub request cancelled — no sub accepted ({dateLine})";
         var html = BuildEmailHtml(
@@ -363,20 +370,52 @@ public class SubRequestDailyResolutionService : BackgroundService
                 $"or submit a new request flagged as <em>Emergency</em>.</p>",
             req: req, periodsForEmail: req.PeriodsNeeded ?? "—");
 
-        if (!string.IsNullOrWhiteSpace(teacherEmail))
-            await TrySendAsync(email, teacherEmail!, subject, html);
-        if (!string.IsNullOrWhiteSpace(supervisorEmail))
-            await TrySendAsync(email, supervisorEmail!, subject, html);
+        var smsBody = $"New Heights: Sub request for {shortDate} was auto-cancelled — no substitute accepted by deadline. Contact your campus manager. Reply STOP to opt out.";
+        if (smsBody.Length > 320) smsBody = smsBody.Substring(0, 320);
+
+        await TrySendBothAsync(email, sms, teacher,    subject, html, smsBody);
+        await TrySendBothAsync(email, sms, supervisor, subject, html, smsBody);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
-    private async Task TrySendAsync(IEmailService email, string to, string subject, string html)
+    /// <summary>
+    /// Send to a TcEmployee via BOTH email and SMS when each channel is
+    /// applicable. Email fires when the recipient has an Email; SMS fires
+    /// when the SMS service is enabled, the recipient has a Phone, and they
+    /// haven't opted out. Failures on either channel are logged but never
+    /// thrown — daily-resolution sweep continues to the next request even
+    /// if one notification can't be delivered. Recipient = null is a no-op.
+    /// </summary>
+    private async Task TrySendBothAsync(
+        IEmailService email, ISmsService sms,
+        TcEmployee? recipient,
+        string subject, string html, string smsBody)
     {
-        try { await email.SendEmailAsync(to, subject, html); }
-        catch (Exception ex)
+        if (recipient == null) return;
+
+        if (!string.IsNullOrWhiteSpace(recipient.Email))
         {
-            _logger.LogWarning(ex, "Daily-resolution email send failed to {To}", to);
+            try { await email.SendEmailAsync(recipient.Email!, subject, html); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Daily-resolution email send failed for employee {Id}",
+                    recipient.EmployeeId);
+            }
+        }
+
+        if (sms.IsEnabled
+            && !recipient.SmsOptedOut
+            && !string.IsNullOrWhiteSpace(recipient.Phone))
+        {
+            try { await sms.SendAsync(recipient.Phone!, smsBody); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Daily-resolution SMS send failed for employee {Id}",
+                    recipient.EmployeeId);
+            }
         }
     }
 
@@ -405,31 +444,32 @@ public class SubRequestDailyResolutionService : BackgroundService
         return $"<p style='margin:.6rem 0 .25rem;'>Subs covering:</p><ul style='margin-top:0;'>{string.Concat(lines)}</ul>";
     }
 
-    private static async Task<string?> ResolveSupervisorEmailAsync(
+    /// <summary>
+    /// Resolve the full supervisor TcEmployee (not just email) so the daily
+    /// notification can dispatch SMS too. Same precedence as
+    /// SubOutreachService.TryNotifyStakeholdersAsync — SupervisorApprovedBy
+    /// email match first, then fallback to the teacher's Entra-linked
+    /// supervisor on TcEmployees.
+    /// </summary>
+    private static async Task<TcEmployee?> ResolveSupervisorEmployeeAsync(
         TimeClockDbContext ctx, TcSubRequest req, CancellationToken ct)
     {
-        // Mirrors SubOutreachService.TryNotifyStakeholdersAsync resolution:
-        // SupervisorApprovedBy → fallback to Entra-linked supervisor on the
-        // teacher's TcEmployees row.
         if (!string.IsNullOrWhiteSpace(req.SupervisorApprovedBy))
         {
             var emailLower = req.SupervisorApprovedBy.Trim().ToLower();
             var sup = await ctx.TcEmployees
                 .AsNoTracking()
-                .Where(e => e.IsActive && e.Email != null && e.Email.ToLower() == emailLower)
-                .Select(e => e.Email)
-                .FirstOrDefaultAsync(ct);
-            if (!string.IsNullOrWhiteSpace(sup)) return sup;
+                .FirstOrDefaultAsync(e =>
+                    e.IsActive && e.Email != null && e.Email.ToLower() == emailLower, ct);
+            if (sup != null) return sup;
         }
 
         var teacherId = req.RequestingEmployeeId;
         return await ctx.TcEmployees
             .AsNoTracking()
             .Where(e => e.IsActive)
-            .Where(e => ctx.TcEmployees.Any(t => t.EmployeeId == teacherId
-                                              && t.SupervisorEmployeeId == e.EmployeeId))
-            .Select(e => e.Email)
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(e => ctx.TcEmployees.Any(
+                t => t.EmployeeId == teacherId && t.SupervisorEmployeeId == e.EmployeeId), ct);
     }
 
     private static IEnumerable<string> ParsePeriods(string? csv)

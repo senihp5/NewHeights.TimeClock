@@ -185,6 +185,23 @@
     text-transform: uppercase;
 }
 
+/* Phase B Gap-2: this badge appears on a candidate row when the sub has a
+   period-overlap conflict with another SubConfirmed request but still has
+   capacity for some of the periods this request needs. The dispatched
+   outreach email/SMS will mention only the listed periods. */
+.partial-avail-badge {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.5rem;
+    background: #dbeafe;
+    color: #1e3a8a;
+    border: 1px solid #93c5fd;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: help;
+}
+
 .cascade-actions {
     white-space: nowrap;
 }

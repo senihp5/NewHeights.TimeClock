@@ -14,6 +14,7 @@
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IAuditService Audit
 @inject IEmailService EmailService
+@inject ISmsService SmsService
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
 @inject ILogger<AbsenceRequest> Logger
@@ -885,6 +886,33 @@
                         teacherEmail!,
                         $"Sub request submitted — {dateLine}",
                         html);
+
+                    // SMS-ready: also fire a compact text when SMS service is
+                    // enabled and the teacher has a phone + hasn't opted out.
+                    // Service is no-op until ACS toll-free verification lands,
+                    // so this is safe to deploy now.
+                    if (SmsService.IsEnabled
+                        && targetEmployee != null
+                        && !targetEmployee.SmsOptedOut
+                        && !string.IsNullOrWhiteSpace(targetEmployee.Phone))
+                    {
+                        var shortDate = request.StartDate == request.EndDate
+                            ? request.StartDate.ToString("MMM d")
+                            : $"{request.StartDate:MMM d}-{request.EndDate:MMM d}";
+                        var smsBody =
+                            $"New Heights: Your sub request #{request.SubRequestId} for {shortDate} " +
+                            $"({request.PeriodsNeeded ?? "all periods"}) is submitted. We'll email each " +
+                            $"time a sub accepts. Reply STOP to opt out.";
+                        if (smsBody.Length > 320) smsBody = smsBody.Substring(0, 320);
+
+                        try { await SmsService.SendAsync(targetEmployee.Phone!, smsBody); }
+                        catch (Exception smsEx)
+                        {
+                            Logger.LogWarning(smsEx,
+                                "Submit-time SMS confirmation failed for request {Id}; email outcome unaffected.",
+                                request.SubRequestId);
+                        }
+                    }
                 }
             }
             catch (Exception emailEx)

@@ -133,6 +133,18 @@
                                     {
                                         <span class="sms-opt-out" title="This sub has opted out of SMS. Email still works.">no SMS</span>
                                     }
+                                    @if (c.IsPartiallyAvailable)
+                                    {
+                                        @* Phase B Gap-2: this sub has a period
+                                           overlap on another booked request, but
+                                           is still free for the periods listed.
+                                           Outreach will be sent mentioning only
+                                           that subset. *@
+                                        <span class="partial-avail-badge"
+                                              title="This sub is already booked for some of the periods on this request. Outreach will offer them only the periods they can cover.">
+                                            Available @(string.Join(", ", c.AvailablePeriods.OrderBy(p => p).Select(p => "P" + p))) only
+                                        </span>
+                                    }
                                     @if (specialtyByEmployeeId.TryGetValue(c.EmployeeId, out var specialties) && specialties.Count > 0)
                                     {
                                         <div style="margin-top:4px;">
@@ -463,30 +475,54 @@
             // Build the full candidate list (with conflict details) first so
             // we can separate hard-blocked candidates from the displayed pool.
             var allCandidates = subs
-                .Select(s => new SubCandidate
+                .Select(s =>
                 {
-                    EmployeeId = s.EmployeeId,
-                    FullName   = s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {s.EmployeeId}",
-                    Email      = s.Email,
-                    Phone      = s.Phone,
-                    SmsOptedOut = s.SmsOptedOut,
-                    ConflictDetails = conflictingAssignments
+                    var details = conflictingAssignments
                         .Where(c => c.SubEmployeeId == s.EmployeeId)
                         .Select(c => BuildConflictDetail(c, currentPeriods, Request.CampusId))
                         .Where(cd => cd.Severity != ConflictSeverity.None)
-                        .ToList()
+                        .ToList();
+
+                    // Phase B Gap-2: compute this sub's available periods on
+                    // THIS request by subtracting any conflict-blocked periods
+                    // from the request's PeriodsNeeded set. Travel conflicts
+                    // (Blocked severity, no specific BlockedPeriods) leave
+                    // AvailablePeriods empty — those subs still get filtered
+                    // out below since they can't physically attend.
+                    var blockedSet = details
+                        .SelectMany(cd => cd.BlockedPeriods)
+                        .ToHashSet();
+                    var available = new HashSet<int>(currentPeriods);
+                    available.ExceptWith(blockedSet);
+
+                    return new SubCandidate
+                    {
+                        EmployeeId = s.EmployeeId,
+                        FullName   = s.Staff?.FullName ?? s.DisplayName ?? s.Email ?? $"Employee {s.EmployeeId}",
+                        Email      = s.Email,
+                        Phone      = s.Phone,
+                        SmsOptedOut = s.SmsOptedOut,
+                        ConflictDetails = details,
+                        AvailablePeriods = available,
+                        IsPartiallyAvailable = (available.Count > 0 && available.Count < currentPeriods.Count)
+                    };
                 })
                 .ToList();
 
-            // Any Blocked conflict = full-day bookings at the other campus,
-            // same-period overlaps, or adjacent-period travel conflicts.
-            // These subs physically cannot take this request, so they are
-            // hidden from the Available list rather than shown with just a
-            // red badge. Review-severity conflicts (non-adjacent cross-
-            // campus, unspecified periods) still appear with yellow warning
-            // so a supervisor can make the judgment call.
+            // Phase B Gap-2 filter rule (replaces the request-level Blocked
+            // drop). A sub is hidden ONLY when:
+            //   (a) they have a travel conflict (cross-campus adjacent periods,
+            //       physically can't attend), OR
+            //   (b) they have zero AvailablePeriods on this request (every
+            //       period the request needs is already booked by them
+            //       elsewhere — nothing to offer).
+            // Subs with PARTIAL period overlap stay in the list and the panel
+            // renders their AvailablePeriods badge. SendOutreachAsync will pass
+            // the per-sub period subset to the dispatch path so the email/SMS
+            // body mentions only what they can cover.
             candidates = allCandidates
-                .Where(c => !c.ConflictDetails.Any(cd => cd.Severity == ConflictSeverity.Blocked))
+                .Where(c => !c.ConflictDetails.Any(cd => cd.IsTravelConflict))
+                .Where(c => c.AvailablePeriods.Count > 0)
                 .ToList();
             hiddenBlockedCount = allCandidates.Count - candidates.Count;
 
@@ -590,11 +626,28 @@
             ? new List<int> { manualSelectedId!.Value }
             : new List<int>(cascadeOrderedIds);
 
+        // Phase B Gap-2: build per-sub period overrides for any candidate
+        // who is partially available. The override carries the canonical
+        // CSV form (e.g. "P3,P4") and is consumed by SendOutreachAsync ->
+        // TryDispatchOutreachAsync to render the email/SMS body for THAT
+        // specific sub. Subs without partial conflicts skip the dictionary
+        // and get the full PeriodsNeeded as the body.
+        Dictionary<int, string>? perSubOverrides = null;
+        var partials = candidates
+            .Where(c => toSend.Contains(c.EmployeeId) && c.IsPartiallyAvailable)
+            .ToList();
+        if (partials.Count > 0)
+        {
+            perSubOverrides = partials.ToDictionary(
+                c => c.EmployeeId,
+                c => string.Join(",", c.AvailablePeriods.OrderBy(p => p).Select(p => "P" + p)));
+        }
+
         isSending = true;
         try
         {
             await OutreachService.SendOutreachAsync(
-                Request.SubRequestId, toSend, mode, CurrentUserEmail);
+                Request.SubRequestId, toSend, mode, CurrentUserEmail, perSubOverrides);
 
             manualSelectedId = null;
             cascadeOrderedIds = new();
@@ -664,6 +717,13 @@
         public DateOnly EndDate { get; set; }
         public ConflictSeverity Severity { get; set; }
         public string Reason { get; set; } = "";
+        // Phase B Gap-2 (2026-04-27): for period-overlap conflicts, the
+        // specific periods that are blocked. Lets the panel compute per-sub
+        // available periods for partial outreach instead of hiding the sub
+        // entirely. Empty for travel conflicts (Blocked but no specific
+        // period to subtract — the sub is physically unavailable).
+        public List<int> BlockedPeriods { get; set; } = new();
+        public bool IsTravelConflict { get; set; }
         public string DateLabel =>
             StartDate == EndDate
                 ? StartDate.ToString("MMM d")
@@ -678,6 +738,12 @@
         public string? Phone { get; set; }
         public bool SmsOptedOut { get; set; }
         public List<ConflictDetail> ConflictDetails { get; set; } = new();
+        // Phase B Gap-2: periods on THIS request the sub can actually cover
+        // after subtracting their existing-booking conflicts. When this is a
+        // strict subset of the request's PeriodsNeeded, IsPartiallyAvailable
+        // is true and the panel renders an "Available P3, P4 only" annotation.
+        public HashSet<int> AvailablePeriods { get; set; } = new();
+        public bool IsPartiallyAvailable { get; set; }
     }
 
     private static HashSet<int> ParsePeriods(string? periodsNeeded)
@@ -719,6 +785,10 @@
         {
             detail.Severity = ConflictSeverity.Blocked;
             detail.Reason = $"Same period: {string.Join(", ", exactOverlap.Select(p => $"P{p}"))}";
+            // Phase B Gap-2: list specific periods so the panel can subtract
+            // them from this sub's available-set instead of dropping the sub.
+            detail.BlockedPeriods = exactOverlap;
+            detail.IsTravelConflict = false;
             return detail;
         }
 
@@ -751,6 +821,11 @@
         }
         detail.Severity = worst;
         detail.Reason = worst == ConflictSeverity.None ? "" : worstReason;
+        // Travel-conflict marker: Blocked severity with no period-overlap
+        // means the sub is physically unavailable (cross-campus adjacent
+        // periods). Distinct from period-only blocks so the panel can
+        // hide travel-blocks while showing period-blocks as partial.
+        detail.IsTravelConflict = (worst == ConflictSeverity.Blocked);
         return detail;
     }
 

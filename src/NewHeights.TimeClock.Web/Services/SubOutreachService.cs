@@ -29,7 +29,8 @@ public interface ISubOutreachService
     /// email dispatched (the action code is a hold-over from the SMS-only spec).
     /// </summary>
     Task<List<TcSubOutreach>> SendOutreachAsync(
-        long subRequestId, IList<int> subEmployeeIds, OutreachMode mode, string sentByEmail);
+        long subRequestId, IList<int> subEmployeeIds, OutreachMode mode, string sentByEmail,
+        IDictionary<int, string>? perSubPeriodOverrides = null);
 
     /// <summary>
     /// Validates the token, marks the outreach ACCEPTED, writes a
@@ -219,7 +220,8 @@ public class SubOutreachService : ISubOutreachService
     // ── Send ─────────────────────────────────────────────────────────────
 
     public async Task<List<TcSubOutreach>> SendOutreachAsync(
-        long subRequestId, IList<int> subEmployeeIds, OutreachMode mode, string sentByEmail)
+        long subRequestId, IList<int> subEmployeeIds, OutreachMode mode, string sentByEmail,
+        IDictionary<int, string>? perSubPeriodOverrides = null)
     {
         if (subEmployeeIds == null || subEmployeeIds.Count == 0)
             throw new ArgumentException("At least one sub employee id is required.", nameof(subEmployeeIds));
@@ -302,7 +304,15 @@ public class SubOutreachService : ISubOutreachService
             bool sendNow = broadcastAll || i == 0;
             if (sendNow)
             {
-                var dispatch = await TryDispatchOutreachAsync(row, request, sub);
+                // Phase B Gap-2 (2026-04-27): if the caller passed a per-sub
+                // period override (i.e. this sub has partial conflict and
+                // can only cover a subset of PeriodsNeeded), pass that string
+                // to TryDispatchOutreachAsync so the email/SMS body mentions
+                // only the periods this sub can actually cover.
+                string? periodsOverride = null;
+                perSubPeriodOverrides?.TryGetValue(sub.EmployeeId, out periodsOverride);
+
+                var dispatch = await TryDispatchOutreachAsync(row, request, sub, periodsOverride);
                 row.MessageSentAt = DateTime.Now;
                 row.OutreachMethod = dispatch.OutreachMethodLabel;
                 row.DeliveryStatus = dispatch.AnyDelivered ? "DELIVERED" : "FAILED";
