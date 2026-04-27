@@ -230,6 +230,9 @@ builder.Services.AddScoped<ISmsService, AzureSmsService>();
 // Substitute outreach service — absence-request sub assignment + accept/decline (Phase 5)
 builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
 
+// In-portal help system — backs /help (migration 054, 2026-04-27).
+builder.Services.AddScoped<IHelpArticleService, HelpArticleService>();
+
 // Stale outreach token expiry job — runs every 4 hours (Phase 7a)
 // Phase D2: sub outreach cascade timing (token validity + scan cadence).
 // Defaults to 2h token validity + 15min scan interval. Override via

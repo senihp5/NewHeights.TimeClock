@@ -1,0 +1,355 @@
+@page "/help"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAnyStaff")]
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@inject IHelpArticleService HelpArticles
+@inject IAuthorizationService Auth
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<Help> Logger
+
+<PageTitle>Help &amp; Documentation - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="help-page">
+    <header class="help-header">
+        <h1>Help &amp; Documentation</h1>
+        <p class="help-subtitle">Find guidance on the features your account has access to. Articles you can see are filtered by your role.</p>
+    </header>
+
+    <div class="help-controls">
+        <div class="help-search">
+            <input type="search"
+                   class="help-search-input"
+                   placeholder="Search help…"
+                   @bind="filterText"
+                   @bind:event="oninput"
+                   autocomplete="off"
+                   aria-label="Filter help articles" />
+        </div>
+
+        @if (isAdmin)
+        {
+            <label class="help-admin-toggle" title="Show every article regardless of role — admin only">
+                <input type="checkbox" @bind="showAllRoles" />
+                <span>Show all roles' help</span>
+            </label>
+        }
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="help-loading">Loading help articles…</div>
+    }
+    else if (loadError != null)
+    {
+        <div class="help-error" role="alert">@loadError</div>
+    }
+    else if (visibleArticles.Count == 0)
+    {
+        <div class="help-empty">
+            @if (!string.IsNullOrWhiteSpace(filterText))
+            {
+                <p>No articles match <strong>"@filterText"</strong>.</p>
+                <button class="help-btn-secondary" @onclick="ClearFilter">Clear filter</button>
+            }
+            else
+            {
+                <p>No help articles are available for your role yet.</p>
+            }
+        </div>
+    }
+    else
+    {
+        @foreach (var secGroup in visibleSections)
+        {
+            <section class="help-section">
+                <header class="help-section-header">
+                    <h2>@secGroup.Title</h2>
+                    <span class="help-section-policy" title="Visible to @PolicyDescription(secGroup.PolicyName)">
+                        @PolicyChip(secGroup.PolicyName)
+                    </span>
+                </header>
+
+                @foreach (var article in secGroup.Articles)
+                {
+                    var isEditing = editingArticleId == article.HelpArticleId;
+                    <details class="help-article" id="@article.Slug" open="@(ShouldOpen(article))">
+                        <summary class="help-article-summary">
+                            <span class="help-article-title">@article.Title</span>
+                            @if (!string.IsNullOrWhiteSpace(article.Summary) && !isEditing)
+                            {
+                                <span class="help-article-blurb">@article.Summary</span>
+                            }
+                        </summary>
+                        <div class="help-article-body">
+                            @if (isEditing)
+                            {
+                                <div class="help-edit-form">
+                                    <label>
+                                        <span>Title</span>
+                                        <input type="text" @bind="editTitle" maxlength="200" />
+                                    </label>
+                                    <label>
+                                        <span>Summary (optional one-liner)</span>
+                                        <input type="text" @bind="editSummary" maxlength="500" />
+                                    </label>
+                                    <label>
+                                        <span>Body (HTML)</span>
+                                        <textarea @bind="editBody" rows="14" spellcheck="false"></textarea>
+                                    </label>
+                                    @if (!string.IsNullOrEmpty(editError))
+                                    {
+                                        <div class="help-edit-error" role="alert">@editError</div>
+                                    }
+                                    <div class="help-edit-actions">
+                                        <button type="button" class="help-btn-primary"
+                                                @onclick="() => SaveEditAsync(article)"
+                                                disabled="@isSavingEdit">
+                                            @(isSavingEdit ? "Saving…" : "Save")
+                                        </button>
+                                        <button type="button" class="help-btn-secondary"
+                                                @onclick="CancelEdit"
+                                                disabled="@isSavingEdit">
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                            else
+                            {
+                                @((MarkupString)article.BodyHtml)
+
+                                @if (isAdmin)
+                                {
+                                    <div class="help-admin-bar">
+                                        <button type="button" class="help-btn-edit"
+                                                @onclick="() => BeginEdit(article)">
+                                            Edit
+                                        </button>
+                                        <span class="help-meta">
+                                            @if (!string.IsNullOrEmpty(article.ModifiedBy))
+                                            {
+                                                <span title="Last edited @article.ModifiedDate.ToString("yyyy-MM-dd HH:mm")">
+                                                    Edited by @article.ModifiedBy on @article.ModifiedDate.ToString("MMM d, yyyy")
+                                                </span>
+                                            }
+                                            else
+                                            {
+                                                <span>System-seeded</span>
+                                            }
+                                        </span>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </details>
+                }
+            </section>
+        }
+    }
+</div>
+
+@code {
+    private List<TcHelpArticle> allArticles = new();
+    private List<TcHelpArticle> visibleArticles = new();
+    private List<SectionGroup> visibleSections = new();
+
+    private string filterText = "";
+    private string _lastFilter = "";
+    private bool showAllRoles = false;
+    private bool _lastShowAll = false;
+
+    private bool isLoading = true;
+    private string? loadError = null;
+
+    private bool isAdmin = false;
+    private string currentUserEmail = "";
+
+    private int? editingArticleId = null;
+    private string editTitle = "";
+    private string editSummary = "";
+    private string editBody = "";
+    private string editError = "";
+    private bool isSavingEdit = false;
+
+    private record SectionGroup(string Key, string Title, string PolicyName, List<TcHelpArticle> Articles);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+            var user = auth.User;
+            currentUserEmail = user.Identity?.Name ?? "";
+            isAdmin = (await Auth.AuthorizeAsync(user, "RequireAdmin")).Succeeded;
+
+            allArticles = (await HelpArticles.GetActiveAsync()).ToList();
+            await ApplyFiltersAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load help articles");
+            loadError = "Could not load help articles. Try refreshing in a moment.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Re-filter on filter-text or showAll toggle changes.
+        if (filterText != _lastFilter || showAllRoles != _lastShowAll)
+        {
+            _lastFilter = filterText;
+            _lastShowAll = showAllRoles;
+            await ApplyFiltersAsync();
+        }
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        // Step 1: role filter. Admin + showAllRoles bypasses; everyone else is
+        // gated by the per-article policy via IAuthorizationService.
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = auth.User;
+
+        var passesPolicy = new List<TcHelpArticle>(allArticles.Count);
+        foreach (var a in allArticles)
+        {
+            if (isAdmin && showAllRoles)
+            {
+                passesPolicy.Add(a);
+                continue;
+            }
+            var result = await Auth.AuthorizeAsync(user, a.PolicyName);
+            if (result.Succeeded) passesPolicy.Add(a);
+        }
+
+        // Step 2: text filter — title + summary + body (case-insensitive).
+        var needle = filterText?.Trim() ?? "";
+        if (needle.Length > 0)
+        {
+            passesPolicy = passesPolicy
+                .Where(a =>
+                    Match(a.Title, needle)
+                 || Match(a.Summary, needle)
+                 || Match(a.BodyHtml, needle))
+                .ToList();
+        }
+
+        visibleArticles = passesPolicy;
+
+        // Group into sections, preserving original ordering.
+        visibleSections = visibleArticles
+            .GroupBy(a => new { a.SectionKey, a.SectionTitle, a.SectionOrder, a.PolicyName })
+            .OrderBy(g => g.Key.SectionOrder)
+            .Select(g => new SectionGroup(
+                g.Key.SectionKey,
+                g.Key.SectionTitle,
+                g.Key.PolicyName,
+                g.OrderBy(a => a.ArticleOrder).ToList()))
+            .ToList();
+    }
+
+    private static bool Match(string? haystack, string needle)
+    {
+        if (string.IsNullOrEmpty(haystack)) return false;
+        return haystack.Contains(needle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool ShouldOpen(TcHelpArticle a)
+    {
+        // Auto-open the article matched by URL anchor (#slug) AND any article
+        // matched by an active filter so users see why it matched.
+        if (!string.IsNullOrWhiteSpace(filterText)) return true;
+        return false;
+    }
+
+    private void ClearFilter()
+    {
+        filterText = "";
+        _ = ApplyFiltersAsync();
+    }
+
+    private void BeginEdit(TcHelpArticle article)
+    {
+        editingArticleId = article.HelpArticleId;
+        editTitle = article.Title;
+        editSummary = article.Summary ?? "";
+        editBody = article.BodyHtml;
+        editError = "";
+    }
+
+    private void CancelEdit()
+    {
+        editingArticleId = null;
+        editError = "";
+        isSavingEdit = false;
+    }
+
+    private async Task SaveEditAsync(TcHelpArticle article)
+    {
+        editError = "";
+        isSavingEdit = true;
+        try
+        {
+            await HelpArticles.UpdateArticleAsync(
+                article.HelpArticleId,
+                editTitle,
+                editSummary,
+                editBody,
+                currentUserEmail);
+
+            // Reflect edit in the in-memory copy without a full reload.
+            article.Title = editTitle.Trim();
+            article.Summary = string.IsNullOrWhiteSpace(editSummary) ? null : editSummary.Trim();
+            article.BodyHtml = editBody;
+            article.ModifiedBy = currentUserEmail;
+            article.ModifiedDate = DateTime.Now;
+
+            await ApplyFiltersAsync();
+            editingArticleId = null;
+        }
+        catch (ArgumentException ex)
+        {
+            editError = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Help article edit save failed for id {Id}", article.HelpArticleId);
+            editError = "Save failed. " + ex.Message;
+        }
+        finally
+        {
+            isSavingEdit = false;
+        }
+    }
+
+    private static string PolicyChip(string policy) => policy switch
+    {
+        "RequireAnyStaff"   => "Everyone",
+        "RequireHourly"     => "Hourly + Subs",
+        "RequireSupervisor" => "Supervisors",
+        "RequireHR"         => "HR",
+        "RequireReception"  => "Reception",
+        "RequireAdmin"      => "Admins",
+        _                    => policy
+    };
+
+    private static string PolicyDescription(string policy) => policy switch
+    {
+        "RequireAnyStaff"   => "anyone signed in (all staff)",
+        "RequireHourly"     => "hourly employees, substitutes, and admins",
+        "RequireSupervisor" => "supervisors (Stop Six and McCart) and admins",
+        "RequireHR"         => "HR and admins",
+        "RequireReception"  => "reception, supervisors, and admins",
+        "RequireAdmin"      => "administrators only",
+        _                    => $"role: {policy}"
+    };
+}

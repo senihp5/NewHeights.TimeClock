@@ -57,6 +57,9 @@ public class TimeClockDbContext : DbContext
     public DbSet<TcSubRequestPeriodNote> TcSubRequestPeriodNotes { get; set; } = null!;
     public DbSet<TcSubRequestPeriodAttachment> TcSubRequestPeriodAttachments { get; set; } = null!;
 
+    // Added in migration 054 (in-portal help system, 2026-04-27).
+    public DbSet<TcHelpArticle> TcHelpArticles { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -454,6 +457,23 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.ConfigType).HasMaxLength(20);
             entity.Property(e => e.Description).HasMaxLength(200);
             entity.Property(e => e.ModifiedBy).HasMaxLength(100);
+        });
+
+        // Migration 054 (2026-04-27): in-portal help system.
+        modelBuilder.Entity<TcHelpArticle>(entity =>
+        {
+            entity.ToTable("TC_HelpArticles");
+            entity.HasKey(e => e.HelpArticleId);
+            entity.Property(e => e.Slug).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Title).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.SectionKey).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.SectionTitle).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.PolicyName).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Summary).HasMaxLength(500);
+            entity.Property(e => e.BodyHtml).IsRequired();
+            entity.Property(e => e.ModifiedBy).HasMaxLength(100);
+            entity.HasIndex(e => e.Slug).IsUnique();
+            entity.HasIndex(e => new { e.SectionOrder, e.ArticleOrder });
         });
 
         // Migration 043 (Phase D3): dedup log for TimesheetReminderService.

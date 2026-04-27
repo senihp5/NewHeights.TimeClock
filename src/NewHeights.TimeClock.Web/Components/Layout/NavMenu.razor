@@ -186,5 +186,14 @@
             </details>
         </AuthorizeView>
 
+        @* Help — last item in the nav so role-specific sections stay at the
+           top. Visible to anyone signed in; the page itself filters articles
+           by role so each user sees only what applies to them. *@
+        <AuthorizeView Policy="RequireAnyStaff" Context="helpCtx">
+            <div class="nav-item px-2 nav-help-item">
+                <NavLink class="nav-link" href="help">Help</NavLink>
+            </div>
+        </AuthorizeView>
+
     </nav>
 </div>
