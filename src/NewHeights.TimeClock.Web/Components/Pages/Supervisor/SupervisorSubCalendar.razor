@@ -11,7 +11,9 @@
 @rendermode InteractiveServer
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IUserContextService UserContextSvc
+@inject ISubOutreachService SubOutreachService
 @inject NavigationManager Navigation
+@inject AuthenticationStateProvider AuthStateProvider
 @inject ILogger<SupervisorSubCalendar> Logger
 
 <PageTitle>Sub Schedule - @AppConstants.Branding.ShortName</PageTitle>
@@ -112,6 +114,35 @@
     #sub-cal-root .empty-state { padding: 1rem; background: #fafafa; border: 1px dashed #d1d5db; border-radius: 6px; text-align: center; color: #6b7280; }
     #sub-cal-root .loading { padding: 1rem; background: #f3f4f6; color: #4b5563; border-radius: 6px; text-align: center; }
     #sub-cal-root .error-panel { padding: 0.75rem 1rem; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; border-radius: 6px; margin-bottom: 1rem; }
+    #sub-cal-root .success-panel { padding: 0.75rem 1rem; background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; border-radius: 6px; margin-bottom: 1rem; }
+
+    /* Take-over action on the detail panel + modal styling. */
+    #sub-cal-root .takeover-actions { margin-top: 0.85rem; padding-top: 0.6rem; border-top: 1px dashed #e5e7eb; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+    #sub-cal-root .btn-takeover { background: #b91c1c; color: white; border: none; padding: 0.45rem 1rem; border-radius: 5px; font-weight: 600; cursor: pointer; }
+    #sub-cal-root .btn-takeover:hover:not(:disabled) { background: #991b1b; }
+    #sub-cal-root .btn-takeover:disabled { opacity: 0.6; cursor: not-allowed; }
+    #sub-cal-root .takeover-hint { color: #6b7280; font-size: 0.8rem; }
+
+    #sub-cal-root .takeover-modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    #sub-cal-root .takeover-modal { background: white; border-radius: 8px; width: min(90vw, 540px); max-height: 90vh; overflow-y: auto; box-shadow: 0 18px 40px -10px rgba(15, 23, 42, 0.4); }
+    #sub-cal-root .takeover-header { display: flex; align-items: center; justify-content: space-between; padding: 0.85rem 1rem; border-bottom: 1px solid #e5e7eb; }
+    #sub-cal-root .takeover-header h3 { margin: 0 !important; color: #b91c1c !important; font-size: 1.05rem !important; }
+    #sub-cal-root .modal-close { background: none; border: none; font-size: 1.05rem; color: #6b7280; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 4px; }
+    #sub-cal-root .modal-close:hover { background: #f3f4f6; color: #1f2937; }
+    #sub-cal-root .takeover-body { padding: 0.85rem 1rem 1rem; }
+    #sub-cal-root .takeover-summary { color: #374151; font-size: 0.92rem; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 4px; padding: 0.6rem 0.75rem; margin: 0 0 0.85rem; }
+    #sub-cal-root .takeover-body .form-row { margin-bottom: 0.85rem; display: flex; flex-direction: column; gap: 0.3rem; }
+    #sub-cal-root .takeover-body .form-row label { font-weight: 600; color: #374151; font-size: 0.88rem; }
+    #sub-cal-root .takeover-body select { padding: 0.4rem 0.55rem; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; }
+    #sub-cal-root .period-checkbox-row { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    #sub-cal-root .period-checkbox-item { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.3rem 0.7rem; border: 1px solid #cbd5e1; border-radius: 18px; background: #fff; font-size: 0.85rem; cursor: pointer; user-select: none; }
+    #sub-cal-root .period-checkbox-item:has(input:checked) { background: #dbeafe; border-color: #1d4ed8; color: #1e3a8a; }
+    #sub-cal-root .takeover-buttons { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+    #sub-cal-root .btn-confirm-assign { background: #047857; color: white; border: none; padding: 0.5rem 1.1rem; border-radius: 5px; font-weight: 600; cursor: pointer; }
+    #sub-cal-root .btn-confirm-assign:hover:not(:disabled) { background: #065f46; }
+    #sub-cal-root .btn-confirm-assign:disabled { opacity: 0.55; cursor: not-allowed; }
+    #sub-cal-root .btn-secondary { background: #fff; color: #374151; border: 1px solid #d1d5db; padding: 0.5rem 1.1rem; border-radius: 5px; cursor: pointer; }
+    #sub-cal-root .btn-secondary:hover:not(:disabled) { background: #f3f4f6; }
 </style>
 
 <div id="sub-cal-root">
@@ -229,8 +260,103 @@
                 <div class="detail-link">
                     <a href="/supervisor/sub-requests">Open in Sub Requests →</a>
                 </div>
+                @* Take-over action: visible only when the request still needs
+                   intervention (not already supervisor-approved). Day-of and
+                   short-fuse situations are the primary use case. *@
+                @if (selectedCell.Status != SubRequestStatus.AbsenceApproved
+                    && selectedCell.Status != SubRequestStatus.Cancelled
+                    && selectedCell.Status != SubRequestStatus.Denied)
+                {
+                    <div class="takeover-actions">
+                        <button type="button" class="btn-takeover"
+                                @onclick="() => OpenTakeOverDialogAsync(selectedCell.SubRequestId)"
+                                disabled="@isTakeoverLoading">
+                            @(isTakeoverLoading ? "Loading…" : "🚨 Take Over Request")
+                        </button>
+                        <span class="takeover-hint">Cancels outstanding outreach, flips Emergency, opens manual assign.</span>
+                    </div>
+                }
             </div>
         }
+    }
+
+    @if (showTakeoverDialog)
+    {
+        <div class="takeover-modal-overlay" @onclick="CloseTakeoverDialog">
+            <div class="takeover-modal" @onclick:stopPropagation="true">
+                <div class="takeover-header">
+                    <h3>Take Over Sub Request</h3>
+                    <button type="button" class="modal-close" @onclick="CloseTakeoverDialog">✕</button>
+                </div>
+                <div class="takeover-body">
+                    @if (!string.IsNullOrEmpty(takeoverError))
+                    {
+                        <div class="error-panel" role="alert">@takeoverError</div>
+                    }
+                    @if (!string.IsNullOrEmpty(takeoverSuccess))
+                    {
+                        <div class="success-panel" role="status">@takeoverSuccess</div>
+                    }
+
+                    <p class="takeover-summary">
+                        Cancelled <strong>@takeoverCancelledCount</strong> outstanding outreach row(s).
+                        Request is now <strong>Emergency</strong>.
+                        <strong>@takeoverAvailableSubs.Count</strong> sub(s) available for manual assignment below.
+                    </p>
+
+                    @if (takeoverRemainingPeriods.Count > 0)
+                    {
+                        <div class="form-row">
+                            <label>Periods to assign:</label>
+                            <div class="period-checkbox-row">
+                                @foreach (var p in takeoverRemainingPeriods)
+                                {
+                                    <label class="period-checkbox-item">
+                                        <input type="checkbox"
+                                               checked="@takeoverSelectedPeriods.Contains(p)"
+                                               @onchange="(e) => ToggleTakeoverPeriod(p, (bool?)e.Value == true)" />
+                                        <span>@p</span>
+                                    </label>
+                                }
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <label for="takeover-sub-picker">Assign to sub:</label>
+                            <select id="takeover-sub-picker"
+                                    @bind="takeoverSelectedSubId"
+                                    style="min-width:18rem">
+                                <option value="0">— Pick a sub —</option>
+                                @foreach (var s in takeoverAvailableSubs.OrderBy(s => s.DisplayName))
+                                {
+                                    <option value="@s.EmployeeId">@s.DisplayName</option>
+                                }
+                            </select>
+                        </div>
+
+                        <div class="takeover-buttons">
+                            <button type="button" class="btn-confirm-assign"
+                                    @onclick="ConfirmManualAssignAsync"
+                                    disabled="@(isTakeoverSubmitting || takeoverSelectedSubId == 0 || takeoverSelectedPeriods.Count == 0)">
+                                @(isTakeoverSubmitting ? "Assigning…" : "Confirm Manual Assign")
+                            </button>
+                            <button type="button" class="btn-secondary"
+                                    @onclick="CloseTakeoverDialog"
+                                    disabled="@isTakeoverSubmitting">
+                                Close
+                            </button>
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="takeover-summary">All periods are now covered — no manual assignment needed.</p>
+                        <div class="takeover-buttons">
+                            <button type="button" class="btn-secondary" @onclick="CloseTakeoverDialog">Close</button>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
     }
 </div>
 
@@ -258,6 +384,27 @@
 
     private CellAssignment? selectedCell = null;
 
+    // Take-over modal state. Populated when supervisor clicks "Take Over
+    // Request" on the detail panel. The OpenTakeOverDialogAsync handler
+    // calls SubOutreachService.TakeOverRequestAsync (cancels AWAITING
+    // outreach + flags emergency) and pulls the available-subs list +
+    // remaining periods to drive the manual-assign UI inside the modal.
+    private bool showTakeoverDialog = false;
+    private bool isTakeoverLoading = false;
+    private bool isTakeoverSubmitting = false;
+    private string takeoverError = "";
+    private string takeoverSuccess = "";
+    private long takeoverSubRequestId = 0;
+    private int takeoverCancelledCount = 0;
+    private List<SubOption> takeoverAvailableSubs = new();
+    private List<string> takeoverRemainingPeriods = new();
+    private HashSet<string> takeoverSelectedPeriods = new(StringComparer.OrdinalIgnoreCase);
+    private int takeoverSelectedSubId = 0;
+    private int currentSupervisorEmployeeId = 0;
+    private string currentUserEmail = "";
+
+    private record SubOption(int EmployeeId, string DisplayName);
+
     // NH session period ranges — DAY runs P1–P4, NIGHT runs P5–P6. Splitting
     // these into per-session arrays keeps each grid concise (no empty rows
     // for periods that never run in that session).
@@ -279,6 +426,19 @@
         weekOffset = WeekOffset ?? 0;
         userCtx = await UserContextSvc.GetCurrentUserAsync();
         isAdmin = userCtx.IsAdmin;
+        currentUserEmail = userCtx.Email ?? "";
+
+        // Resolve the supervisor's TcEmployees row so audit rows can link
+        // to a real EmployeeId. Take-over actions log who initiated them.
+        if (!string.IsNullOrWhiteSpace(currentUserEmail))
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var emailLower = currentUserEmail.ToLowerInvariant();
+            currentSupervisorEmployeeId = await ctx.TcEmployees
+                .Where(e => e.Email != null && e.Email.ToLower() == emailLower && e.IsActive)
+                .Select(e => e.EmployeeId)
+                .FirstOrDefaultAsync();
+        }
 
         if (!isAdmin)
         {
@@ -763,6 +923,153 @@
         RecomputeWeekMonday();
         await LoadDataAsync();
         Navigation.NavigateTo("/supervisor/sub-calendar", forceLoad: false);
+    }
+
+    // ── Take-over modal handlers ────────────────────────────────────────
+
+    private async Task OpenTakeOverDialogAsync(long subRequestId)
+    {
+        if (currentSupervisorEmployeeId == 0)
+        {
+            takeoverError = "We couldn't resolve your supervisor employee record. Sign out and back in.";
+            showTakeoverDialog = true;
+            return;
+        }
+
+        isTakeoverLoading = true;
+        takeoverError = "";
+        takeoverSuccess = "";
+        takeoverSubRequestId = subRequestId;
+        takeoverSelectedSubId = 0;
+        takeoverAvailableSubs = new();
+        takeoverRemainingPeriods = new();
+        takeoverSelectedPeriods = new(StringComparer.OrdinalIgnoreCase);
+        takeoverCancelledCount = 0;
+
+        try
+        {
+            // Service call: cancels AWAITING outreach + flips emergency.
+            // Returns the active-sub ID list so we can render the picker.
+            var result = await SubOutreachService.TakeOverRequestAsync(
+                currentSupervisorEmployeeId, subRequestId, currentUserEmail);
+
+            takeoverCancelledCount = result.CancelledOutreachRows;
+
+            using var ctx = await DbFactory.CreateDbContextAsync();
+
+            // Hydrate sub display names for the picker. Falls back through
+            // Staff.FullName → DisplayName → Email same as the calendar
+            // grid does, so the dropdown matches what's on the cells.
+            takeoverAvailableSubs = await ctx.TcEmployees
+                .AsNoTracking()
+                .Where(e => result.AvailableSubEmployeeIds.Contains(e.EmployeeId))
+                .Include(e => e.Staff)
+                .Select(e => new SubOption(
+                    e.EmployeeId,
+                    e.Staff != null && (e.Staff.FirstName + " " + e.Staff.LastName).Trim() != ""
+                        ? (e.Staff.FirstName + " " + e.Staff.LastName)
+                        : (e.DisplayName ?? e.Email ?? ("Employee " + e.EmployeeId))))
+                .ToListAsync();
+
+            // Recompute remaining periods AFTER the take-over so the picker
+            // only offers slots that actually still need a sub.
+            var request = await ctx.TcSubRequests
+                .Include(r => r.Assignments)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r => r.SubRequestId == subRequestId);
+            if (request != null)
+            {
+                var needed = ParsePeriodsFromCsv(request.PeriodsNeeded);
+                var coveredSet = request.Assignments
+                    .SelectMany(a => ParsePeriodsFromCsv(a.PeriodsCovered))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                takeoverRemainingPeriods = needed
+                    .Where(p => !coveredSet.Contains(p))
+                    .OrderBy(p => p)
+                    .ToList();
+                // Default: pre-select all remaining periods. Supervisor
+                // unchecks any they want to leave open for the cascade.
+                takeoverSelectedPeriods = new HashSet<string>(
+                    takeoverRemainingPeriods, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Take-over failed for request {RequestId}", subRequestId);
+            takeoverError = "Take-over failed: " + ex.Message;
+        }
+        finally
+        {
+            isTakeoverLoading = false;
+            showTakeoverDialog = true;
+        }
+    }
+
+    private void CloseTakeoverDialog()
+    {
+        showTakeoverDialog = false;
+        takeoverError = "";
+        takeoverSuccess = "";
+        takeoverSubRequestId = 0;
+    }
+
+    private void ToggleTakeoverPeriod(string period, bool isChecked)
+    {
+        if (isChecked) takeoverSelectedPeriods.Add(period);
+        else takeoverSelectedPeriods.Remove(period);
+    }
+
+    private async Task ConfirmManualAssignAsync()
+    {
+        if (takeoverSelectedSubId == 0 || takeoverSelectedPeriods.Count == 0) return;
+
+        isTakeoverSubmitting = true;
+        takeoverError = "";
+        takeoverSuccess = "";
+
+        try
+        {
+            var result = await SubOutreachService.ManualAssignSubAsync(
+                currentSupervisorEmployeeId,
+                takeoverSubRequestId,
+                takeoverSelectedSubId,
+                takeoverSelectedPeriods.ToList(),
+                currentUserEmail);
+
+            takeoverSuccess = result.FullyCovered
+                ? $"✓ Sub assigned to {result.PeriodsCovered}. Request fully covered."
+                : $"✓ Sub assigned to {result.PeriodsCovered}. More periods still need a sub.";
+            if (!result.ConfirmationEmailSent)
+            {
+                takeoverSuccess += " (Confirmation email not delivered — see logs.)";
+            }
+
+            // Refresh the calendar so the cell colors flip immediately.
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Manual assign failed for request {RequestId} sub {SubId}",
+                takeoverSubRequestId, takeoverSelectedSubId);
+            takeoverError = "Manual assign failed: " + ex.Message;
+        }
+        finally
+        {
+            isTakeoverSubmitting = false;
+        }
+    }
+
+    // Local helper — same canonical period-set parsing as SubOutreachService
+    // (P1, P2 → uppercase trimmed CSV). Kept inline so the page doesn't need
+    // a service round-trip just to format strings.
+    private static IEnumerable<string> ParsePeriodsFromCsv(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) yield break;
+        foreach (var raw in csv.Split(','))
+        {
+            var p = raw.Trim().ToUpperInvariant();
+            if (p.Length > 0) yield return p;
+        }
     }
 
     private class CellAssignment

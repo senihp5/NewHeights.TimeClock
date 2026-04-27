@@ -565,6 +565,16 @@
     border-radius: 6px;
     margin: 0 0 1rem;
     font-size: 0.88rem;
+    /* Stick to the top of the viewport while the teacher scrolls through
+       the rest of the form. Without this the banner often appears above
+       the fold and gets missed once the user moves to date/period inputs.
+       Top offset matches the page's chrome (no fixed nav bar above the
+       form content area, so 0 is correct). */
+    position: sticky;
+    top: 0.5rem;
+    z-index: 5;
+    /* Slight elevation when stuck so it feels overlaid rather than inline. */
+    box-shadow: 0 2px 8px -2px rgba(245, 184, 28, 0.35);
 }
 
 .same-day-heading {

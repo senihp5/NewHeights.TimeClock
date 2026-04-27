@@ -708,26 +708,295 @@ public class SubOutreachService : ISubOutreachService
             .FirstOrDefaultAsync(o => o.ResponseToken == token);
     }
 
-    // ── Phase B (2026-04-27): Take-over + Manual Assign — STUBS ──────────
-    // Interface contracts are in place so callers can be wired up; full
-    // implementation lands in the next pass. Throwing NotImplementedException
-    // keeps any accidental call surfaced loudly rather than silently no-oping.
+    // ── Phase B (2026-04-27): Take-over + Manual Assign ──────────────────
 
-    public Task<TakeOverResult> TakeOverRequestAsync(
+    public async Task<TakeOverResult> TakeOverRequestAsync(
         int supervisorEmployeeId, long subRequestId, string supervisorEmail)
     {
-        throw new NotImplementedException(
-            "TakeOverRequestAsync is being implemented in the next deploy. " +
-            "Do not call from production code paths yet.");
+        if (supervisorEmployeeId <= 0)
+            throw new ArgumentException("supervisorEmployeeId is required.", nameof(supervisorEmployeeId));
+        if (string.IsNullOrWhiteSpace(supervisorEmail))
+            throw new ArgumentException("supervisorEmail is required.", nameof(supervisorEmail));
+
+        using var context = await _dbFactory.CreateDbContextAsync();
+
+        var request = await context.TcSubRequests
+            .Include(r => r.Assignments)
+            .FirstOrDefaultAsync(r => r.SubRequestId == subRequestId);
+        if (request == null)
+            throw new InvalidOperationException($"Sub request {subRequestId} not found.");
+
+        if (request.Status == SubRequestStatus.AbsenceApproved
+         || request.Status == SubRequestStatus.Cancelled
+         || request.Status == SubRequestStatus.Denied)
+        {
+            throw new InvalidOperationException(
+                $"Cannot take over a {request.Status} request — it's already finalized.");
+        }
+
+        // Step 1: cancel any outstanding AWAITING outreach. The supervisor
+        // is restarting the cascade so previously-pending tokens shouldn't
+        // resolve into accepts after the take-over.
+        var outstanding = await context.TcSubOutreach
+            .Where(o => o.SubRequestId == subRequestId && o.ResponseStatus == "AWAITING")
+            .ToListAsync();
+
+        foreach (var o in outstanding)
+        {
+            o.ResponseStatus = "CANCELLED_BY_TAKEOVER";
+            o.RespondedAt = DateTime.Now;
+        }
+
+        // Step 2: flag emergency so future cascade dispatches use the
+        // 30-minute token expiry from ComputeTokenExpiry.
+        var wasEmergency = request.IsEmergency;
+        request.IsEmergency = true;
+        request.ModifiedDate = DateTime.Now;
+
+        await context.SaveChangesAsync();
+
+        // Step 3: build the available-subs list for the manual-assign UI.
+        // Scope: active Substitute employees, excluding any sub already
+        // assigned to this request (avoid double-assignment) and any sub
+        // who already declined the cascade (no point re-pinging them).
+        var alreadyAssignedIds = request.Assignments
+            .Select(a => a.SubEmployeeId)
+            .Distinct()
+            .ToHashSet();
+
+        var declinedIds = await context.TcSubOutreach
+            .Where(o => o.SubRequestId == subRequestId && o.ResponseStatus == "DECLINED")
+            .Select(o => o.SubEmployeeId)
+            .ToListAsync();
+
+        var availableIds = await context.TcEmployees
+            .AsNoTracking()
+            .Where(e => e.IsActive
+                     && e.EmployeeType == EmployeeType.Substitute
+                     && !alreadyAssignedIds.Contains(e.EmployeeId)
+                     && !declinedIds.Contains(e.EmployeeId))
+            .Select(e => e.EmployeeId)
+            .ToListAsync();
+
+        // Step 4: audit. Captures supervisor identity + counts so reports
+        // can answer "who took over which requests last week".
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.SubOutreach.TakenOver,
+            entityType: AuditEntityTypes.SubRequest,
+            entityId: request.SubRequestId.ToString(),
+            newValues: new
+            {
+                request.SubRequestId,
+                SupervisorEmployeeId = supervisorEmployeeId,
+                SupervisorEmail = supervisorEmail,
+                CancelledOutreachCount = outstanding.Count,
+                WasAlreadyEmergency = wasEmergency,
+                AvailableSubCount = availableIds.Count,
+                Status = request.Status.ToString()
+            },
+            deltaSummary:
+                $"Supervisor {supervisorEmail} took over sub request {request.SubRequestId} " +
+                $"(cancelled {outstanding.Count} AWAITING outreach row(s); " +
+                $"flagged emergency; {availableIds.Count} subs available for manual assign)",
+            source: AuditSource.AdminUi,
+            employeeId: supervisorEmployeeId);
+
+        return new TakeOverResult
+        {
+            CancelledOutreachRows = outstanding.Count,
+            DispatchedToSubEmployeeId = 0, // caller dispatches via SendOutreachAsync after picking from AvailableSubEmployeeIds
+            DispatchOutcome = "AWAITING_SUPERVISOR_PICK",
+            AvailableSubEmployeeIds = availableIds
+        };
     }
 
-    public Task<ManualAssignResult> ManualAssignSubAsync(
+    public async Task<ManualAssignResult> ManualAssignSubAsync(
         int supervisorEmployeeId, long subRequestId, int subEmployeeId,
         IReadOnlyCollection<string> periodsToAssign, string supervisorEmail)
     {
-        throw new NotImplementedException(
-            "ManualAssignSubAsync is being implemented in the next deploy. " +
-            "Do not call from production code paths yet.");
+        if (supervisorEmployeeId <= 0)
+            throw new ArgumentException("supervisorEmployeeId is required.", nameof(supervisorEmployeeId));
+        if (subEmployeeId <= 0)
+            throw new ArgumentException("subEmployeeId is required.", nameof(subEmployeeId));
+        if (periodsToAssign == null || periodsToAssign.Count == 0)
+            throw new ArgumentException("At least one period is required.", nameof(periodsToAssign));
+
+        using var context = await _dbFactory.CreateDbContextAsync();
+
+        var request = await context.TcSubRequests
+            .Include(r => r.Assignments)
+            .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
+            .Include(r => r.Campus)
+            .FirstOrDefaultAsync(r => r.SubRequestId == subRequestId);
+        if (request == null)
+            throw new InvalidOperationException($"Sub request {subRequestId} not found.");
+
+        if (request.Status == SubRequestStatus.AbsenceApproved
+         || request.Status == SubRequestStatus.Cancelled
+         || request.Status == SubRequestStatus.Denied)
+        {
+            throw new InvalidOperationException(
+                $"Cannot manually assign — request is {request.Status}.");
+        }
+
+        var sub = await context.TcEmployees
+            .Include(e => e.Staff)
+            .FirstOrDefaultAsync(e => e.EmployeeId == subEmployeeId && e.IsActive);
+        if (sub == null)
+            throw new InvalidOperationException($"Sub employee {subEmployeeId} not found or inactive.");
+
+        // Validate selected periods: must be in needed AND uncovered AND
+        // the same Gap-1 guard against double-booking this sub elsewhere.
+        var requested = new HashSet<string>(
+            periodsToAssign.Select(p => p.Trim().ToUpperInvariant()).Where(p => p.Length > 0),
+            StringComparer.OrdinalIgnoreCase);
+
+        var needed = ParsePeriodSet(request.PeriodsNeeded);
+        var alreadyCovered = request.Assignments
+            .SelectMany(a => ParsePeriodSet(a.PeriodsCovered))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var remaining = needed.Except(alreadyCovered, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var notAvailable = requested.Except(remaining, StringComparer.OrdinalIgnoreCase).ToList();
+        if (notAvailable.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"These periods are no longer available: {string.Join(", ", notAvailable)}.");
+        }
+
+        // Gap-1 guard against double-booking this same sub elsewhere.
+        var subOtherPeriods = await context.TcSubRequestAssignments
+            .AsNoTracking()
+            .Where(a => a.SubEmployeeId == subEmployeeId
+                     && a.SubRequestId != subRequestId
+                     && a.SubRequest.StartDate <= request.EndDate
+                     && a.SubRequest.EndDate >= request.StartDate
+                     && a.SubRequest.Status != SubRequestStatus.Cancelled
+                     && a.SubRequest.Status != SubRequestStatus.Denied)
+            .Select(a => a.PeriodsCovered)
+            .ToListAsync();
+        var subBlocked = subOtherPeriods
+            .SelectMany(s => ParsePeriodSet(s))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var conflicts = requested.Intersect(subBlocked, StringComparer.OrdinalIgnoreCase).ToList();
+        if (conflicts.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"{sub.Staff?.FullName ?? sub.DisplayName ?? sub.Email} is already booked for " +
+                $"{string.Join(", ", conflicts)} on another request that overlaps this date range.");
+        }
+
+        // Write the assignment row. AssignedAt is now (manual decision time);
+        // CreatedDate is now too.
+        var now = DateTime.Now;
+        var assignment = new TcSubRequestAssignment
+        {
+            SubRequestId   = request.SubRequestId,
+            SubEmployeeId  = subEmployeeId,
+            PeriodsCovered = FormatPeriodSet(requested),
+            AcceptedAt     = now,
+            CreatedDate    = now,
+            AssignedBy     = supervisorEmail
+        };
+        context.TcSubRequestAssignments.Add(assignment);
+
+        // Recompute coverage AFTER this assignment. Mirrors ProcessAcceptAsync.
+        var newCovered = alreadyCovered.Union(requested, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var newRemaining = needed.Except(newCovered, StringComparer.OrdinalIgnoreCase).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        bool fullyCovered = newRemaining.Count == 0;
+
+        bool isFirstAssignment = request.Assignments.Count == 0;
+        if (isFirstAssignment)
+        {
+            request.AssignedSubEmployeeId = subEmployeeId;
+            request.AssignedDate = now;
+        }
+
+        request.Status = fullyCovered
+            ? SubRequestStatus.SubConfirmed
+            : SubRequestStatus.PartiallyAssigned;
+        request.PartialStallAlertSentAt = null;
+        request.ModifiedDate = now;
+
+        // If fully covered now, cancel any leftover AWAITING outreach so
+        // late-responders can't poach a slot that's already filled.
+        if (fullyCovered)
+        {
+            var stillAwaiting = await context.TcSubOutreach
+                .Where(o => o.SubRequestId == subRequestId && o.ResponseStatus == "AWAITING")
+                .ToListAsync();
+            foreach (var o in stillAwaiting)
+            {
+                o.ResponseStatus = "CANCELLED_BY_TAKEOVER";
+                o.RespondedAt = now;
+            }
+        }
+
+        await context.SaveChangesAsync();
+
+        // Audit row — separate from the cascade-driven SUB_ACCEPTED so
+        // reports can isolate manual-assign volume.
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.SubOutreach.ManualAssign,
+            entityType: AuditEntityTypes.SubRequest,
+            entityId: request.SubRequestId.ToString(),
+            newValues: new
+            {
+                request.SubRequestId,
+                AssignedSubEmployeeId = subEmployeeId,
+                PeriodsCovered = assignment.PeriodsCovered,
+                FullyCovered = fullyCovered,
+                SupervisorEmployeeId = supervisorEmployeeId,
+                SupervisorEmail = supervisorEmail
+            },
+            deltaSummary:
+                $"Supervisor {supervisorEmail} manually assigned employee {subEmployeeId} to sub request " +
+                $"{request.SubRequestId} for periods {assignment.PeriodsCovered} " +
+                $"(status {request.Status})",
+            source: AuditSource.AdminUi,
+            employeeId: subEmployeeId);
+
+        // Confirmation to the assigned sub. Per audit-trail policy: send
+        // even though supervisor likely coordinated by phone first. Failure
+        // to deliver doesn't roll back the assignment — log + continue.
+        bool confirmationSent = false;
+        try
+        {
+            var pseudoOutreach = new TcSubOutreach
+            {
+                SubRequestId = request.SubRequestId,
+                SubEmployeeId = subEmployeeId,
+                SubEmployee = sub,
+                ResponseStatus = "ACCEPTED",
+                RespondedAt = now,
+                OutreachMethod = "MANUAL_ASSIGN",
+                EmailAddress = sub.Email,
+                PhoneNumber = sub.Phone,
+                ResponseToken = "",
+                TokenExpiresAt = now,
+                DeliveryStatus = "N/A",
+                SentBy = supervisorEmail
+            };
+
+            var dispatch = await TryDispatchConfirmationAsync(
+                pseudoOutreach, request, assignment.PeriodsCovered);
+            confirmationSent = dispatch.AnyDelivered;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "ManualAssign confirmation dispatch failed for sub {SubEmployeeId} on request {SubRequestId}; " +
+                "DB assignment is committed.",
+                subEmployeeId, request.SubRequestId);
+        }
+
+        return new ManualAssignResult
+        {
+            AssignmentId = assignment.AssignmentId,
+            PeriodsCovered = assignment.PeriodsCovered,
+            FullyCovered = fullyCovered,
+            ConfirmationEmailSent = confirmationSent
+        };
     }
 
     /// <summary>
