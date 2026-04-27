@@ -303,7 +303,11 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.SubjectArea).HasMaxLength(100);
             entity.Property(e => e.SpecialInstructions).HasMaxLength(1000);
             entity.Property(e => e.AssignedBy).HasMaxLength(100);
-            entity.Property(e => e.Status).HasConversion<string>().HasMaxLength(15);
+            // Migration 053 (2026-04-27): widened from 15 to 30 because
+            // 'PartiallyAssigned' (17 chars, added in migration 048) was
+            // truncating on save and breaking the partial-accept flow on
+            // /sub/respond/*. 30 gives headroom for any future status value.
+            entity.Property(e => e.Status).HasConversion<string>().HasMaxLength(30);
             entity.Property(e => e.SupervisorApprovedBy).HasMaxLength(100);
             entity.Property(e => e.CalendarEventId).HasMaxLength(200);
 
