@@ -146,6 +146,25 @@ public static class AuditActions
         public const string PartialAccepted     = "SUB_PARTIAL_ACCEPTED";
         public const string FullyCovered        = "SUB_FULLY_COVERED";
         public const string PartialStallAlerted = "SUB_PARTIAL_STALL_ALERTED";
+        // Phase B (2026-04-27): supervisor day-of override actions.
+        //   TakenOver    — supervisor flipped request to Emergency, cancelled
+        //                  outstanding outreach, restarted cascade from top.
+        //   ManualAssign — supervisor hand-picked a specific sub bypassing
+        //                  cascade. Confirmation email still goes out per
+        //                  audit-trail policy.
+        public const string TakenOver           = "SUB_TAKEN_OVER";
+        public const string ManualAssign        = "SUB_MANUAL_ASSIGN";
+        // Phase C (2026-04-27): scheduled day-of resolution outcomes.
+        //   AutoApproved — request hit absence date with all periods covered
+        //                  AND supervisor never approved. System advanced
+        //                  status to AbsenceApproved.
+        //   AutoCancelled — request hit absence date with no acceptances.
+        //                  System cancelled to keep the queue clean.
+        //   PartialDayOf — request hit absence date partially covered.
+        //                  Supervisor was emailed with a Take-Over link.
+        public const string AutoApproved        = "SUB_AUTO_APPROVED";
+        public const string AutoCancelled       = "SUB_AUTO_CANCELLED";
+        public const string PartialDayOf        = "SUB_PARTIAL_DAY_OF";
     }
 
     // N2. Substitute — Pool Management (Phase D5)

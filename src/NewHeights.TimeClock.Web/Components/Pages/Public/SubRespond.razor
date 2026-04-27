@@ -148,6 +148,13 @@
                                 Already covered: <strong>@(string.Join(", ", alreadyCoveredPeriods))</strong>
                             </p>
                         }
+                        @if (myConflictPeriods.Any())
+                        {
+                            <p class="my-conflict-note">
+                                You're already covering <strong>@(string.Join(", ", myConflictPeriods))</strong>
+                                on another teacher's request today, so those slots aren't selectable here.
+                            </p>
+                        }
                         <div class="period-quick-actions">
                             <button type="button" class="btn-link" @onclick="SelectAll">Select all</button>
                             <button type="button" class="btn-link" @onclick="SelectNone">Clear</button>
@@ -207,6 +214,7 @@
     .period-checkbox:has(input:checked) { background: #dbeafe; border-color: #1d4ed8; color: #1e3a8a; }
     .period-checkbox input { margin: 0; cursor: pointer; }
     .covered-note { margin: .75rem 0 0; color: #64748b; font-size: .85rem; }
+    .my-conflict-note { margin: .5rem 0 0; padding: .5rem .75rem; background: #fef3c7; border-left: 3px solid #f59e0b; color: #78350f; font-size: .85rem; border-radius: 4px; }
     .period-quick-actions { margin-top: .6rem; display: flex; gap: .75rem; }
     .btn-link { background: none; border: none; padding: 0; color: #1d4ed8; cursor: pointer; font-size: .85rem; text-decoration: underline; }
     .btn-link:hover { color: #1e3a8a; }
@@ -242,6 +250,10 @@
     // Phase A state
     private List<string> remainingPeriods = new();
     private List<string> alreadyCoveredPeriods = new();
+    // Periods hidden because THIS sub is already booked for them on another
+    // overlapping request. Distinct from alreadyCoveredPeriods (covered by
+    // any sub on this request).
+    private List<string> myConflictPeriods = new();
     private HashSet<string> selectedPeriods = new(StringComparer.OrdinalIgnoreCase);
     private string acceptedPeriodsDisplay = "";
     // Phase A ext: which path triggered the "Shift Covered" state so the
@@ -268,6 +280,7 @@
         selectedPeriods = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         remainingPeriods = new List<string>();
         alreadyCoveredPeriods = new List<string>();
+        myConflictPeriods = new List<string>();
         coveredSource = "";
 
         try
@@ -308,7 +321,13 @@
             // shows only uncovered periods. If the request has no PeriodsNeeded
             // string, we treat it as a legacy single-unit request (no checkbox
             // list — one big Accept).
-            await LoadPeriodsAsync(outreach.SubRequestId);
+            //
+            // Gap-1 fix (2026-04-27): also pass the sub's EmployeeId so we can
+            // hide periods this sub already accepted on OTHER overlapping
+            // requests. Prevents a sub from double-booking themselves by
+            // ticking a slot on Teacher B's link that they've already claimed
+            // on Teacher A's link earlier in the day.
+            await LoadPeriodsAsync(outreach.SubRequestId, outreach.SubEmployeeId);
 
             // "Shift Covered" terminal state fires when either:
             //   (a) coveredSource == "periods"   — enumerable request, every
@@ -331,7 +350,7 @@
         }
     }
 
-    private async Task LoadPeriodsAsync(long subRequestId)
+    private async Task LoadPeriodsAsync(long subRequestId, int subEmployeeId)
     {
         using var ctx = await DbFactory.CreateDbContextAsync();
         var request = await ctx.TcSubRequests
@@ -359,7 +378,36 @@
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        remainingPeriods = needed.Where(p => !covered.Contains(p)).ToList();
+        // Gap-1 fix: find every period THIS sub has already personally taken
+        // on OTHER requests overlapping this request's date range. Excluded
+        // statuses ensure we don't block on cancelled/denied historical rows.
+        var myExistingPeriods = await ctx.TcSubRequestAssignments
+            .AsNoTracking()
+            .Where(a => a.SubEmployeeId == subEmployeeId
+                     && a.SubRequestId != subRequestId
+                     && a.SubRequest.StartDate <= request.EndDate
+                     && a.SubRequest.EndDate >= request.StartDate
+                     && a.SubRequest.Status != SubRequestStatus.Cancelled
+                     && a.SubRequest.Status != SubRequestStatus.Denied)
+            .Select(a => a.PeriodsCovered)
+            .ToListAsync();
+
+        var blockedByMyOtherBookings = myExistingPeriods
+            .SelectMany(s => ParsePeriods(s))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Periods this sub is blocked from picking BECAUSE they personally
+        // already accepted them elsewhere — distinct from `alreadyCoveredPeriods`
+        // (which is "covered by ANY sub on THIS request"). Surfaced in the UI
+        // so the sub understands why some slots aren't checkable.
+        myConflictPeriods = needed
+            .Where(p => blockedByMyOtherBookings.Contains(p) && !covered.Contains(p))
+            .ToList();
+
+        remainingPeriods = needed
+            .Where(p => !covered.Contains(p))
+            .Where(p => !blockedByMyOtherBookings.Contains(p))
+            .ToList();
         alreadyCoveredPeriods = needed.Where(p => covered.Contains(p)).ToList();
 
         // Default: pre-select every available period so the common case

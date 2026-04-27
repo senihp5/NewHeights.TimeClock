@@ -95,6 +95,50 @@ public interface ISubOutreachService
     /// <param name="adminEmail">Email of the admin who made the decision, for logs.</param>
     Task NotifyAbsenceDecisionAsync(
         long subRequestId, string decision, string? reason, string adminEmail);
+
+    /// <summary>
+    /// Phase B (2026-04-27) — supervisor day-of takeover. Cancels all
+    /// AWAITING outreach rows on this request, flips the request to
+    /// IsEmergency=true, and re-fires the cascade from the top of the
+    /// available pool with a 30-minute token expiry.
+    ///
+    /// Used when a request is approaching the absence date with poor
+    /// coverage and the supervisor wants to inject urgency. Returns a
+    /// summary of what was cancelled + what got dispatched + the live list
+    /// of available subs so the caller can render the manual-assign tab.
+    /// </summary>
+    Task<TakeOverResult> TakeOverRequestAsync(
+        int supervisorEmployeeId, long subRequestId, string supervisorEmail);
+
+    /// <summary>
+    /// Phase B (2026-04-27) — supervisor manual sub assignment. Bypasses
+    /// the cascade entirely: writes a TcSubRequestAssignment row directly,
+    /// recomputes coverage, advances request status, and sends the
+    /// confirmation email to the assigned sub for audit-trail purposes.
+    ///
+    /// Selected periods must be currently uncovered AND not already booked
+    /// by this same sub on a different overlapping request (same Gap-1
+    /// guard as ProcessAcceptAsync).
+    /// </summary>
+    Task<ManualAssignResult> ManualAssignSubAsync(
+        int supervisorEmployeeId, long subRequestId, int subEmployeeId,
+        IReadOnlyCollection<string> periodsToAssign, string supervisorEmail);
+}
+
+public class TakeOverResult
+{
+    public int CancelledOutreachRows { get; set; }
+    public int DispatchedToSubEmployeeId { get; set; }
+    public string DispatchOutcome { get; set; } = ""; // SENT / FAILED / NO_POOL
+    public List<int> AvailableSubEmployeeIds { get; set; } = new();
+}
+
+public class ManualAssignResult
+{
+    public long AssignmentId { get; set; }
+    public string PeriodsCovered { get; set; } = "";
+    public bool FullyCovered { get; set; }
+    public bool ConfirmationEmailSent { get; set; }
 }
 
 public class SubOutreachService : ISubOutreachService
@@ -358,6 +402,38 @@ public class SubOutreachService : ISubOutreachService
         if (needed.Count > 0 && accepted.Count == 0)
         {
             throw new InvalidOperationException("Select at least one period to accept.");
+        }
+
+        // Gap-1 fix (2026-04-27): server-side double-booking guard. The Sub
+        // Respond page now hides periods this sub already covers on other
+        // overlapping requests, but we belt-and-suspenders the server too —
+        // an old browser tab, a manipulated form post, or a race condition
+        // (sub accepts on Teacher A's link in one tab while still loaded on
+        // Teacher B's link in another) must not be able to write a conflict.
+        if (accepted.Count > 0)
+        {
+            var myExistingPeriods = await context.TcSubRequestAssignments
+                .AsNoTracking()
+                .Where(a => a.SubEmployeeId == outreach.SubEmployeeId
+                         && a.SubRequestId != request.SubRequestId
+                         && a.SubRequest.StartDate <= request.EndDate
+                         && a.SubRequest.EndDate >= request.StartDate
+                         && a.SubRequest.Status != SubRequestStatus.Cancelled
+                         && a.SubRequest.Status != SubRequestStatus.Denied)
+                .Select(a => a.PeriodsCovered)
+                .ToListAsync();
+
+            var blockedByMyOtherBookings = myExistingPeriods
+                .SelectMany(s => ParsePeriodSet(s))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var doubleBooked = accepted.Intersect(blockedByMyOtherBookings, StringComparer.OrdinalIgnoreCase).ToList();
+            if (doubleBooked.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"You're already covering {string.Join(", ", doubleBooked.OrderBy(p => p))} on another teacher's request today. " +
+                    "Reload the page to see your available periods.");
+            }
         }
 
         // Mark outreach accepted regardless — token is single-use (per design
@@ -630,6 +706,28 @@ public class SubOutreachService : ISubOutreachService
             .Include(o => o.SubRequest).ThenInclude(r => r!.Campus)
             .Include(o => o.SubEmployee).ThenInclude(e => e!.Staff)
             .FirstOrDefaultAsync(o => o.ResponseToken == token);
+    }
+
+    // ── Phase B (2026-04-27): Take-over + Manual Assign — STUBS ──────────
+    // Interface contracts are in place so callers can be wired up; full
+    // implementation lands in the next pass. Throwing NotImplementedException
+    // keeps any accidental call surfaced loudly rather than silently no-oping.
+
+    public Task<TakeOverResult> TakeOverRequestAsync(
+        int supervisorEmployeeId, long subRequestId, string supervisorEmail)
+    {
+        throw new NotImplementedException(
+            "TakeOverRequestAsync is being implemented in the next deploy. " +
+            "Do not call from production code paths yet.");
+    }
+
+    public Task<ManualAssignResult> ManualAssignSubAsync(
+        int supervisorEmployeeId, long subRequestId, int subEmployeeId,
+        IReadOnlyCollection<string> periodsToAssign, string supervisorEmail)
+    {
+        throw new NotImplementedException(
+            "ManualAssignSubAsync is being implemented in the next deploy. " +
+            "Do not call from production code paths yet.");
     }
 
     /// <summary>

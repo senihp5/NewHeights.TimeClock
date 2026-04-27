@@ -409,7 +409,6 @@
 
             foreach (var req in requests)
             {
-                var sessionTypes = ExpandSessions(req.SessionType);
                 var periodNums = ParsePeriodsNeeded(req.PeriodsNeeded);
                 if (periodNums.Count == 0) continue;
 
@@ -419,20 +418,25 @@
                     var workDate = weekMonday.AddDays(dayIdx);
                     if (workDate < req.StartDate || workDate > req.EndDate) continue;
 
-                    foreach (var session in sessionTypes)
+                    // Route each period to its correct grid by PERIOD NUMBER,
+                    // not by the request's SessionType field. A request with
+                    // SessionType="DAY" + PeriodsNeeded="P1..P6" used to show
+                    // only P1-P4 (because the DAY grid renders rows 1-4 only)
+                    // and silently lost P5/P6. Routing by period number keeps
+                    // P5/P6 visible in the NIGHT grid regardless of how the
+                    // teacher tagged the session on submit.
+                    foreach (var pn in periodNums)
                     {
-                        var bucket = session == "NIGHT" ? nightAssignments : dayAssignments;
-                        foreach (var pn in periodNums)
+                        var bucket = pn >= 5 ? nightAssignments : dayAssignments;
+                        var session = pn >= 5 ? "NIGHT" : "DAY";
+                        var cell = BuildCellAssignment(req, workDate, session, pn);
+                        var key = (dayIdx, pn);
+                        if (!bucket.TryGetValue(key, out var list))
                         {
-                            var cell = BuildCellAssignment(req, workDate, session, pn);
-                            var key = (dayIdx, pn);
-                            if (!bucket.TryGetValue(key, out var list))
-                            {
-                                list = new List<CellAssignment>();
-                                bucket[key] = list;
-                            }
-                            list.Add(cell);
+                            list = new List<CellAssignment>();
+                            bucket[key] = list;
                         }
+                        list.Add(cell);
                     }
                 }
             }
