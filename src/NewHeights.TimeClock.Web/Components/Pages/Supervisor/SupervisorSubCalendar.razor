@@ -97,7 +97,19 @@
     </div>
 
     <div class="week-nav">
-        <button type="button" class="btn-nav" @onclick="PreviousWeek" disabled="@isLoading">← Previous Week</button>
+        <div class="info-item">
+            <label for="week-picker" class="info-label">Week:</label>
+            <select id="week-picker"
+                    value="@weekOffset"
+                    @onchange="OnWeekChangedAsync"
+                    disabled="@isLoading"
+                    style="min-width:18rem">
+                @foreach (var w in availableWeeks)
+                {
+                    <option value="@w.Offset">@w.Label@(w.IsCurrent ? " · Current" : "")</option>
+                }
+            </select>
+        </div>
         <div class="current-week">
             <strong>Week of @weekMonday.ToString("MMMM d") – @weekMonday.AddDays(4).ToString("MMMM d, yyyy")</strong>
             @if (weekOffset == 0)
@@ -108,9 +120,8 @@
         <div style="display:flex;gap:0.5rem;align-items:center">
             @if (weekOffset != 0)
             {
-                <button type="button" class="btn-today" @onclick="JumpToToday">Today</button>
+                <button type="button" class="btn-today" @onclick="JumpToToday" disabled="@isLoading">Today</button>
             }
-            <button type="button" class="btn-nav" @onclick="NextWeek" disabled="@isLoading">Next Week →</button>
         </div>
     </div>
 
@@ -203,6 +214,15 @@
     private static readonly int[] AllPeriods = new[] { 1, 2, 3, 4, 5, 6 };
     private static readonly string[] DayLabels = new[] { "Mon", "Tue", "Wed", "Thu", "Fri" };
 
+    // Week dropdown options. Built once on init relative to today: 8 weeks
+    // back, 4 weeks forward. Replaces the prev/next buttons (the buttons had
+    // a stale-state bug where weekOffset was decremented before NavigateTo,
+    // so OnParametersSetAsync's `incoming != weekOffset` check short-circuited
+    // and the data never reloaded — same fix pattern as MyTimesheet et al.).
+    private List<WeekOption> availableWeeks = new();
+
+    private record WeekOption(int Offset, string Label, bool IsCurrent);
+
     protected override async Task OnInitializedAsync()
     {
         weekOffset = WeekOffset ?? 0;
@@ -221,8 +241,42 @@
             scopedCampusDisplay = userCtx.CampusDisplayName;
         }
 
+        BuildWeekOptions();
         RecomputeWeekMonday();
         await LoadDataAsync();
+    }
+
+    // Build the week-picker options once. Range: 8 weeks back through 4
+    // weeks forward — covers a typical 2-month look-back/forward without
+    // bloating the dropdown. Anchored on today's Monday so options stay
+    // stable across renders.
+    private void BuildWeekOptions()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var todayMonday = today.AddDays(-(int)(today.DayOfWeek == DayOfWeek.Sunday ? 6 : (int)today.DayOfWeek - 1));
+
+        availableWeeks.Clear();
+        for (int off = -8; off <= 4; off++)
+        {
+            var monday = todayMonday.AddDays(off * 7);
+            var friday = monday.AddDays(4);
+            var label = $"{monday:MMM d} – {friday:MMM d, yyyy}";
+            availableWeeks.Add(new WeekOption(off, label, off == 0));
+        }
+    }
+
+    private async Task OnWeekChangedAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var offset)) return;
+        weekOffset = offset;
+        RecomputeWeekMonday();
+        await LoadDataAsync();
+
+        // Keep the URL in sync so the page is deep-linkable / back-button
+        // friendly. forceLoad=false stays inside the SignalR circuit; the
+        // OnParametersSetAsync check short-circuits the duplicate reload.
+        var url = offset == 0 ? "/supervisor/sub-calendar" : $"/supervisor/sub-calendar/{offset}";
+        Navigation.NavigateTo(url, forceLoad: false);
     }
 
     protected override async Task OnParametersSetAsync()
@@ -268,6 +322,13 @@
                 .AsNoTracking()
                 .Include(r => r.RequestingEmployee).ThenInclude(e => e.Staff)
                 .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
+                // Phase A (migration 048): partial-accept assignments live in
+                // TcSubRequestAssignments (one row per accepting sub, with
+                // PeriodsCovered marking which periods that sub took). Pull
+                // them so BuildCellAssignment can look up the correct sub
+                // name for each (period × day) cell instead of falling back
+                // to the first-accept stamp on every cell.
+                .Include(r => r.Assignments).ThenInclude(a => a.SubEmployee).ThenInclude(e => e!.Staff)
                 .Where(r => r.Status != SubRequestStatus.Denied
                          && r.Status != SubRequestStatus.Cancelled
                          && r.StartDate <= weekFriday
@@ -322,25 +383,90 @@
 
     private CellAssignment BuildCellAssignment(TcSubRequest req, DateOnly workDate, string session, int periodNumber)
     {
-        var subName = req.AssignedSubEmployee?.Staff?.FullName
-                   ?? req.AssignedSubEmployee?.Email
-                   ?? "(unassigned)";
         var teacherName = req.RequestingEmployee?.Staff?.FullName
                        ?? req.RequestingEmployee?.Email;
 
-        string cellClass = req.Status switch
-        {
-            SubRequestStatus.SubConfirmed => "confirmed",
-            SubRequestStatus.SubAssigned  => "awaiting",
-            SubRequestStatus.AbsenceApproved => "needs-sub",
-            _ => "needs-sub"
-        };
+        // Phase A (migration 048): with partial-accept, multiple subs may
+        // cover different periods on the same request. Find which Assignment
+        // row covers THIS specific period number — its sub is who's actually
+        // teaching this slot.
+        //
+        // PeriodsCovered is canonicalized as "P1,P2,P3" (upper, sorted, comma-
+        // joined) per FormatPeriodSet in SubOutreachService.
+        var periodToken = "P" + periodNumber.ToString();
+        var perPeriodAssignment = req.Assignments?
+            .FirstOrDefault(a => !string.IsNullOrEmpty(a.PeriodsCovered)
+                && a.PeriodsCovered
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(s => s.Trim().ToUpperInvariant())
+                    .Contains(periodToken));
 
-        // If AbsenceApproved but an Outreach row once declined, treat as "declined — re-assign".
-        // We don't have outreach joined in the query; for a zero-touch MVP, just show
-        // AbsenceApproved as needs-sub. Declined state comes through only if the row stayed
-        // in AbsenceApproved AND we later enrich the query with a .Any(o => o.ResponseStatus == "DECLINED") join.
-        // Reserved: add "declined" CSS class when we wire that enrichment in Phase 7c.2+.
+        string? perPeriodSubName = perPeriodAssignment?.SubEmployee?.Staff?.FullName
+                                ?? perPeriodAssignment?.SubEmployee?.Email;
+
+        // Legacy whole-request assignment (no per-period rows). Used as
+        // fallback for older requests that never went through partial accept.
+        string fallbackSubName = req.AssignedSubEmployee?.Staff?.FullName
+                              ?? req.AssignedSubEmployee?.Email
+                              ?? "(unassigned)";
+
+        bool periodCovered = perPeriodAssignment != null;
+
+        // Status → CSS class. Phase 9a + Phase A semantics:
+        //   AbsenceApproved   = supervisor approved AFTER sub was confirmed —
+        //                       fully done. Render green/confirmed.
+        //   SubConfirmed      = all periods covered, awaiting supervisor sign-off.
+        //                       Render green/confirmed.
+        //   PartiallyAssigned = some periods covered, others still need a sub.
+        //                       This particular cell is green or orange depending
+        //                       on whether THIS period was claimed.
+        //   SubAssigned       = legacy state — sub assigned, awaiting their
+        //                       response. Amber.
+        //   AwaitingSub / Submitted / anything else = orange/needs-sub.
+        string cellClass;
+        if (periodCovered &&
+            (req.Status == SubRequestStatus.SubConfirmed
+             || req.Status == SubRequestStatus.AbsenceApproved
+             || req.Status == SubRequestStatus.PartiallyAssigned))
+        {
+            cellClass = "confirmed";
+        }
+        else if (!periodCovered &&
+                 (req.Status == SubRequestStatus.SubConfirmed
+                  || req.Status == SubRequestStatus.AbsenceApproved)
+                 && req.AssignedSubEmployeeId.HasValue)
+        {
+            // Legacy whole-request: no Assignment rows, but the request is
+            // confirmed/approved overall. Show fallback name in green so the
+            // calendar doesn't regress for older non-partial requests.
+            cellClass = "confirmed";
+        }
+        else if (req.Status == SubRequestStatus.SubAssigned && req.AssignedSubEmployeeId.HasValue)
+        {
+            cellClass = "awaiting";
+        }
+        else
+        {
+            cellClass = "needs-sub";
+        }
+
+        // Display name: per-period sub when this period is covered; legacy
+        // fallback for whole-request confirmed/approved; "Needs sub" otherwise.
+        string displayName;
+        if (periodCovered)
+        {
+            displayName = perPeriodSubName ?? fallbackSubName;
+        }
+        else if ((req.Status == SubRequestStatus.SubConfirmed
+                  || req.Status == SubRequestStatus.AbsenceApproved)
+                 && req.AssignedSubEmployeeId.HasValue)
+        {
+            displayName = fallbackSubName;
+        }
+        else
+        {
+            displayName = "Needs sub";
+        }
 
         return new CellAssignment
         {
@@ -350,7 +476,7 @@
             SessionType = session,
             Status = req.Status,
             CssClass = cellClass,
-            SubName = req.AssignedSubEmployeeId.HasValue ? subName : "Needs sub",
+            SubName = displayName,
             TeacherName = teacherName,
             SubjectArea = req.SubjectArea,
             SpecialInstructions = req.SpecialInstructions,
@@ -429,12 +555,18 @@
         return -1;
     }
 
+    // Sort priority when multiple requests share a (period × day) cell —
+    // higher-confidence states (confirmed / approved) come first so the
+    // single rendered row is the most actionable. Phase 9a + Phase A:
+    // AbsenceApproved is now the FINAL approved state (was legacy "needs
+    // a sub"), so it shares priority 0 with SubConfirmed.
     private static int CellOrdinal(SubRequestStatus status) => status switch
     {
-        SubRequestStatus.SubConfirmed => 0,
-        SubRequestStatus.SubAssigned  => 1,
-        SubRequestStatus.AbsenceApproved => 2,
-        _ => 3
+        SubRequestStatus.SubConfirmed      => 0,
+        SubRequestStatus.AbsenceApproved   => 0,
+        SubRequestStatus.PartiallyAssigned => 1,
+        SubRequestStatus.SubAssigned       => 2,
+        _                                   => 3
     };
 
     private void SelectCell(CellAssignment cell)
@@ -483,34 +615,30 @@
 
     private static string FormatStatus(SubRequestStatus s) => s switch
     {
-        SubRequestStatus.Submitted => "Submitted",
-        SubRequestStatus.AbsenceApproved => "Absence Approved — needs sub",
-        SubRequestStatus.SubAssigned => "Sub Assigned — awaiting response",
-        SubRequestStatus.SubConfirmed => "Sub Confirmed",
-        SubRequestStatus.Denied => "Denied",
-        SubRequestStatus.Cancelled => "Cancelled",
-        _ => s.ToString()
+        SubRequestStatus.Submitted          => "Submitted",
+        SubRequestStatus.AwaitingSub        => "Awaiting Sub",
+        // Phase 9a: AbsenceApproved is now the final supervisor-approved state
+        // (sub is already confirmed by the time it gets here in the new flow).
+        SubRequestStatus.AbsenceApproved    => "Approved",
+        SubRequestStatus.SubAssigned        => "Sub Assigned — awaiting response",
+        SubRequestStatus.SubConfirmed       => "Sub Confirmed",
+        SubRequestStatus.PartiallyAssigned  => "Partially Assigned",
+        SubRequestStatus.Denied             => "Denied",
+        SubRequestStatus.Cancelled          => "Cancelled",
+        _                                    => s.ToString()
     };
 
-    private void PreviousWeek()
-    {
-        weekOffset--;
-        Navigation.NavigateTo($"/supervisor/sub-calendar/{weekOffset}");
-    }
-
-    private void NextWeek()
-    {
-        weekOffset++;
-        if (weekOffset == 0)
-            Navigation.NavigateTo("/supervisor/sub-calendar");
-        else
-            Navigation.NavigateTo($"/supervisor/sub-calendar/{weekOffset}");
-    }
-
-    private void JumpToToday()
+    // PreviousWeek / NextWeek removed 2026-04-27 — the dropdown
+    // (OnWeekChangedAsync) is the single entry point for week nav. Old
+    // buttons had a stale-state bug where the local weekOffset was
+    // decremented before NavigateTo, which made OnParametersSetAsync's
+    // change-detection short-circuit and skip the data reload.
+    private async Task JumpToToday()
     {
         weekOffset = 0;
-        Navigation.NavigateTo("/supervisor/sub-calendar");
+        RecomputeWeekMonday();
+        await LoadDataAsync();
+        Navigation.NavigateTo("/supervisor/sub-calendar", forceLoad: false);
     }
 
     private class CellAssignment
