@@ -259,6 +259,16 @@ builder.Services.Configure<TimesheetReminderOptions>(
     builder.Configuration.GetSection("TimesheetReminder"));
 builder.Services.AddHostedService<TimesheetReminderService>();
 
+// Phase C (2026-04-27): day-of sub-request resolution sweep. Once per day
+// at RunHour (default 6 AM local) every TcSubRequest whose StartDate is
+// today and hasn't been finalized is auto-approved (sub confirmed all
+// periods), auto-cancelled (no acceptances), or notified to the supervisor
+// as a partial-coverage take-over candidate. Toggle via appsettings
+// "SubRequestDailyResolution:Enabled".
+builder.Services.Configure<SubRequestDailyResolutionOptions>(
+    builder.Configuration.GetSection("SubRequestDailyResolution"));
+builder.Services.AddHostedService<SubRequestDailyResolutionService>();
+
 // Phase A (migration 048): partial-accept stall alerts. Hourly tick, nudges
 // the requesting employee's supervisor once when a PartiallyAssigned request
 // hasn't seen progress in ThresholdHours (default 24h). Dedup via

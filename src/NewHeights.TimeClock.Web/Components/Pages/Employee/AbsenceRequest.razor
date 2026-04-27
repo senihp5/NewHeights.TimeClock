@@ -13,6 +13,7 @@
 @rendermode InteractiveServer
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IAuditService Audit
+@inject IEmailService EmailService
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
 @inject ILogger<AbsenceRequest> Logger
@@ -793,6 +794,105 @@
                 campusId: targetCampusId);
 
             submittedRequestId = request.SubRequestId;
+
+            // Task 13 (2026-04-27): submit-time confirmation email to the
+            // requesting teacher. Surfaces same-day overlaps with other
+            // teachers so they're aware even if they missed the in-form
+            // banner. Also tells them what happens next (cascade outreach
+            // / day-of resolution sweep). Wrapped in try/catch so an SMTP
+            // hiccup doesn't roll back the saved request.
+            try
+            {
+                var targetEmployee = await context.TcEmployees
+                    .AsNoTracking()
+                    .Include(e => e.Staff)
+                    .FirstOrDefaultAsync(e => e.EmployeeId == targetEmployeeId);
+
+                var teacherEmail = targetEmployee?.Email;
+                if (!string.IsNullOrWhiteSpace(teacherEmail))
+                {
+                    var teacherFirst = targetEmployee?.Staff?.FirstName
+                                    ?? targetEmployee?.DisplayName?.Split(' ').FirstOrDefault()
+                                    ?? "there";
+                    var dateLine = request.StartDate == request.EndDate
+                        ? request.StartDate.ToString("dddd, MMM d, yyyy")
+                        : $"{request.StartDate:ddd MMM d} – {request.EndDate:ddd MMM d, yyyy}";
+                    var campusName = await context.Campuses
+                        .Where(c => c.CampusId == targetCampusId)
+                        .Select(c => c.CampusName)
+                        .FirstOrDefaultAsync() ?? "New Heights";
+
+                    var overlapsHtml = "";
+                    if (otherAbsences.Count > 0)
+                    {
+                        var lis = otherAbsences
+                            .OrderBy(a => a.StartDate)
+                            .Select(a =>
+                            {
+                                var dates = a.StartDate == a.EndDate
+                                    ? a.StartDate.ToString("MMM d")
+                                    : $"{a.StartDate:MMM d}–{a.EndDate:MMM d}";
+                                return $"<li><strong>{System.Net.WebUtility.HtmlEncode(a.TeacherName)}</strong> ({System.Net.WebUtility.HtmlEncode(a.CampusCode)}) — {System.Net.WebUtility.HtmlEncode(dates)}</li>";
+                            });
+                        overlapsHtml =
+                            "<div style='margin:1rem 0;padding:.7rem 1rem;background:#fffbeb;border-left:4px solid #f5b81c;border-radius:6px;'>" +
+                            $"<strong>{otherAbsences.Count} other teacher{(otherAbsences.Count == 1 ? "" : "s")} also absent during this date range:</strong>" +
+                            $"<ul style='margin:.4rem 0 0;padding-left:1.1rem;'>{string.Concat(lis)}</ul>" +
+                            "<p style='font-size:.82rem;color:#78350f;margin:.5rem 0 0;'>This is informational — your request is independent. The system filters substitutes by who's already booked, so any conflicts will be handled automatically.</p>" +
+                            "</div>";
+                    }
+
+                    // Razor's tokenizer trips on quoted string literals inside
+                    // an interpolation expression of a verbatim string (e.g.
+                    // `{HtmlEncode(x ?? "—")}`), so we resolve those values
+                    // up-front into locals and only reference simple names
+                    // inside the $@"..." block below.
+                    var dashHtml      = "—";
+                    var teacherHtml   = System.Net.WebUtility.HtmlEncode(teacherFirst);
+                    var dateLineHtml  = System.Net.WebUtility.HtmlEncode(dateLine);
+                    var campusHtml    = System.Net.WebUtility.HtmlEncode(campusName);
+                    var periodsHtml   = System.Net.WebUtility.HtmlEncode(request.PeriodsNeeded ?? dashHtml);
+                    var sessionHtml   = System.Net.WebUtility.HtmlEncode(request.SessionType ?? "DAY");
+                    var subjectHtml   = System.Net.WebUtility.HtmlEncode(request.SubjectArea ?? dashHtml);
+
+                    var html = $@"
+<div style='font-family: Segoe UI, Arial, sans-serif; max-width: 600px; color: #1f2937;'>
+  <h2 style='color: #2D2D6D;'>Sub Request Submitted</h2>
+  <p>Hi {teacherHtml},</p>
+  <p>Your sub request for <strong>{dateLineHtml}</strong> at <strong>{campusHtml}</strong> has been submitted.</p>
+  <table style='border-collapse: collapse; margin: .9rem 0; font-size:.92rem;'>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Request #:</td><td>{request.SubRequestId}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{periodsHtml}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Session:</td><td>{sessionHtml}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Subject:</td><td>{subjectHtml}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Status:</td><td>Awaiting Sub</td></tr>
+  </table>
+  {overlapsHtml}
+  <p><strong>What happens next:</strong></p>
+  <ol style='font-size:.9rem;line-height:1.5;'>
+    <li>Our system will reach out to substitutes one at a time until coverage is found.</li>
+    <li>You'll receive an email each time a sub accepts a portion of your request.</li>
+    <li>If everything is covered the night before, your supervisor will give final approval.</li>
+    <li>If anything's still uncovered the morning of, your supervisor will be alerted to take action.</li>
+  </ol>
+  <p style='margin-top:1rem;'>
+    <a href='https://clock.newheightsed.com/employee/my-sub-requests' style='display:inline-block;background:#2D2D6D;color:#fff;padding:.5rem 1rem;border-radius:6px;text-decoration:none;font-weight:600;'>View My Sub Requests</a>
+  </p>
+  <p style='color:#6b7280;font-size:.8rem;margin-top:1.25rem;'>This is an automated confirmation from the New Heights Staff Portal.</p>
+</div>";
+
+                    await EmailService.SendEmailAsync(
+                        teacherEmail!,
+                        $"Sub request submitted — {dateLine}",
+                        html);
+                }
+            }
+            catch (Exception emailEx)
+            {
+                Logger.LogWarning(emailEx,
+                    "Submit-time confirmation email failed for request {Id}; request still committed.",
+                    request.SubRequestId);
+            }
 
             // Phase A ext: rehydrate the request with navigations SubOutreachPanel
             // needs (Campus + RequestingEmployee.Staff) so the inline outreach
