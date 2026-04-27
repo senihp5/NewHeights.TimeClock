@@ -93,16 +93,79 @@
                                     <option value="0">(no matches)</option>
                                 </select>
                             }
+                            else if (selectedMasterScheduleId == -1)
+                            {
+                                <div class="teacher-selected-pill">
+                                    <strong>N/A — Testing / general supervision</strong>
+                                    <button type="button" class="btn-pill-clear"
+                                            @onclick="ClearTeacherSelection"
+                                            disabled="@isSaving"
+                                            aria-label="Clear teacher selection">×</button>
+                                </div>
+                                <small class="help-hint">
+                                    Use the notes field below to describe the assignment.
+                                </small>
+                            }
+                            else if (selectedSlot != null)
+                            {
+                                <div class="teacher-selected-pill">
+                                    <strong>@selectedSlot.TeacherName</strong>
+                                    @if (!string.IsNullOrWhiteSpace(selectedSlot.ContentArea))
+                                    {
+                                        <span class="pill-meta">@selectedSlot.ContentArea</span>
+                                    }
+                                    <button type="button" class="btn-pill-clear"
+                                            @onclick="ClearTeacherSelection"
+                                            disabled="@isSaving"
+                                            aria-label="Clear teacher selection">×</button>
+                                </div>
+                            }
                             else
                             {
-                                <select id="teacher-select" @bind="selectedMasterScheduleId" disabled="@isSaving">
-                                    <option value="0">— Select a teacher —</option>
-                                    <option value="-1">— N/A (Testing / No specific teacher) —</option>
-                                    @foreach (var slot in masterSlots)
+                                var filtered = GetFilteredSlots();
+
+                                @* Searchable teacher list — replaces the legacy 40-option <select>.
+                                   On iOS the native select renders a wheel picker for long lists;
+                                   typed filtering scales better. Filter matches teacher name and
+                                   content area (case-insensitive substring). *@
+                                <input type="search" id="teacher-search"
+                                       class="teacher-search-input"
+                                       placeholder="Type teacher name to filter…"
+                                       @bind="teacherFilter"
+                                       @bind:event="oninput"
+                                       disabled="@isSaving"
+                                       autocomplete="off" />
+
+                                <div class="teacher-list" role="listbox" aria-label="Teachers scheduled for this period">
+                                    <button type="button" class="teacher-list-item teacher-list-item--special"
+                                            @onclick="() => SelectTeacher(-1)"
+                                            disabled="@isSaving"
+                                            role="option">
+                                        — N/A (Testing / No specific teacher) —
+                                    </button>
+                                    @foreach (var slot in filtered)
                                     {
-                                        <option value="@slot.MasterScheduleId">@FormatSlotOption(slot)</option>
+                                        <button type="button" class="teacher-list-item"
+                                                @onclick="() => SelectTeacher(slot.MasterScheduleId)"
+                                                disabled="@isSaving"
+                                                role="option">
+                                            <span class="teacher-list-name">@slot.TeacherName</span>
+                                            @{
+                                                var parts = new List<string>();
+                                                if (!string.IsNullOrWhiteSpace(slot.ContentArea)) parts.Add(slot.ContentArea!);
+                                                if (!string.IsNullOrWhiteSpace(slot.Room)) parts.Add($"Rm {slot.Room}");
+                                            }
+                                            @if (parts.Count > 0)
+                                            {
+                                                <span class="teacher-list-meta">@string.Join(" · ", parts)</span>
+                                            }
+                                        </button>
                                     }
-                                </select>
+                                    @if (filtered.Count == 0 && !string.IsNullOrWhiteSpace(teacherFilter))
+                                    {
+                                        <div class="teacher-list-empty">No teachers match "@teacherFilter"</div>
+                                    }
+                                </div>
                                 <small class="help-hint">
                                     Pick <em>N/A</em> when you were covering testing (STAAR, MAP) or general
                                     supervision that wasn't tied to a specific teacher's class. Use the notes
@@ -168,6 +231,7 @@
     private int selectedBellPeriodId = 0;
     private int selectedMasterScheduleId = 0;
     private string notes = "";
+    private string teacherFilter = "";
 
     private List<TcBellPeriod> bellPeriods = new();
     private List<MasterScheduleSlot> masterSlots = new();
@@ -204,6 +268,7 @@
         selectedBellPeriodId = 0;
         selectedMasterScheduleId = 0;
         notes = "";
+        teacherFilter = "";
         bellPeriods = new();
         masterSlots = new();
         errorMessage = "";
@@ -265,6 +330,7 @@
     {
         masterSlots = new();
         selectedMasterScheduleId = 0;
+        teacherFilter = "";
         errorMessage = "";
 
         if (selectedBellPeriodId <= 0) return;
@@ -290,6 +356,29 @@
         {
             isLoadingTeachers = false;
         }
+    }
+
+    private List<MasterScheduleSlot> GetFilteredSlots()
+    {
+        if (string.IsNullOrWhiteSpace(teacherFilter))
+            return masterSlots;
+        var filter = teacherFilter.Trim();
+        return masterSlots
+            .Where(s => s.TeacherName.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                     || (s.ContentArea?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false))
+            .ToList();
+    }
+
+    private void SelectTeacher(int masterScheduleId)
+    {
+        selectedMasterScheduleId = masterScheduleId;
+        teacherFilter = "";
+    }
+
+    private void ClearTeacherSelection()
+    {
+        selectedMasterScheduleId = 0;
+        teacherFilter = "";
     }
 
     private bool IsPeriodAlreadyLogged(int periodNumber)
