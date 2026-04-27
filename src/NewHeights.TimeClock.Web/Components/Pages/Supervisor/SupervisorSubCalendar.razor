@@ -54,18 +54,24 @@
     #sub-cal-root .cell-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #sub-cal-root .cell-note { font-size: 0.7rem; color: inherit; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Stacked cell layout — used when 2+ teachers/subs share a (period × day)
-       slot. Each line is "Sub · Teacher" in compact text and is independently
-       clickable so a supervisor can drill into any specific entry, not just
-       the highest-priority one. cell-line is a real button element so we
-       strip the browser-default chrome and re-style it to look like a row. */
-    #sub-cal-root .cell.cell-multi { gap: 0.05rem; padding: 0.2rem 0.35rem; }
+       slot. Each line is independently clickable AND independently colored
+       by its own status, so a yellow "Needs approval" line and an orange
+       "Awaiting Sub" line can sit next to each other and the supervisor
+       can tell at a glance which ones still need attention. */
+    #sub-cal-root .cell.cell-multi {
+        gap: 0.15rem;
+        padding: 0.2rem 0.35rem;
+        background: #fff;       /* neutral container */
+        border-left: 0;          /* per-line borders carry the status color */
+    }
     #sub-cal-root .cell-line {
         display: block;
         width: 100%;
         text-align: left;
         background: transparent;
-        border: none;
-        padding: 0.05rem 0.2rem;
+        border: 1px solid transparent;
+        border-left-width: 3px;
+        padding: 0.15rem 0.35rem;
         margin: 0;
         font: inherit;
         color: inherit;
@@ -75,10 +81,17 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        border-radius: 2px;
+        border-radius: 3px;
     }
-    #sub-cal-root .cell-line:hover { background: rgba(0,0,0,0.08); }
-    #sub-cal-root .cell-line.line-selected { background: rgba(37, 99, 235, 0.15); outline: 1px solid #2563eb; outline-offset: -1px; }
+    /* Per-line status colors mirror the cell colors for consistency with
+       the legend. Only used when cell-multi mode is active (single-request
+       cells still color at the cell level via .cell.confirmed etc.). */
+    #sub-cal-root .cell-line.confirmed { background: #d1fae5; color: #065f46; border-left-color: #10b981; }
+    #sub-cal-root .cell-line.awaiting  { background: #fef3c7; color: #92400e; border-left-color: #f59e0b; }
+    #sub-cal-root .cell-line.needs-sub { background: #fed7aa; color: #9a3412; border-left-color: #ea580c; }
+    #sub-cal-root .cell-line.declined  { background: #fee2e2; color: #991b1b; border-left-color: #ef4444; }
+    #sub-cal-root .cell-line:hover { filter: brightness(0.95); }
+    #sub-cal-root .cell-line.line-selected { outline: 2px solid #2563eb; outline-offset: -1px; }
     #sub-cal-root .cell-sub { font-weight: 600; }
     #sub-cal-root .cell-sep { margin: 0 0.2rem; opacity: 0.55; }
     #sub-cal-root .cell-teacher { opacity: 0.85; font-weight: 500; }
@@ -346,8 +359,24 @@
         try
         {
             using var context = await DbFactory.CreateDbContextAsync();
-            campusNameById = await context.Campuses
+
+            // Campus dropdown options. Two scoping rules:
+            //   1. Drop the synthetic "District" row — sub assignments are
+            //      always per-campus, so District in the picker is misleading.
+            //   2. Non-admin supervisors only see their own campus (the
+            //      template above already renders a label-only span for the
+            //      non-admin path, but we still scope the dictionary so any
+            //      future markup change can't accidentally widen visibility).
+            var campusQuery = context.Campuses
                 .AsNoTracking()
+                .Where(c => c.CampusCode != "DISTRICT" && c.CampusName != "District");
+
+            if (!isAdmin && scopedCampusId.HasValue)
+            {
+                campusQuery = campusQuery.Where(c => c.CampusId == scopedCampusId.Value);
+            }
+
+            campusNameById = await campusQuery
                 .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
 
             int? filterCampusId = isAdmin
@@ -595,20 +624,15 @@
                                 {
                                     @* Multiple teachers need a sub for the same
                                        period × day. Each line is INDEPENDENTLY
-                                       clickable — clicking a specific row drills
-                                       that request into the detail panel below,
-                                       while clicking blank space inside the cell
-                                       falls back to the highest-priority entry
-                                       (preserves the previous behavior). Cell
-                                       color reflects the WORST status in the
-                                       stack so unfilled slots aren't masked by
-                                       other teachers' confirmed coverage. *@
+                                       clickable AND independently colored — one
+                                       line can show yellow (Needs approval) while
+                                       another shows orange (Awaiting Sub) so the
+                                       supervisor can tell at a glance which
+                                       request still needs attention. Cell parent
+                                       is neutral (no overall status color); the
+                                       per-line tint is the real signal. *@
                                     var ordered = list.OrderBy(c => CellOrdinal(c.Status)).ToList();
-                                    var worstCss = list.Any(c => c.CssClass == "needs-sub") ? "needs-sub"
-                                                 : list.Any(c => c.CssClass == "declined")  ? "declined"
-                                                 : list.Any(c => c.CssClass == "awaiting")  ? "awaiting"
-                                                 : "confirmed";
-                                    <div class="cell cell-multi @worstCss"
+                                    <div class="cell cell-multi"
                                          @onclick="() => SelectCell(top)">
                                         @foreach (var entry in ordered)
                                         {
@@ -619,7 +643,7 @@
                                                             && selectedCell.PeriodNumber == entryRef.PeriodNumber
                                                             && selectedCell.WorkDate == entryRef.WorkDate;
                                             <button type="button"
-                                                    class="cell-line @(lineSelected ? "line-selected" : "")"
+                                                    class="cell-line @entryRef.CssClass @(lineSelected ? "line-selected" : "")"
                                                     @onclick="() => SelectCell(entryRef)"
                                                     @onclick:stopPropagation="true"
                                                     title="@($"{entryRef.SubName} covering {entryRef.TeacherName ?? "—"}")">
