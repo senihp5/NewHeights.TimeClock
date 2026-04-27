@@ -143,6 +143,182 @@
     #sub-cal-root .btn-confirm-assign:disabled { opacity: 0.55; cursor: not-allowed; }
     #sub-cal-root .btn-secondary { background: #fff; color: #374151; border: 1px solid #d1d5db; padding: 0.5rem 1.1rem; border-radius: 5px; cursor: pointer; }
     #sub-cal-root .btn-secondary:hover:not(:disabled) { background: #f3f4f6; }
+
+    /* ========================================================================
+       Phase 6 mobile (2026-04-27)
+       ------------------------------------------------------------------------
+       Sub Calendar weekly grid does not collapse to 360 px usefully. We keep
+       the .schedule-grid table structure (period × day) but enable horizontal
+       scroll with the Period column sticky-left so supervisors can scroll
+       Mon→Fri while keeping the row label visible. Cells stay independently
+       clickable and per-line colored as on desktop.
+
+       Filter / week dropdowns + Take-Over modal collapse to full-width
+       single-column layouts at most 768 px wide so tap targets clear 44 px.
+       Note: this is inside a Razor .razor file, so the at-sign in CSS rules
+       like @@media must be doubled. Razor unescapes the doubled at-sign back
+       to a single one when serializing the style block to HTML.
+       ======================================================================== */
+
+    @@media (max-width: 768px) {
+
+        #sub-cal-root {
+            padding: 0.85rem;
+        }
+
+        #sub-cal-root h1 {
+            font-size: 1.2rem !important;
+        }
+
+        #sub-cal-root .page-sub {
+            font-size: 0.85rem;
+            margin-bottom: 0.65rem !important;
+        }
+
+        #sub-cal-root .filter-bar,
+        #sub-cal-root .week-nav {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.55rem;
+            padding: 0.75rem;
+        }
+
+        #sub-cal-root .info-item {
+            flex-wrap: wrap;
+            width: 100%;
+        }
+
+        #sub-cal-root select {
+            width: 100%;
+            min-width: 0 !important;
+            min-height: 44px;
+            font-size: 16px;
+        }
+
+        #sub-cal-root .current-week {
+            font-size: 0.95rem;
+        }
+
+        #sub-cal-root .btn-today {
+            min-height: 44px;
+            padding: 0.55rem 1rem;
+            width: 100%;
+        }
+
+        /* Schedule grid: enable horizontal scroll with Period column pinned.
+           session-block extends to viewport edges so the scroll runway feels
+           full-width even though page padding is 0.85rem. */
+        #sub-cal-root .session-block {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin-left: -0.85rem;
+            margin-right: -0.85rem;
+            padding: 0 0.85rem;
+        }
+
+        #sub-cal-root .session-title {
+            font-size: 0.85rem;
+            margin: 0 0 0.4rem 0;
+        }
+
+        #sub-cal-root .schedule-grid {
+            min-width: 540px;
+        }
+
+        #sub-cal-root .schedule-grid thead th.period-col {
+            position: sticky;
+            left: 0;
+            z-index: 2;
+            background: #f3f4f6;
+            box-shadow: 2px 0 4px rgba(0, 0, 0, 0.06);
+        }
+
+        #sub-cal-root .schedule-grid td.period-label {
+            position: sticky;
+            left: 0;
+            z-index: 1;
+            background: #f9fafb;
+            box-shadow: 2px 0 4px rgba(0, 0, 0, 0.06);
+        }
+
+        /* Detail panel — stack label/value vertically. */
+        #sub-cal-root .detail-panel {
+            padding: 0.75rem;
+        }
+
+        #sub-cal-root .detail-row {
+            grid-template-columns: 1fr;
+            gap: 0;
+            margin-bottom: 0.5rem;
+        }
+
+        #sub-cal-root .detail-label {
+            font-size: 0.78rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+        }
+
+        /* Take-over action row on detail panel — stack vertically. */
+        #sub-cal-root .takeover-actions {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        #sub-cal-root .btn-takeover {
+            min-height: 44px;
+            width: 100%;
+            text-align: center;
+        }
+
+        /* Take-over modal becomes a full-screen sheet on mobile. */
+        #sub-cal-root .takeover-modal-overlay {
+            align-items: stretch;
+        }
+
+        #sub-cal-root .takeover-modal {
+            width: 100%;
+            max-width: 100%;
+            height: 100vh;
+            max-height: 100vh;
+            border-radius: 0;
+        }
+
+        #sub-cal-root .takeover-header {
+            padding: 0.85rem 1rem;
+        }
+
+        #sub-cal-root .takeover-body {
+            padding: 0.85rem 1rem 1rem;
+        }
+
+        #sub-cal-root .takeover-body select {
+            min-height: 44px;
+        }
+
+        /* Period checkboxes (Take-Over modal): keep flex-wrap, larger tap. */
+        #sub-cal-root .period-checkbox-item {
+            min-height: 44px;
+            padding: 0.5rem 0.9rem;
+            font-size: 0.95rem;
+        }
+
+        #sub-cal-root .takeover-buttons {
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        #sub-cal-root .btn-confirm-assign,
+        #sub-cal-root .takeover-buttons .btn-secondary {
+            width: 100%;
+            min-height: 44px;
+        }
+
+        #sub-cal-root .modal-close {
+            min-width: 44px;
+            min-height: 44px;
+        }
+    }
 </style>
 
 <div id="sub-cal-root">

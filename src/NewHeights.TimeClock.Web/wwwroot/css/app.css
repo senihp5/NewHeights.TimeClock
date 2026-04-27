@@ -1438,7 +1438,7 @@ main {
 .home-logo-small { height: 48px; width: auto; }
 .home-school-name { font-size: 1.3rem; font-weight: 700; color: #1e3a5f; }
 .home-sections { display: flex; flex-direction: column; gap: 1.5rem; }
-.home-section { background: #fff; border-radius: 10px; padding: 1.25rem 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.home-section { background: #fff; border-radius: 10px; padding: 1.25rem 1.5rem; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.06); border: 1px solid #e5e7eb; }
 .section-title { margin: 0 0 1rem; font-size: 1rem; font-weight: 700; color: #1e3a5f; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #eee; padding-bottom: 0.5rem; }
 .home-card-grid { display: flex; flex-wrap: wrap; gap: 0.75rem; }
 .home-card { display: flex; flex-direction: column; align-items: flex-start; padding: 0.9rem 1.1rem; min-width: 160px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; text-decoration: none; color: inherit; transition: border-color 0.15s, box-shadow 0.15s; }
@@ -1449,7 +1449,7 @@ main {
 
 
 /* ── Home Page Live Reception Dashboard ─────────────────────────── */
-.home-section--full { background: #fff; border-radius: 10px; padding: 1.25rem 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); border-left: 4px solid #1e3a5f; }
+.home-section--full { background: #fff; border-radius: 10px; padding: 1.25rem 1.5rem; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.06); border: 1px solid #e5e7eb; border-left: 4px solid #1e3a5f; }
 
 .reception-home-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
 .reception-home-header .section-title { margin-bottom: 0; border-bottom: none; padding-bottom: 0; display: flex; align-items: center; gap: 0.5rem; }
