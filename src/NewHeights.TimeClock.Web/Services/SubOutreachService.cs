@@ -548,7 +548,11 @@ public class SubOutreachService : ISubOutreachService
         }
 
         // Phase 7d: notify supervisor + requesting employee.
-        await TryNotifyStakeholdersAsync(outreach, request, "ACCEPTED");
+        // Pass assignment.PeriodsCovered so the email reflects what THIS
+        // sub took (not the whole request's PeriodsNeeded). Without this
+        // override, a partial-accept of P1+P2 on a P1-P4 request would
+        // (incorrectly) email the teacher saying "Periods: P1,P2,P3,P4".
+        await TryNotifyStakeholdersAsync(outreach, request, "ACCEPTED", assignment.PeriodsCovered);
 
         // Phase A: if the request is only partially covered, fire cascade to
         // the next queued sub so remaining periods can find coverage. The
@@ -1459,7 +1463,9 @@ public class SubOutreachService : ISubOutreachService
     /// Reuses Phase 6 SMS+email parallel pattern. Never throws — notification
     /// failure must not roll back the accept/decline flow.
     /// </summary>
-    private async Task TryNotifyStakeholdersAsync(TcSubOutreach outreach, TcSubRequest request, string eventKind)
+    private async Task TryNotifyStakeholdersAsync(
+        TcSubOutreach outreach, TcSubRequest request, string eventKind,
+        string? acceptedPeriodsOverride = null)
     {
         try
         {
@@ -1517,7 +1523,8 @@ public class SubOutreachService : ISubOutreachService
             {
                 var (smsBody, subject, html) = BuildStakeholderContent(
                     eventKind, isSupervisor: true,
-                    subName, teacherName, campusName, dates, request);
+                    subName, teacherName, campusName, dates, request,
+                    acceptedPeriodsOverride);
 
                 await TrySendOneStakeholderAsync(supervisorEmp, smsBody, subject, html);
             }
@@ -1527,7 +1534,8 @@ public class SubOutreachService : ISubOutreachService
             {
                 var (smsBody, subject, html) = BuildStakeholderContent(
                     eventKind, isSupervisor: false,
-                    subName, teacherName, campusName, dates, request);
+                    subName, teacherName, campusName, dates, request,
+                    acceptedPeriodsOverride);
 
                 await TrySendOneStakeholderAsync(teacher, smsBody, subject, html);
             }
@@ -1574,9 +1582,20 @@ public class SubOutreachService : ISubOutreachService
     private static (string smsBody, string subject, string html) BuildStakeholderContent(
         string eventKind, bool isSupervisor,
         string subName, string teacherName, string campusName, string dates,
-        TcSubRequest request)
+        TcSubRequest request,
+        string? acceptedPeriodsOverride = null)
     {
         var isAccept = string.Equals(eventKind, "ACCEPTED", StringComparison.OrdinalIgnoreCase);
+
+        // Phase B fix (2026-04-27): on accepts, show ONLY the periods THIS
+        // sub took, not the whole request's PeriodsNeeded. Caller passes
+        // assignment.PeriodsCovered through `acceptedPeriodsOverride` from
+        // ProcessAcceptAsync. Declines / no-override fall back to the full
+        // PeriodsNeeded since "still looking for a sub" should reference
+        // every period that still needs coverage.
+        var periodsForEmail = !string.IsNullOrWhiteSpace(acceptedPeriodsOverride)
+            ? acceptedPeriodsOverride!
+            : (request.PeriodsNeeded ?? "—");
 
         string smsBody, subject, color, headline, body;
 
@@ -1623,7 +1642,7 @@ public class SubOutreachService : ISubOutreachService
   <table style='border-collapse: collapse; margin: 0.5rem 0;'>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Campus:</td><td>{System.Net.WebUtility.HtmlEncode(campusName)}</td></tr>
     <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Dates:</td><td>{System.Net.WebUtility.HtmlEncode(dates)}</td></tr>
-    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{System.Net.WebUtility.HtmlEncode(request.PeriodsNeeded ?? "—")}</td></tr>
+    <tr><td style='padding:4px 12px 4px 0;font-weight:600;'>Periods:</td><td>{System.Net.WebUtility.HtmlEncode(periodsForEmail)}</td></tr>
   </table>
   <p style='color:#6b7280;font-size:0.85rem;'>You received this because you are listed as the {(isSupervisor ? "campus manager" : "requesting employee")} for this sub request.</p>
 </div>";

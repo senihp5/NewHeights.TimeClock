@@ -56,6 +56,13 @@
         </select>
     </div>
 
+    @if (autoFlippedFromOpen)
+    {
+        <div class="auto-flip-notice" role="status">
+            <strong>No open requests right now.</strong> Showing your <em>Approved</em> requests instead. Use the filter above to change views.
+        </div>
+    }
+
     @if (!string.IsNullOrEmpty(actionError))
     {
         <div class="error-panel" role="alert">@actionError</div>
@@ -97,7 +104,11 @@
     {
         <div class="empty-state">
             <h3>No requests match this filter.</h3>
-            <p>Click <a href="/employee/absence-request">New Request</a> to submit an absence.</p>
+            <p>
+                Try switching the <strong>Show:</strong> filter above to <em>All</em>, <em>Approved</em>,
+                <em>Denied</em>, or <em>Cancelled</em> if you're looking for an older request.
+                Or click <a href="/employee/absence-request">New Request</a> to submit an absence.
+            </p>
         </div>
     }
     else
@@ -160,12 +171,28 @@
                 else if (req.Status == SubRequestStatus.SubConfirmed)
                 {
                     <div class="confirmed-panel">
-                        <strong>Sub confirmed:</strong>
-                        @(req.AssignedSubEmployee?.Staff?.FullName ?? req.AssignedSubEmployee?.Email ?? $"Employee {req.AssignedSubEmployeeId}")
-                        @if (req.AssignedDate.HasValue)
-                        {
-                            <span class="confirmed-when"> · accepted @req.AssignedDate.Value.ToString("MMM d h:mm tt")</span>
-                        }
+                        <strong>@(req.Assignments.Count > 1 ? "Subs confirmed:" : "Sub confirmed:")</strong>
+                        @* Phase A (migration 048): enumerate every Assignment row
+                           so partial-accept requests show all participating subs
+                           with their per-period coverage, not just the first-
+                           accept stamp on AssignedSubEmployee. *@
+                        <ul class="sub-list">
+                            @foreach (var a in req.Assignments.OrderBy(a => a.AcceptedAt))
+                            {
+                                var name = a.SubEmployee?.Staff?.FullName
+                                        ?? a.SubEmployee?.DisplayName
+                                        ?? a.SubEmployee?.Email
+                                        ?? $"Employee {a.SubEmployeeId}";
+                                <li>
+                                    <strong>@name</strong>
+                                    @if (!string.IsNullOrWhiteSpace(a.PeriodsCovered))
+                                    {
+                                        <span class="sub-list-periods"> · @a.PeriodsCovered</span>
+                                    }
+                                    <span class="sub-list-when"> · accepted @a.AcceptedAt.ToString("MMM d h:mm tt")</span>
+                                </li>
+                            }
+                        </ul>
                         <p class="confirmed-next">
                             Awaiting final approval from your campus admin.
                         </p>
@@ -188,17 +215,84 @@
                         </button>
                     </div>
                 }
+                else if (req.Status == SubRequestStatus.PartiallyAssigned)
+                {
+                    @* Phase A: a partial-accept state where one or more subs
+                       have committed to a subset of the requested periods but
+                       not all. Show what's confirmed AND what's still being
+                       searched, plus the same outreach panel as AwaitingSub
+                       so the teacher can drive coverage of the rest. *@
+                    <div class="confirmed-panel">
+                        <strong>@(req.Assignments.Count > 1 ? "Subs partially confirmed:" : "Sub partially confirmed:")</strong>
+                        <ul class="sub-list">
+                            @foreach (var a in req.Assignments.OrderBy(a => a.AcceptedAt))
+                            {
+                                var name = a.SubEmployee?.Staff?.FullName
+                                        ?? a.SubEmployee?.DisplayName
+                                        ?? a.SubEmployee?.Email
+                                        ?? $"Employee {a.SubEmployeeId}";
+                                <li>
+                                    <strong>@name</strong>
+                                    @if (!string.IsNullOrWhiteSpace(a.PeriodsCovered))
+                                    {
+                                        <span class="sub-list-periods"> · @a.PeriodsCovered</span>
+                                    }
+                                    <span class="sub-list-when"> · accepted @a.AcceptedAt.ToString("MMM d h:mm tt")</span>
+                                </li>
+                            }
+                        </ul>
+                        <p class="confirmed-next">
+                            Some periods still need a sub. The system is reaching out to additional substitutes.
+                        </p>
+                    </div>
+
+                    <SubOutreachPanel Request="@req"
+                                      CurrentUserEmail="@currentUserEmail"
+                                      OnOutreachSent="LoadDataAsync" />
+
+                    <div class="cancel-row">
+                        <button type="button" class="btn-cancel-request"
+                                @onclick="() => CancelRequestAsync(req)"
+                                disabled="@(cancellingRequestId == req.SubRequestId)">
+                            @(cancellingRequestId == req.SubRequestId ? "Cancelling…" : "Cancel Request")
+                        </button>
+                    </div>
+                }
                 else if (req.Status == SubRequestStatus.AbsenceApproved)
                 {
                     <div class="approved-panel">
                         <strong>Approved.</strong>
-                        @if (req.AssignedSubEmployee?.Staff?.FullName != null)
-                        {
-                            <span> Sub: @req.AssignedSubEmployee.Staff.FullName.</span>
-                        }
                         @if (req.SupervisorApprovedDate.HasValue)
                         {
                             <span> Approved on @req.SupervisorApprovedDate.Value.ToString("MMM d h:mm tt").</span>
+                        }
+                        @if (req.Assignments.Any())
+                        {
+                            <p class="approved-subs-label">
+                                @(req.Assignments.Count > 1 ? "Subs covering:" : "Sub covering:")
+                            </p>
+                            <ul class="sub-list">
+                                @foreach (var a in req.Assignments.OrderBy(a => a.AcceptedAt))
+                                {
+                                    var name = a.SubEmployee?.Staff?.FullName
+                                            ?? a.SubEmployee?.DisplayName
+                                            ?? a.SubEmployee?.Email
+                                            ?? $"Employee {a.SubEmployeeId}";
+                                    <li>
+                                        <strong>@name</strong>
+                                        @if (!string.IsNullOrWhiteSpace(a.PeriodsCovered))
+                                        {
+                                            <span class="sub-list-periods"> · @a.PeriodsCovered</span>
+                                        }
+                                    </li>
+                                }
+                            </ul>
+                        }
+                        else if (req.AssignedSubEmployee != null)
+                        {
+                            @* Legacy fallback for whole-request approves
+                               that pre-date migration 048's Assignments table. *@
+                            <p>Sub: @(req.AssignedSubEmployee.Staff?.FullName ?? req.AssignedSubEmployee.DisplayName ?? req.AssignedSubEmployee.Email)</p>
                         }
                         @* Migration 050: deep link to per-period class notes so
                            the teacher can leave lesson plans / URLs for subs. *@
@@ -249,6 +343,12 @@
     .loading, .empty-state { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 2rem; text-align: center; color: #6b7280; }
     .empty-state h3 { color: #374151; margin: 0 0 .5rem; }
     .error-panel { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .auto-flip-notice { background: #eff6ff; border: 1px solid #bfdbfe; border-left: 4px solid #1e40af; color: #1e3a5f; padding: .65rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: .9rem; }
+    .sub-list { margin: .35rem 0 .55rem; padding-left: 1.1rem; list-style: disc; color: #1f2937; font-size: .92rem; }
+    .sub-list li { margin: .15rem 0; }
+    .sub-list-periods { color: #1e40af; font-weight: 600; }
+    .sub-list-when { color: #6b7280; font-size: .8rem; }
+    .approved-subs-label { margin: .55rem 0 .25rem; font-weight: 600; color: #065f46; }
     .request-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1rem; border-left: 4px solid #d1d5db; }
     .request-card.status-awaitingsub  { border-left-color: #f59e0b; }
     .request-card.status-subassigned  { border-left-color: #3b82f6; }
@@ -291,6 +391,9 @@
     private string actionError = "";
 
     private string filterStatus = "open";
+    // True when LoadDataAsync auto-switched from "open" to "approved" because
+    // the user had nothing pending. Drives the inline notice on the page.
+    private bool autoFlippedFromOpen = false;
     private string currentUserEmail = "";
     private string currentUserEntraOid = "";
     private int currentEmployeeId = 0;
@@ -385,6 +488,7 @@
         isLoading = true;
         loadError = "";
         actionError = "";
+        autoFlippedFromOpen = false;
 
         try
         {
@@ -394,17 +498,26 @@
                 .AsNoTracking()
                 .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
                 .Include(r => r.Campus)
+                // Phase A (migration 048): include the Assignments join table
+                // + each accepting sub so the Approved/Confirmed panels can
+                // render every sub that took part of a partial-accept request,
+                // not just the first-acceptance stamp on AssignedSubEmployee.
+                .Include(r => r.Assignments).ThenInclude(a => a.SubEmployee).ThenInclude(e => e!.Staff)
                 .Where(r => r.RequestingEmployeeId == currentEmployeeId)
                 .AsQueryable();
 
             query = filterStatus switch
             {
+                // "Open" widened to also include PartiallyAssigned — added in
+                // migration 048 but never made it into the legacy filter set.
                 "open" => query.Where(r => r.Status == SubRequestStatus.AwaitingSub
                                         || r.Status == SubRequestStatus.SubAssigned
+                                        || r.Status == SubRequestStatus.PartiallyAssigned
                                         || r.Status == SubRequestStatus.SubConfirmed),
                 "all" => query,
                 "awaitingsub" => query.Where(r => r.Status == SubRequestStatus.AwaitingSub),
-                "assigned"    => query.Where(r => r.Status == SubRequestStatus.SubAssigned),
+                "assigned"    => query.Where(r => r.Status == SubRequestStatus.SubAssigned
+                                               || r.Status == SubRequestStatus.PartiallyAssigned),
                 "confirmed"   => query.Where(r => r.Status == SubRequestStatus.SubConfirmed),
                 "approved"    => query.Where(r => r.Status == SubRequestStatus.AbsenceApproved),
                 "denied"      => query.Where(r => r.Status == SubRequestStatus.Denied),
@@ -416,6 +529,35 @@
                 .OrderByDescending(r => r.StartDate)
                 .ThenByDescending(r => r.SubRequestId)
                 .ToListAsync();
+
+            // Auto-flip: if the user landed on "open" but has nothing pending,
+            // check whether they have any approved requests and switch the
+            // view automatically. Saves a click and answers "where did my
+            // request go?" — the most common "I don't see anything" case.
+            if (filterStatus == "open" && requests.Count == 0)
+            {
+                var approvedCount = await context.TcSubRequests
+                    .AsNoTracking()
+                    .Where(r => r.RequestingEmployeeId == currentEmployeeId
+                             && r.Status == SubRequestStatus.AbsenceApproved)
+                    .CountAsync();
+
+                if (approvedCount > 0)
+                {
+                    filterStatus = "approved";
+                    autoFlippedFromOpen = true;
+                    requests = await context.TcSubRequests
+                        .AsNoTracking()
+                        .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
+                        .Include(r => r.Campus)
+                        .Include(r => r.Assignments).ThenInclude(a => a.SubEmployee).ThenInclude(e => e!.Staff)
+                        .Where(r => r.RequestingEmployeeId == currentEmployeeId
+                                 && r.Status == SubRequestStatus.AbsenceApproved)
+                        .OrderByDescending(r => r.StartDate)
+                        .ThenByDescending(r => r.SubRequestId)
+                        .ToListAsync();
+                }
+            }
         }
         catch (Exception ex)
         {
