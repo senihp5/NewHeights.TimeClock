@@ -2437,3 +2437,137 @@
     from { transform: translateY(100%); }
     to { transform: translateY(0); }
 }
+
+/* ============================================================================
+   Phase 4 mobile (2026-04-27)
+   ----------------------------------------------------------------------------
+   Team Timesheets (/supervisor/timesheets) and HR Payroll (/hr/payroll) are
+   wide rosters. Table-to-card collapse would lose the supervisor's ability
+   to scan a column down a list of people, so we keep the table layout and
+   instead enable horizontal scroll with the Employee column sticky-left so
+   the row label stays visible while scrolling status / hours / actions.
+
+   Both pages share .payroll-table so a single set of selectors covers both.
+   The TeamTimesheets row-state classes (.approved / .ready / .has-exception)
+   need their backgrounds repainted on the sticky cell so it visually merges
+   with the row instead of showing a white ghost column.
+
+   iOS Safari note: position:sticky works on <th> and <td> only when the
+   ancestor with overflow:auto is on the SAME axis. .payroll-table-container
+   gets overflow-x:auto here (overriding the desktop overflow:hidden which
+   clips sticky paint on iOS).
+   ============================================================================ */
+
+@media (max-width: 768px) {
+
+    .supervisor-page,
+    .hr-payroll-page {
+        padding: 0.75rem;
+    }
+
+    .supervisor-header,
+    .payroll-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.65rem;
+    }
+
+    .supervisor-header h1,
+    .payroll-header h1 {
+        font-size: 1.2rem;
+    }
+
+    .period-nav {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.4rem;
+        width: 100%;
+    }
+
+    .pp-select,
+    .btn-nav,
+    .btn-approve-all,
+    .btn-export {
+        width: 100%;
+        min-height: 44px;
+    }
+
+    /* Container drops overflow:hidden (which clips sticky-left paint on iOS
+       Safari) and gains horizontal scroll. */
+    .payroll-table-container {
+        overflow-x: auto;
+        overflow-y: visible;
+        border-radius: 8px;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .payroll-table {
+        min-width: 720px;
+        font-size: 0.85rem;
+    }
+
+    .payroll-table th,
+    .payroll-table td {
+        padding: 0.5rem 0.45rem;
+    }
+
+    /* Sticky-left Employee column header. */
+    .payroll-table thead th:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background: #1e3a5f;
+        text-align: left;
+        min-width: 8rem;
+        box-shadow: 2px 0 6px rgba(0, 0, 0, 0.18);
+    }
+
+    /* Sticky-left Employee column cells. */
+    .payroll-table tbody td:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 1;
+        background: #fff;
+        text-align: left;
+        font-weight: 500;
+        min-width: 8rem;
+        box-shadow: 2px 0 6px rgba(0, 0, 0, 0.06);
+    }
+
+    /* Repaint the sticky cell to match row state so it doesn't show as a
+       white column over a tinted row. */
+    .payroll-table tbody tr.approved td:first-child {
+        background: #f0fdf4;
+    }
+
+    .payroll-table tbody tr.ready td:first-child {
+        background: #eff6ff;
+    }
+
+    .payroll-table tbody tr.has-exception td:first-child {
+        background: #fef3c7;
+    }
+
+    .payroll-table tbody tr.pending td:first-child {
+        background: #fff;
+    }
+
+    /* Action buttons stay clickable and keep a sensible touch target. */
+    .actions-cell {
+        white-space: nowrap;
+    }
+
+    .btn-action,
+    .btn-view,
+    .btn-approve,
+    .btn-remind {
+        min-height: 36px;
+        padding: 0.4rem 0.7rem;
+    }
+
+    /* Exceptions chip stays clickable; keep its tap target ≥ 32 px. */
+    .exc-link {
+        min-height: 32px;
+        padding: 0.3rem 0.55rem;
+    }
+}
