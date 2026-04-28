@@ -47,6 +47,16 @@ public interface ITimesheetService
     /// approved is a no-op.
     /// </summary>
     Task<bool> MarkPaperApprovedAsync(int employeeId, DateOnly periodStart, DateOnly periodEnd, string adminEmail);
+
+    /// <summary>
+    /// 2026-04-27: Employee-stage-only approval (e.g. CSV import "trip the
+    /// employee approved flag" checkbox). Stamps EmployeeApprovedBy +
+    /// EmployeeApprovedDate on the period summary; does NOT touch Supervisor
+    /// or HR stages. Writes one audit entry (EmployeePaperApproved) with the
+    /// supplied source so admins can distinguish "imported via CSV" from
+    /// "paper-stamped retroactively".
+    /// </summary>
+    Task<bool> MarkEmployeeApprovedAsync(int employeeId, DateOnly periodStart, DateOnly periodEnd, string adminEmail, string source);
 }
 
 public class TimesheetService : ITimesheetService
@@ -223,12 +233,32 @@ public class TimesheetService : ITimesheetService
             TotalHours = periodTotalHours,
             DaysWorked = dailyCards.Count(d => d.TotalHours > 0),
             ExceptionCount = dailyCards.Count(d => d.HasException),
-            EmployeeApprovalStatus = summary?.ApprovalStatus ?? ApprovalStatus.Pending,
-            EmployeeApprovedDate = null, // Would need field in summary
-            SupervisorApprovalStatus = summary?.SupervisorApprovedBy != null ? ApprovalStatus.Approved : ApprovalStatus.Pending,
+            // 2026-04-28: each stage's approval status is derived independently
+            // from its own *ApprovedBy column (added by migration 060). Previously
+            // EmployeeApprovalStatus was mapped from the shared summary.ApprovalStatus
+            // enum, which meant CSV-import "mark as Employee approved" didn't show
+            // E✓ on /hr/payroll and /supervisor/timesheets — the column was set but
+            // ApprovalStatus stayed Pending. Reading per-stage By columns means each
+            // stage stamps independently and displays accurately.
+            //
+            // Backward compatibility: rows from before migration 060 have NULL
+            // *ApprovedBy columns even when the workflow had progressed. For those,
+            // fall back to the legacy ApprovalStatus enum signal — if the period
+            // is Approved or Locked, the employee must have submitted at some point.
+            EmployeeApprovalStatus = (summary?.EmployeeApprovedBy != null
+                                   || summary?.ApprovalStatus == ApprovalStatus.Approved
+                                   || summary?.ApprovalStatus == ApprovalStatus.Locked)
+                                       ? ApprovalStatus.Approved : ApprovalStatus.Pending,
+            EmployeeApprovedDate = summary?.EmployeeApprovedDate,
+            SupervisorApprovalStatus = (summary?.SupervisorApprovedBy != null
+                                     || summary?.ApprovalStatus == ApprovalStatus.Approved
+                                     || summary?.ApprovalStatus == ApprovalStatus.Locked)
+                                         ? ApprovalStatus.Approved : ApprovalStatus.Pending,
             SupervisorApprovedBy = summary?.SupervisorApprovedBy,
             SupervisorApprovedDate = summary?.SupervisorApprovedDate,
-            HRApprovalStatus = summary?.HRApprovedBy != null ? ApprovalStatus.Approved : ApprovalStatus.Pending,
+            HRApprovalStatus = (summary?.HRApprovedBy != null
+                             || summary?.ApprovalStatus == ApprovalStatus.Locked)
+                                 ? ApprovalStatus.Approved : ApprovalStatus.Pending,
             HRApprovedBy = summary?.HRApprovedBy,
             HRApprovedDate = summary?.HRApprovedDate
         };
@@ -472,6 +502,92 @@ public class TimesheetService : ITimesheetService
         _logger.LogInformation(
             "Paper-approved summary {Id} (employee {Emp}, period {Start}-{End}) by {Admin}",
             summary.SummaryId, employeeId, periodStart, periodEnd, adminEmail);
+
+        return true;
+    }
+
+    /// <inheritdoc cref="ITimesheetService.MarkEmployeeApprovedAsync"/>
+    public async Task<bool> MarkEmployeeApprovedAsync(int employeeId, DateOnly periodStart, DateOnly periodEnd, string adminEmail, string source)
+    {
+        if (string.IsNullOrWhiteSpace(adminEmail))
+            throw new ArgumentException("adminEmail required", nameof(adminEmail));
+        if (string.IsNullOrWhiteSpace(source))
+            source = "ADMIN";
+
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var payPeriod = await context.TcPayPeriods
+            .FirstOrDefaultAsync(p => p.StartDate == periodStart && p.EndDate == periodEnd);
+        if (payPeriod == null)
+        {
+            payPeriod = new TcPayPeriod
+            {
+                PeriodName = $"{periodStart:MMM d} - {periodEnd:MMM d, yyyy}",
+                StartDate = periodStart,
+                EndDate = periodEnd,
+                PayDate = periodEnd.Day == 15 ? periodEnd : periodEnd.AddDays(1),
+                Status = PayPeriodStatus.Open,
+                CreatedDate = DateTime.Now
+            };
+            context.TcPayPeriods.Add(payPeriod);
+            await context.SaveChangesAsync();
+        }
+
+        var summary = await context.TcPayPeriodSummaries
+            .FirstOrDefaultAsync(s => s.PayPeriodId == payPeriod.PayPeriodId && s.EmployeeId == employeeId);
+
+        if (summary == null)
+        {
+            var ts = await GetPayPeriodTimesheetAsync(employeeId, periodStart, periodEnd);
+            summary = new TcPayPeriodSummary
+            {
+                PayPeriodId = payPeriod.PayPeriodId,
+                EmployeeId = employeeId,
+                TotalRegularHours = ts.TotalRegularHours,
+                TotalOvertimeHours = ts.TotalOvertimeHours,
+                TotalHours = ts.TotalHours,
+                DaysWorked = ts.DaysWorked,
+                ExceptionCount = ts.ExceptionCount,
+                CreatedDate = DateTime.Now
+            };
+            context.TcPayPeriodSummaries.Add(summary);
+        }
+
+        if (!string.IsNullOrWhiteSpace(summary.EmployeeApprovedBy))
+        {
+            _logger.LogInformation("MarkEmployeeApproved: summary {Id} already employee-stamped — skipping", summary.SummaryId);
+            return false;
+        }
+
+        var now = DateTime.Now;
+        summary.EmployeeApprovedBy   = adminEmail;
+        summary.EmployeeApprovedDate = now;
+        summary.ModifiedDate         = now;
+        await context.SaveChangesAsync();
+
+        await _audit.LogActionAsync(
+            actionCode: AuditActions.Timesheet.EmployeePaperApproved,
+            entityType: AuditEntityTypes.PaySummary,
+            entityId: summary.SummaryId.ToString(),
+            newValues: new
+            {
+                summary.SummaryId,
+                summary.PayPeriodId,
+                summary.EmployeeId,
+                Stage = "Employee",
+                StampedBy = adminEmail,
+                StampedAt = now.ToString("yyyy-MM-dd HH:mm:ss"),
+                Source = source,
+                summary.TotalRegularHours,
+                summary.TotalHours
+            },
+            deltaSummary: $"Employee-stage approval stamped on summary {summary.SummaryId} ({source}) by {adminEmail}",
+            source: AuditSource.AdminUi,
+            employeeId: employeeId);
+
+        _logger.LogInformation(
+            "Employee-stage approved summary {Id} (employee {Emp}, period {Start}-{End}) source={Source} by {Admin}",
+            summary.SummaryId, employeeId, periodStart, periodEnd, source, adminEmail);
 
         return true;
     }
