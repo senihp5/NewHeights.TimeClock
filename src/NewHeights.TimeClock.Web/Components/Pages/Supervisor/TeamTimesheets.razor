@@ -1,4 +1,5 @@
 @page "/supervisor/timesheets"
+@page "/supervisor/timesheets/{PayPeriodIdParam:int}"
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "RequireSupervisor")]
@@ -227,6 +228,12 @@
 </div>
 
 @code {
+    // 2026-04-28: route param so dropdown selection persists across deep-link
+    // round-trips. Team Timesheets pushes /supervisor/timesheets/{PayPeriodId}
+    // on every dropdown change (with replace=true so it doesn't pollute history),
+    // and the back-button from SupervisorTimesheetView returns to that URL.
+    [Parameter] public int? PayPeriodIdParam { get; set; }
+
     private int periodOffset = 0;
     private DateTime periodAnchorDate = DateTime.Today;
     private bool isLoading = true;
@@ -276,12 +283,21 @@
         currentUserEmail = userCtx.Email;
         await LoadCurrentSupervisor();
 
-        // Populate pay-period dropdown; default to current period.
+        // Populate pay-period dropdown; default to current period unless the
+        // URL pinned a specific period (round-tripped from a deep-link back).
         availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
         var initialPeriod = await PayPeriodService.GetCurrentPayPeriodAsync();
-        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
-            ? initialPeriod.PayPeriodId
-            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
+        if (PayPeriodIdParam.HasValue && availablePeriods.Any(p => p.PayPeriodId == PayPeriodIdParam.Value))
+        {
+            selectedPayPeriodId = PayPeriodIdParam.Value;
+        }
+        else
+        {
+            selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+                ? initialPeriod.PayPeriodId
+                : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+        }
 
         await LoadTeamData();
     }
@@ -290,6 +306,12 @@
     {
         if (!int.TryParse(e.Value?.ToString(), out var id)) return;
         selectedPayPeriodId = id;
+
+        // Push the new selection to the URL (replace=true so we don't spam
+        // history with every dropdown click). The back-button from a deep-
+        // link will return here with the URL still pointing at this period.
+        Navigation.NavigateTo($"/supervisor/timesheets/{selectedPayPeriodId}", forceLoad: false, replace: true);
+
         await LoadTeamData();
     }
 
@@ -384,9 +406,11 @@
     // PreviousPeriod / NextPeriod removed 2026-04-24 — OnPayPeriodChangedAsync
     // handles dropdown-driven navigation now.
 
+    /// <summary>Navigate to the per-employee review with a backPp query string
+    /// so the breadcrumb back-link returns to this exact pay period.</summary>
     private void ViewTimesheet(int employeeId)
     {
-        Navigation.NavigateTo($"/supervisor/timesheet/{employeeId}/{periodOffset}");
+        Navigation.NavigateTo($"/supervisor/timesheet/{employeeId}/{periodOffset}?backPp={selectedPayPeriodId}");
     }
 
     // Deep-link to the Exceptions section on the single-employee review page.
@@ -394,7 +418,7 @@
     // browser scrolls straight to the exceptions list after nav.
     private void ViewExceptions(int employeeId)
     {
-        Navigation.NavigateTo($"/supervisor/timesheet/{employeeId}/{periodOffset}#exceptions");
+        Navigation.NavigateTo($"/supervisor/timesheet/{employeeId}/{periodOffset}?backPp={selectedPayPeriodId}#exceptions");
     }
 
     private async Task ApproveTimesheet(int employeeId)

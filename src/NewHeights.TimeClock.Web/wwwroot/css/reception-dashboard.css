@@ -887,13 +887,17 @@
 }
 
 
-/* Header Text Visibility Fixes */
-.header-subtitle,
-.last-updated {
+/* Header Text Visibility Fixes — scoped to .reception-dashboard so the
+   navy-header white-text rule doesn't bleed onto every other page that
+   happens to use the .header-subtitle class (e.g. /supervisor/sub-requests
+   was rendering its gray subtitle as unreadable white before this scope
+   was tightened, 2026-04-27). */
+.reception-dashboard .header-subtitle,
+.reception-dashboard .last-updated {
     color: white !important;
 }
 
-.reception-header h1 {
+.reception-dashboard .reception-header h1 {
     color: white !important;
 }
 

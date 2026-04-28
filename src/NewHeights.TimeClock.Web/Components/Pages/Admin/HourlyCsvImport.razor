@@ -11,6 +11,8 @@
 @using System.Security.Claims
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IHourlyCsvImportService Importer
+@inject ITimesheetService TimesheetService
+@inject IPayPeriodService PayPeriodService
 @inject AuthenticationStateProvider AuthStateProvider
 @inject ILogger<HourlyCsvImport> Logger
 
@@ -151,6 +153,15 @@
                 <span class="apply-summary">
                     @parseResult.Rows.Count(r => !r.Skip) of @parseResult.Rows.Count row(s) will be imported.
                 </span>
+                @* 2026-04-27: when checked, the import also stamps the Employee
+                   approval stage on every pay period the imported dates touch.
+                   Useful when the CSV represents an already-employee-signed paper
+                   timesheet, so HR doesn't need to chase the employee for a
+                   signature in the system. *@
+                <label class="employee-approve-toggle" title="After import, stamp Employee approval on every affected pay period (Source = CSV_IMPORT).">
+                    <input type="checkbox" @bind="markEmployeeApprovedOnImport" />
+                    <span>Mark as Employee Approved on import</span>
+                </label>
                 <button class="btn-primary"
                         disabled="@(isApplying || targetEmployeeId == 0 || targetCampusId == 0)"
                         @onclick="ApplyAsync">
@@ -199,6 +210,10 @@
     private string successMessage = "";
     private string errorMessage = "";
     private string currentUserEmail = "unknown";
+
+    // 2026-04-27: when checked, ApplyAsync also stamps Employee approval on
+    // every pay period the imported dates touch (Source = "CSV_IMPORT").
+    private bool markEmployeeApprovedOnImport = false;
 
     // Trim the noisy Google-Form filename prefix for display in the meta bar.
     // Full value is still in the tooltip/title.
@@ -276,6 +291,33 @@
             applyResult = await Importer.ApplyAsync(
                 targetEmployeeId, targetCampusId, parseResult.Rows, currentUserEmail);
             successMessage = $"Imported {applyResult.RowsApplied} row(s), {applyResult.PunchesCreated} punch(es) created.";
+
+            // 2026-04-27: if "Mark as Employee Approved on import" is checked,
+            // stamp Employee approval on every pay period the imported dates
+            // touch. The CSV typically represents a paper-signed timesheet, so
+            // the employee stage is implicitly approved by the act of importing.
+            if (markEmployeeApprovedOnImport && applyResult.RowsApplied > 0)
+            {
+                var importedDates = parseResult.Rows
+                    .Where(r => !r.Skip)
+                    .Select(r => r.WorkDate)
+                    .Distinct()
+                    .ToList();
+
+                var seen = new HashSet<(DateOnly Start, DateOnly End)>();
+                var stampedCount = 0;
+                foreach (var d in importedDates)
+                {
+                    var pp = await PayPeriodService.GetPayPeriodForDateAsync(d.ToDateTime(TimeOnly.MinValue));
+                    var key = (pp.StartDate, pp.EndDate);
+                    if (!seen.Add(key)) continue;
+                    var did = await TimesheetService.MarkEmployeeApprovedAsync(
+                        targetEmployeeId, pp.StartDate, pp.EndDate, currentUserEmail, "CSV_IMPORT");
+                    if (did) stampedCount++;
+                }
+                if (stampedCount > 0)
+                    successMessage += $" Stamped Employee approval on {stampedCount} pay period(s).";
+            }
         }
         catch (Exception ex)
         {
@@ -296,6 +338,7 @@
         successMessage = "";
         targetEmployeeId = 0;
         targetCampusId = 0;
+        markEmployeeApprovedOnImport = false;
     }
 
     // Editable time cell renderer

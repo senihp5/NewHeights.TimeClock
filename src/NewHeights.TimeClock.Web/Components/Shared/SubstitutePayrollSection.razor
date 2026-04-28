@@ -1,7 +1,13 @@
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Shared.Enums
 @using NewHeights.TimeClock.Web.Services
 @inject ISubstituteTimesheetService SubTimesheetService
+@inject IPayrollPdfService PayrollPdf
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
 @inject IJSRuntime JS
 @inject ILogger<SubstitutePayrollSection> Logger
 
@@ -40,6 +46,15 @@
             }
         </div>
         <div class="section-actions">
+            <span class="selection-counter" title="Subs checked for paper-approve + PDF export">
+                @selectedSubIds.Count of @summaries.Count selected
+            </span>
+            <button type="button" class="btn-approve-export"
+                    @onclick="ApproveSelectedAndExportPdfAsync"
+                    disabled="@(selectedSubIds.Count == 0 || isApprovingExport)"
+                    title="Paper-approve every checked sub (sub stage only) and download a combined PDF">
+                @(isApprovingExport ? "Working…" : $"Paper-Approve & Export PDF ({selectedSubIds.Count})")
+            </button>
             <button type="button" class="btn-export"
                     @onclick="ExportCsvAsync"
                     disabled="@(!CanExport || isExporting)">
@@ -47,6 +62,11 @@
             </button>
         </div>
     </div>
+
+    @if (!string.IsNullOrEmpty(approveExportMsg))
+    {
+        <div class="approve-export-msg @(approveExportIsError ? "error" : "ok")" role="alert">@approveExportMsg</div>
+    }
 
     @if (!string.IsNullOrEmpty(errorMessage))
     {
@@ -69,6 +89,13 @@
         <table class="sub-payroll-table">
             <thead>
                 <tr>
+                    <th class="check-col">
+                        <input type="checkbox"
+                               title="Select all visible subs"
+                               @onchange="ToggleAllSubsChecked"
+                               checked="@AllSubsChecked"
+                               @onclick:stopPropagation="true" />
+                    </th>
                     <th class="expand-col"></th>
                     <th>Name</th>
                     <th>Emp Nbr</th>
@@ -90,6 +117,12 @@
                     var isApprovingThis = approvingEmployeeId == s.EmployeeId;
                     <tr class="sub-row @(isExpanded ? "expanded" : "") @(s.HRApproved ? "hr-approved" : "")"
                         @onclick="() => ToggleRow(s.EmployeeId)">
+                        <td class="check-col" @onclick:stopPropagation="true">
+                            <input type="checkbox"
+                                   title="Paper-approve sub stage and add to PDF export"
+                                   checked="@selectedSubIds.Contains(s.EmployeeId)"
+                                   @onchange="@((ChangeEventArgs e) => ToggleSubChecked(s.EmployeeId, (bool)(e.Value ?? false)))" />
+                        </td>
                         <td class="expand-cell">@(isExpanded ? "▼" : "▶")</td>
                         <td class="name-cell"><strong>@s.EmployeeName</strong></td>
                         <td class="empnbr-cell">
@@ -173,7 +206,7 @@
                     @if (unlockingEmployeeId == s.EmployeeId)
                     {
                         <tr class="detail-row">
-                            <td colspan="11">
+                            <td colspan="12">
                                 <div class="unlock-panel">
                                     <label for="unlock-reason-@s.EmployeeId">Unlock reason (required):</label>
                                     <textarea id="unlock-reason-@s.EmployeeId"
@@ -200,7 +233,7 @@
                     @if (isExpanded)
                     {
                         <tr class="detail-row">
-                            <td colspan="11">
+                            <td colspan="12">
                                 <div class="detail-panel">
                                     <div class="detail-meta">
                                         @(string.IsNullOrWhiteSpace(s.Email) ? "(no email on record)" : s.Email)
@@ -270,6 +303,31 @@
     private int? unlockingEmployeeId = null;
     private string unlockReason = "";
     private bool isUnlocking = false;
+
+    // 2026-04-27: per-row checkbox state for "Paper-approve & add to PDF
+    // export". Each checked sub gets MarkSubPaperApprovedAsync called (sub
+    // stage only — supervisor + HR continue through the regular flow per
+    // the 2026-04-27 D5 decision) and is included in the combined PDF.
+    private HashSet<int> selectedSubIds = new();
+    private bool isApprovingExport = false;
+    private string approveExportMsg = "";
+    private bool approveExportIsError = false;
+    private bool AllSubsChecked => summaries.Any() && summaries.All(s => selectedSubIds.Contains(s.EmployeeId));
+
+    private void ToggleSubChecked(int employeeId, bool isChecked)
+    {
+        if (isChecked) selectedSubIds.Add(employeeId);
+        else selectedSubIds.Remove(employeeId);
+    }
+
+    private void ToggleAllSubsChecked(ChangeEventArgs e)
+    {
+        var checkAll = (bool)(e.Value ?? false);
+        if (checkAll)
+            foreach (var s in summaries) selectedSubIds.Add(s.EmployeeId);
+        else
+            foreach (var s in summaries.ToList()) selectedSubIds.Remove(s.EmployeeId);
+    }
 
     private DateOnly _lastStart;
     private DateOnly _lastEnd;
@@ -452,6 +510,116 @@
         finally
         {
             isUnlocking = false;
+        }
+    }
+
+    /// <summary>
+    /// 2026-04-27: Paper-approve sub stage on every checked sub, then generate
+    /// a sub-only combined PDF and archive the bytes into TC_PayrollExports.
+    /// Per D5 the supervisor and HR stages are NOT stamped here — they continue
+    /// through the regular flow once paper period transitions.
+    /// </summary>
+    private async Task ApproveSelectedAndExportPdfAsync()
+    {
+        if (selectedSubIds.Count == 0 || isApprovingExport) return;
+        if (PeriodStart == null || PeriodEnd == null) return;
+        if (string.IsNullOrWhiteSpace(CurrentUserEmail))
+        {
+            approveExportMsg = "Your session lost its user context — refresh and try again.";
+            approveExportIsError = true;
+            return;
+        }
+
+        isApprovingExport = true;
+        approveExportMsg = "";
+        approveExportIsError = false;
+
+        try
+        {
+            var ids = selectedSubIds.ToList();
+            int totalCardsApproved = 0;
+            foreach (var empId in ids)
+            {
+                try
+                {
+                    var n = await SubTimesheetService.MarkSubPaperApprovedAsync(
+                        empId, PeriodStart.Value, PeriodEnd.Value, CurrentUserEmail);
+                    totalCardsApproved += n;
+                }
+                catch (Exception inner)
+                {
+                    Logger.LogWarning(inner, "Sub paper-approve failed for employee {Id}", empId);
+                }
+            }
+
+            // Generate combined PDF (sub-only — hourly list empty).
+            var pdfBytes = await PayrollPdf.GenerateCombinedPdfAsync(
+                PeriodStart.Value,
+                PeriodEnd.Value,
+                Array.Empty<int>(),
+                ids,
+                CurrentUserEmail);
+
+            // Archive blob to TC_PayrollExports for historical recovery.
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var pp = await ctx.TcPayPeriods
+                .FirstOrDefaultAsync(p => p.StartDate == PeriodStart.Value && p.EndDate == PeriodEnd.Value);
+            if (pp != null)
+            {
+                var fileName = $"SubPayroll_{PeriodStart.Value:yyyyMMdd}-{PeriodEnd.Value:yyyyMMdd}.pdf";
+                var export = new TcPayrollExport
+                {
+                    PayPeriodId   = pp.PayPeriodId,
+                    ExportFormat  = "PDF",
+                    ExportMethod  = "DOWNLOAD",
+                    FileName      = fileName,
+                    RecordCount   = ids.Count,
+                    TotalRegularHours = 0,
+                    TotalOvertimeHours = 0,
+                    Status        = ExportStatus.Generated,
+                    ExportedBy    = CurrentUserEmail,
+                    ExportDate    = DateTime.Now,
+                    PdfBlob       = pdfBytes
+                };
+                ctx.TcPayrollExports.Add(export);
+                await ctx.SaveChangesAsync();
+
+                await Audit.LogActionAsync(
+                    actionCode: AuditActions.Payroll.ExportArchived,
+                    entityType: AuditEntityTypes.PayPeriod,
+                    entityId: pp.PayPeriodId.ToString(),
+                    newValues: new
+                    {
+                        export.ExportId,
+                        pp.PayPeriodId,
+                        fileName,
+                        Format = "PDF",
+                        SubCount = ids.Count,
+                        Bytes = pdfBytes.Length,
+                        ExportedBy = CurrentUserEmail
+                    },
+                    deltaSummary: $"Archived sub-payroll PDF {fileName} ({pdfBytes.Length} bytes, {ids.Count} subs) by {CurrentUserEmail}",
+                    source: AuditSource.AdminUi);
+            }
+
+            await JS.InvokeVoidAsync("downloadFile",
+                $"SubPayroll_{PeriodStart.Value:yyyyMMdd}-{PeriodEnd.Value:yyyyMMdd}.pdf",
+                Convert.ToBase64String(pdfBytes));
+
+            approveExportMsg = $"Paper-approved {totalCardsApproved} sub timecard(s) across {ids.Count} sub(s) and downloaded combined PDF.";
+            await LoadSummariesAsync();
+            selectedSubIds.Clear();
+            await OnStateChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Sub paper-approve + PDF export failed");
+            approveExportMsg = "Failed: " + ex.Message;
+            approveExportIsError = true;
+        }
+        finally
+        {
+            isApprovingExport = false;
         }
     }
 }

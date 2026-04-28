@@ -994,3 +994,214 @@
     padding-top: 0.35rem;
     border-top: 1px solid #f3f4f6;
 }
+
+/* ============================================================================
+   Phase 2a mobile (2026-04-27)
+   ----------------------------------------------------------------------------
+   /my/sub-timesheet already uses a per-day .day-card layout — no table-to-card
+   transform needed at the page level. The inner .coverage-matrix table is the
+   tight spot: 11 columns (teacher + 6 periods + content + room + notes + arrow)
+   does not collapse cleanly under 768 px. We give it a horizontal-scroll
+   container with the teacher column sticky-left so users can scan period
+   coverage without losing the row label.
+
+   Phase 2c (separate session) will replace .coverage-matrix with a stacked
+   per-teacher card layout on mobile if scroll proves painful in the field.
+   ============================================================================ */
+
+@media (max-width: 768px) {
+
+    .sub-timesheet-page {
+        padding: 0.75rem;
+    }
+
+    .sub-timesheet-header {
+        margin-bottom: 0.85rem;
+    }
+
+    .header-inner {
+        padding: 0.85rem 1rem;
+        gap: 0.6rem;
+    }
+
+    .header-brand {
+        gap: 0.55rem;
+    }
+
+    .header-logo {
+        height: 40px;
+    }
+
+    .sub-timesheet-header h1 {
+        font-size: 1.2rem;
+    }
+
+    .header-subtitle {
+        font-size: 0.82rem;
+    }
+
+    .btn-home {
+        padding: 0.45rem 0.7rem;
+        font-size: 0.85rem;
+        min-height: 44px;
+    }
+
+    .employee-info-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.45rem;
+        padding: 0.85rem 1rem;
+    }
+
+    .info-item.deadline,
+    .info-item.history-shortcut {
+        margin-left: 0;
+    }
+
+    .btn-history-inline {
+        width: 100%;
+        min-height: 44px;
+    }
+
+    .period-navigation {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.45rem;
+    }
+
+    .period-navigation .pp-select {
+        width: 100%;
+        min-height: 44px;
+    }
+
+    /* Hero CTA stacks vertically on mobile so the campus picker + button
+       don't fight for the same row. */
+    .hero-cta {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.75rem;
+        padding: 1rem;
+    }
+
+    .hero-right,
+    .hero-campus-picker {
+        width: 100%;
+    }
+
+    .btn-hero-primary {
+        width: 100%;
+        min-height: 48px;
+        font-size: 1rem;
+    }
+
+    /* Day card header — stack the heading row + check-in/out pills. */
+    .day-card {
+        padding: 0.85rem;
+    }
+
+    .day-card-header-top,
+    .day-card-header-bottom {
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    .day-card-heading {
+        flex: 1 1 100%;
+    }
+
+    .day-date {
+        font-size: 1rem;
+    }
+
+    .checkin-pill {
+        flex: 1 1 calc(50% - 0.25rem);
+        font-size: 0.85rem;
+    }
+
+    .btn-fix-times {
+        flex: 1 1 100%;
+        min-height: 44px;
+    }
+
+    /* Coverage matrix: horizontal scroll inside the day card with the
+       teacher column sticky-left so the row label stays visible. */
+    .day-card-body {
+        padding: 0.5rem;
+    }
+
+    .coverage-matrix {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .coverage-matrix thead,
+    .coverage-matrix tbody {
+        display: table;
+        width: max-content;
+        min-width: 100%;
+    }
+
+    .coverage-matrix thead th,
+    .coverage-matrix tbody td {
+        font-size: 0.82rem;
+        padding: 0.4rem 0.5rem;
+    }
+
+    .coverage-matrix thead th.col-teacher,
+    .coverage-matrix tbody td.teacher-cell {
+        position: sticky;
+        left: 0;
+        background: #fff;
+        z-index: 2;
+        min-width: 7.5rem;
+        box-shadow: 2px 0 4px rgba(0, 0, 0, 0.04);
+    }
+
+    .coverage-matrix thead th.col-teacher {
+        background: #f3f4f6;
+    }
+
+    .teacher-summary-row.expanded td.teacher-cell {
+        background: #eff6ff;
+    }
+
+    .expand-arrow {
+        font-size: 1rem;
+        min-width: 28px;
+        display: inline-block;
+    }
+
+    /* Teacher detail (expanded row): grid collapses to single column. */
+    .teacher-detail-grid {
+        grid-template-columns: 1fr !important;
+    }
+
+    .period-detail-card {
+        padding: 0.6rem;
+    }
+
+    .period-detail-head {
+        flex-wrap: wrap;
+        gap: 0.35rem;
+    }
+
+    .pd-actions {
+        flex-wrap: wrap;
+    }
+
+    .btn-inline-save,
+    .btn-inline-cancel,
+    .btn-inline-edit,
+    .btn-inline-remove,
+    .btn-confirm-remove {
+        min-height: 40px;
+        padding: 0.45rem 0.75rem;
+    }
+
+    .inline-notes {
+        width: 100%;
+        font-size: 0.95rem;
+    }
+}

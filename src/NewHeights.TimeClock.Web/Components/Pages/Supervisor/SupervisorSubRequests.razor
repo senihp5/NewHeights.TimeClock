@@ -1,4 +1,5 @@
 @page "/supervisor/sub-requests"
+@page "/supervisor/sub-requests/{WeekFilterParam}"
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.EntityFrameworkCore
@@ -29,6 +30,17 @@
             Teachers manage their own sub outreach via the My Sub Requests page;
             this view also lets admins monitor in-flight requests and override outreach if needed.
         </p>
+        @* Round-trip back link — set when arriving from Sub Calendar via
+           ?backWk={weekOffset}. Lets the supervisor jump back to the same
+           week they were viewing without losing their place. *@
+        @if (BackWeekOffset.HasValue)
+        {
+            var bw = BackWeekOffset.Value;
+            var bwUrl = bw == 0 ? "/supervisor/sub-calendar" : $"/supervisor/sub-calendar/{bw}";
+            <p style="margin:.35rem 0 0; font-size:.9rem;">
+                <a href="@bwUrl" style="color:#1d4ed8; text-decoration:underline;">← Back to Sub Calendar</a>
+            </p>
+        }
     </header>
 
     <div class="filter-bar">
@@ -51,7 +63,11 @@
         </div>
         <div class="info-item">
             <span class="info-label">Week:</span>
-            <select @bind="selectedWeekFilter" @bind:after="LoadDataAsync">
+            @* Selection-persistence pattern: dropdown change pushes the route
+               so the URL is the source of truth for the week filter. Going to
+               the notes page and clicking back lands the supervisor on the
+               same week instead of resetting to the default ("0" / this week). *@
+            <select @bind="selectedWeekFilter" @bind:after="OnWeekFilterChangedAsync">
                 <option value="all">All weeks</option>
                 @foreach (var w in availableWeeks)
                 {
@@ -310,9 +326,11 @@
                             <span class="confirmed-email"> · confirmation email sent ✓</span>
                         }
                         @* Migration 050: supervisors have read-only access to
-                           the per-period class notes page for oversight. *@
+                           the per-period class notes page for oversight.
+                           Round-trip: pass the current week filter so the notes
+                           page back-link returns to the same week. *@
                         <div style="margin-top:.4rem;">
-                            <a href="@($"/sub-request/{req.SubRequestId}/notes")"
+                            <a href="@($"/sub-request/{req.SubRequestId}/notes?backWk={selectedWeekFilter}")"
                                style="display:inline-block; padding:.3rem .75rem; background:white; color:#1e3a5f; border:1px solid #1e3a5f; text-decoration:none; border-radius:6px; font-size:.82rem; font-weight:500;">
                                 View Class Notes
                             </a>
@@ -379,6 +397,18 @@
 </div>
 
 @code {
+    // Route-param variant: /supervisor/sub-requests/{WeekFilterParam} lets the
+    // dropdown selection survive a full navigation round-trip (drill into the
+    // class-notes page, click Back, land on the same week). String type so
+    // "all" works alongside numeric offsets like "-1", "0", "1".
+    [Parameter] public string? WeekFilterParam { get; set; }
+
+    // Query-string variant: when the supervisor arrived from Sub Calendar via
+    // "Open in Sub Requests →", that link tacks on ?backWk={offset}. We use it
+    // to render a "← Back to Sub Calendar" link in the header that returns to
+    // the same week the supervisor was viewing.
+    [Parameter, SupplyParameterFromQuery(Name = "backWk")] public int? BackWeekOffset { get; set; }
+
     private List<TcSubRequest> requests = new();
     private bool isLoading = true;
     private string loadError = "";
@@ -390,7 +420,7 @@
     private string scopedCampusDisplay = "";
     private int selectedCampusFilter = 0;
 
-    private string filterStatus = "needs_approval";
+    private string filterStatus = "all";
 
     // Week filter — defaults to "0" (this week) per supervisor request 2026-04-27.
     // "all" disables the week filter; numeric offsets are relative to today's
@@ -441,7 +471,30 @@
             scopedCampusDisplay = userCtx.CampusDisplayName;
         }
 
+        // Seed the dropdown from the route param (when arriving via deep-link
+        // or after a back-button round-trip) BEFORE the first LoadDataAsync,
+        // so the initial query already filters to the correct week.
+        if (!string.IsNullOrWhiteSpace(WeekFilterParam))
+        {
+            selectedWeekFilter = WeekFilterParam;
+        }
+
         BuildWeekOptions();
+        await LoadDataAsync();
+    }
+
+    /// <summary>
+    /// Pushes the URL when the week dropdown changes so the route is the
+    /// source of truth for the current selection. forceLoad=false stays in
+    /// the SignalR circuit; replace=true keeps the back-button history clean
+    /// (one entry per page, not one per dropdown change).
+    /// </summary>
+    private async Task OnWeekFilterChangedAsync()
+    {
+        var url = string.IsNullOrWhiteSpace(selectedWeekFilter) || selectedWeekFilter == "0"
+            ? "/supervisor/sub-requests"
+            : $"/supervisor/sub-requests/{selectedWeekFilter}";
+        Navigation.NavigateTo(url, forceLoad: false, replace: true);
         await LoadDataAsync();
     }
 

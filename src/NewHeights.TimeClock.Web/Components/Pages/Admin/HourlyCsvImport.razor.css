@@ -206,6 +206,36 @@
     margin-right: auto;
 }
 
+/* 2026-04-27: "Mark as Employee Approved on import" toggle in the apply row.
+   Gold-tinted pill matching the admin warning aesthetic from the rest of
+   the portal (HRPayroll's "Approve & Export PDF" button, the Need Help link). */
+.csv-import .employee-approve-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+    border: 1px solid #fbbf24;
+    border-radius: 6px;
+    padding: 0.4rem 0.85rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #78350f;
+    cursor: pointer;
+    user-select: none;
+}
+
+.csv-import .employee-approve-toggle:hover {
+    background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
+}
+
+.csv-import .employee-approve-toggle input {
+    margin: 0;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: #b45309;
+}
+
 .csv-import .error-list {
     background: #fef2f2;
     border: 1px solid #fecaca;

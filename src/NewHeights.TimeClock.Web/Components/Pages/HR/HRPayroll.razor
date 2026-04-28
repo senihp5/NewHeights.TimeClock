@@ -314,12 +314,14 @@
 
     // PreviousPeriod / NextPeriod removed 2026-04-24 in favor of the pay-period
     // dropdown. OnPayPeriodChangedAsync is the single entry point for nav.
-    private void ViewDetails(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}");
+    // 2026-04-28: pass backPp so the supervisor-view breadcrumb returns the
+    // user back to /hr/payroll with the same pay-period selected (round-trip).
+    private void ViewDetails(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}?backPp={selectedPayPeriodId}");
 
     // Deep-link to the Exceptions section on the single-employee review page.
     // Matches the id="exceptions" anchor on SupervisorTimesheetView so the
     // browser scrolls straight to the exceptions list after nav.
-    private void ViewExceptions(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}#exceptions");
+    private void ViewExceptions(int id) => Navigation.NavigateTo($"/supervisor/timesheet/{id}/{periodOffset}?backPp={selectedPayPeriodId}#exceptions");
 
     private async Task ApproveEmployee(int employeeId)
     {

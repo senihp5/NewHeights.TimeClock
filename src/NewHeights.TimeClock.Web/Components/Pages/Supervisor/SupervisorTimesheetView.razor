@@ -24,7 +24,11 @@
 
 <div class="supervisor-review-page">
     <nav class="breadcrumb">
-        <a href="/supervisor/timesheets">← Back to Team Timesheets</a>
+        @* 2026-04-28: backPp query string round-trips the pay-period selection
+           from Team Timesheets so the supervisor lands back on the same period
+           they were reviewing. Falls back to the unfiltered URL when the deep-
+           link was reached without a backPp (e.g. directly typed). *@
+        <a href="@(BackPayPeriodId.HasValue ? $"/supervisor/timesheets/{BackPayPeriodId}" : "/supervisor/timesheets")">← Back to Team Timesheets</a>
     </nav>
 
     <header class="review-header">
@@ -120,7 +124,15 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach (var day in week.Days)
+                        @* 2026-04-28: skip weekend rows. School operates Mon–Fri;
+                           Saturday/Sunday rows just add scroll without value
+                           on the supervisor review. Punches that landed on a
+                           weekend (rare — usually a kiosk timezone quirk) are
+                           still in TC_TimePunches and would be caught by the
+                           per-day exception drill-down on the troubleshoot
+                           page. *@
+                        @foreach (var day in week.Days.Where(d => d.Date.DayOfWeek != DayOfWeek.Saturday
+                                                              && d.Date.DayOfWeek != DayOfWeek.Sunday))
                         {
                             var amStatus = GetShiftStatus(day, "AM");
                             var pmStatus = GetShiftStatus(day, "PM");
@@ -586,6 +598,12 @@
 @code {
     [Parameter] public int EmployeeId { get; set; }
     [Parameter] public int PeriodOffset { get; set; } = 0;
+
+    // 2026-04-28: optional query-string carrier so the breadcrumb back-link
+    // returns to the exact pay-period the supervisor was filtered to on the
+    // Team Timesheets page. Set by Team Timesheets via ?backPp={PayPeriodId}.
+    // Null when the page is reached directly (no breadcrumb context).
+    [Parameter, SupplyParameterFromQuery(Name = "backPp")] public int? BackPayPeriodId { get; set; }
 
     private int periodOffset = 0;
     private DateTime periodAnchorDate = DateTime.Today;

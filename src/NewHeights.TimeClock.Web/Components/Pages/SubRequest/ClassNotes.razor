@@ -254,6 +254,12 @@
 @code {
     [Parameter] public long SubRequestId { get; set; }
 
+    // Round-trip: when supervisors arrive from /supervisor/sub-requests with
+    // a week filter active, the parent page passes ?backWk={offset|"all"} so
+    // the Back button returns to the same week. Read as string to preserve
+    // the "all" sentinel; numeric offsets stay parseable downstream.
+    [Parameter, SupplyParameterFromQuery(Name = "backWk")] public string? BackWeekFilter { get; set; }
+
     private bool isLoading = true;
     private bool isSaving = false;
     private bool accessDenied = false;
@@ -373,7 +379,15 @@
             {
                 canView = true;
                 viewerReason = "supervisor / admin";
-                backLink = "/supervisor/sub-requests";
+                // Round-trip: honor ?backWk={offset|all} when present so the
+                // Back link returns the supervisor to the same week filter
+                // they had on /supervisor/sub-requests. Falls back to the
+                // flat list URL when no hint was passed.
+                backLink = !string.IsNullOrWhiteSpace(BackWeekFilter)
+                    ? (BackWeekFilter == "0"
+                        ? "/supervisor/sub-requests"
+                        : $"/supervisor/sub-requests/{BackWeekFilter}")
+                    : "/supervisor/sub-requests";
             }
             else
             {

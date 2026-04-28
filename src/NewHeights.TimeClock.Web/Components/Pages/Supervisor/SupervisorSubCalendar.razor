@@ -434,7 +434,9 @@
                     <div class="detail-row"><span class="detail-label">Instructions:</span><span>@selectedCell.SpecialInstructions</span></div>
                 }
                 <div class="detail-link">
-                    <a href="/supervisor/sub-requests">Open in Sub Requests →</a>
+                    @* Round-trip: pass current week offset so Sub Requests can
+                       render a "Back to Sub Calendar (week of …)" link. *@
+                    <a href="@($"/supervisor/sub-requests?backWk={weekOffset}")">Open in Sub Requests →</a>
                 </div>
                 @* Take-over action: visible only when the request still needs
                    intervention (not already supervisor-approved). Day-of and
