@@ -777,6 +777,7 @@
     {
         if (!int.TryParse(e.Value?.ToString(), out var id)) return;
         selectedPayPeriodId = id;
+        expandedDays.Clear();
         await LoadTimesheet();
     }
 
@@ -858,7 +859,6 @@
             .OrderByDescending(cr => cr.CreatedDate)
             .ToListAsync();
 
-        expandedDays.Clear();
         approvalChecked = false;
         supervisorNotes = "";
         StateHasChanged();
@@ -1361,51 +1361,115 @@
     /// </summary>
     private DaySlotView GetDaySlots(DailyTimesheetEntry day)
     {
+        // 2026-04-28 (rewrite): Pair-aware slot assignment.
+        //
+        // Original version classified every punch independently by clock
+        // time, which produced nonsensical pairings on real data: a 7:45
+        // AM IN landed in AM-IN, the matching 12:45 PM OUT landed in
+        // PM-OUT (because 12:45 is past the AM/PM boundary), and an
+        // unrelated 4:15 PM badge IN landed in PM-IN, producing a "PM
+        // session" with negative hours.
+        //
+        // New algorithm:
+        //   1. Walk punches in time order, build (IN, OUT) pairs with a
+        //      pendingIn state machine. IN-after-IN: the earlier becomes
+        //      orphan (favors the later, manually-corrected IN over a
+        //      duplicate badge IN). OUT with no pending IN: orphan. End
+        //      of day with unmatched IN: orphan.
+        //   2. Classify each pair by the MIDPOINT time of the session.
+        //      Reads more naturally for shifts that cross a block
+        //      boundary — e.g. 12:45 PM IN + 4:45 PM OUT has midpoint
+        //      2:45 PM and lands cleanly in PM, while 4:15 PM IN + 9:00
+        //      PM OUT has midpoint 6:37 PM and lands in Eve.
+        //   3. If the natural block is occupied, promote upward (AM→PM,
+        //      PM→Eve). Never backward — an Eve session shouldn't show
+        //      up in PM. If all upward blocks are full, send the pair
+        //      to Extras together so both halves stay visible.
+        //   4. Orphans always land in Extras (they aren't a session).
+        //   5. Lunch/Break punches always land in Extras (unchanged).
         var view = new DaySlotView();
         var punches = day.Punches.OrderBy(p => p.PunchTime).ToList();
 
+        var workPunches = new List<PunchEntry>();
         foreach (var p in punches)
         {
-            var block = ClassifyBlock(p.PunchTime);
-            var isIn = p.PunchType is "In" or "LunchIn" or "BreakIn";
-            var isOut = p.PunchType is "Out" or "LunchOut" or "BreakOut";
-
-            // Lunch / Break: never claim a Work In/Out slot — always Extras.
-            // Reception + admin staff don't currently log lunch via the clock,
-            // but if they ever do we want those punches visible separately so
-            // the slot layout doesn't get muddied.
             if (p.PunchType is "LunchIn" or "LunchOut" or "BreakIn" or "BreakOut")
-            {
                 view.Extras.Add(p);
-                continue;
-            }
-
-            // Try to place into this block's IN or OUT slot; on conflict
-            // (slot already filled, wrong punch direction, etc.) fall through
-            // to Extras. Properties can't be passed by ref in C#, so we
-            // expand each block as a small explicit branch — verbose but
-            // unambiguous.
-            bool placed = false;
-            if (block == DayBlock.Am)
-            {
-                if (isIn && view.AmIn == null) { view.AmIn = p; placed = true; }
-                else if (isOut && view.AmOut == null) { view.AmOut = p; placed = true; }
-            }
-            else if (block == DayBlock.Pm)
-            {
-                if (isIn && view.PmIn == null) { view.PmIn = p; placed = true; }
-                else if (isOut && view.PmOut == null) { view.PmOut = p; placed = true; }
-            }
-            else // Eve
-            {
-                if (isIn && view.EveIn == null) { view.EveIn = p; placed = true; }
-                else if (isOut && view.EveOut == null) { view.EveOut = p; placed = true; }
-            }
-
-            if (!placed) view.Extras.Add(p);
+            else
+                workPunches.Add(p);
         }
 
+        var pairs = new List<(PunchEntry In, PunchEntry Out)>();
+        var orphans = new List<PunchEntry>();
+        PunchEntry? pendingIn = null;
+
+        foreach (var p in workPunches)
+        {
+            var isIn = p.PunchType.Equals("In", StringComparison.OrdinalIgnoreCase);
+            var isOut = p.PunchType.Equals("Out", StringComparison.OrdinalIgnoreCase);
+
+            if (isIn)
+            {
+                if (pendingIn != null) orphans.Add(pendingIn);
+                pendingIn = p;
+            }
+            else if (isOut)
+            {
+                if (pendingIn != null)
+                {
+                    pairs.Add((pendingIn, p));
+                    pendingIn = null;
+                }
+                else
+                {
+                    orphans.Add(p);
+                }
+            }
+        }
+        if (pendingIn != null) orphans.Add(pendingIn);
+
+        foreach (var (inP, outP) in pairs)
+        {
+            var midpoint = new DateTime((inP.PunchTime.Ticks + outP.PunchTime.Ticks) / 2);
+            var natural = ClassifyBlock(midpoint);
+            if (!TryPlacePair(view, natural, inP, outP))
+            {
+                view.Extras.Add(inP);
+                view.Extras.Add(outP);
+            }
+        }
+
+        foreach (var o in orphans) view.Extras.Add(o);
+
+        view.Extras = view.Extras.OrderBy(e => e.PunchTime).ToList();
         return view;
+    }
+
+    private static bool TryPlacePair(DaySlotView view, DayBlock natural, PunchEntry inP, PunchEntry outP)
+    {
+        DayBlock[] order = natural switch
+        {
+            DayBlock.Am => new[] { DayBlock.Am, DayBlock.Pm, DayBlock.Eve },
+            DayBlock.Pm => new[] { DayBlock.Pm, DayBlock.Eve },
+            _           => new[] { DayBlock.Eve }
+        };
+
+        foreach (var b in order)
+        {
+            if (b == DayBlock.Am && view.AmIn == null && view.AmOut == null)
+            {
+                view.AmIn = inP; view.AmOut = outP; return true;
+            }
+            if (b == DayBlock.Pm && view.PmIn == null && view.PmOut == null)
+            {
+                view.PmIn = inP; view.PmOut = outP; return true;
+            }
+            if (b == DayBlock.Eve && view.EveIn == null && view.EveOut == null)
+            {
+                view.EveIn = inP; view.EveOut = outP; return true;
+            }
+        }
+        return false;
     }
 
     private static DayBlock ClassifyBlock(DateTime punchTime)
