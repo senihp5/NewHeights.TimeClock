@@ -463,8 +463,16 @@
                 .Select(g => new SubGroup
                 {
                     EmployeeId = g.Key,
+                    // 2026-04-28: Honor TcEmployee.DisplayName before falling
+                    // back to email — substitutes have no Staff record (no
+                    // PowerSchool DCID) so Staff?.FullName is null for them,
+                    // and the previous chain dropped straight to the raw
+                    // email address. Adds DisplayName step + prettifies the
+                    // email when DisplayName is also null so the supervisor
+                    // sees "Kguess" instead of "kguess@newheightsed.com".
                     EmployeeName = g.First().Employee?.Staff?.FullName
-                                 ?? g.First().Employee?.Email
+                                 ?? g.First().Employee?.DisplayName
+                                 ?? FormatEmailAsName(g.First().Employee?.Email)
                                  ?? $"Employee {g.Key}",
                     Cards = g.OrderBy(c => c.WorkDate).ThenBy(c => c.CampusId).ToList()
                 })
@@ -635,5 +643,27 @@
     private void CloseHistory()
     {
         showHistory = false;
+    }
+
+    // ── Display helpers ───────────────────────────────────────────────────
+    // Last-resort prettifier for the fallback chain. Used only when both
+    // Staff.FullName and TcEmployee.DisplayName are null. Strips the @domain
+    // suffix and title-cases the local part. Splits on '.' or '_' so an
+    // email like "john.smith@…" becomes "John Smith"; a single token like
+    // "kguess" just becomes "Kguess". Returns null if email is null/empty
+    // so the chain continues to the "Employee {id}" fallback.
+    private static string? FormatEmailAsName(string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return null;
+
+        var atIndex = email.IndexOf('@');
+        var local = atIndex > 0 ? email[..atIndex] : email;
+        if (string.IsNullOrWhiteSpace(local)) return null;
+
+        var parts = local.Split(new[] { '.', '_' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return null;
+
+        return string.Join(' ', parts.Select(p =>
+            char.ToUpperInvariant(p[0]) + (p.Length > 1 ? p[1..].ToLowerInvariant() : "")));
     }
 }

@@ -1233,6 +1233,17 @@
         return diff.Ticks > 0 ? diff.Ticks : 0;
     }
 
+    private static DayBlock ClassifyBlock(DateTime punchTime)
+    {
+        // Single-punch classifier used by GetShiftStatus to light the AM /
+        // PM / Evening pills on the collapsed day row. Boundaries match
+        // ClassifyPair: AM <12:30 PM, PM 12:30–4:30 PM, Eve >4:30 PM.
+        var minutes = punchTime.Hour * 60 + punchTime.Minute;
+        if (minutes < 12 * 60 + 30) return DayBlock.Am;
+        if (minutes <= 16 * 60 + 30) return DayBlock.Pm;
+        return DayBlock.Eve;
+    }
+
     private static (string Label, string Css) SourceTag(PunchEntry p)
     {
         if (p.IsAutoCheckout) return ("SYSTEM", "auto-system");
