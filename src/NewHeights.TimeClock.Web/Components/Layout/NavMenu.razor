@@ -114,6 +114,13 @@
                 <div class="nav-item px-2">
                     <NavLink class="nav-link" href="hr/payroll">Payroll Review</NavLink>
                 </div>
+                @* 2026-04-28: Timecard Recalc opened to HR (was Admin-only). HR
+                   reaches for this when closing a pay period if any imports
+                   need a fresh hours roll-up. Admins still have access via the
+                   policy cascade, so the duplicate Admin link is removed below. *@
+                <div class="nav-item px-2">
+                    <NavLink class="nav-link" href="admin/timecard-recalc">Timecard Recalc</NavLink>
+                </div>
             </details>
         </AuthorizeView>
 
@@ -156,9 +163,8 @@
                 <div class="nav-item px-2">
                     <NavLink class="nav-link" href="admin/bell-schedules">Bell Schedules</NavLink>
                 </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/timecard-recalc">Timecard Recalc</NavLink>
-                </div>
+                @* Timecard Recalc moved to HR section 2026-04-28 — admins still
+                   reach it via the HR group (RequireHR includes admin). *@
                 <div class="nav-item px-2">
                     <NavLink class="nav-link" href="admin/hourly-csv-import">Hourly CSV Import</NavLink>
                 </div>

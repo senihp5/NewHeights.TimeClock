@@ -1,15 +1,20 @@
 @page "/admin/timecard-recalc"
 @using static Microsoft.AspNetCore.Components.Web.RenderMode
 @rendermode InteractiveServer
-@attribute [Authorize(Policy = "RequireAdmin")]
+@attribute [Authorize(Policy = "RequireHR")]
 @using NewHeights.TimeClock.Data
 @using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
 @using NewHeights.TimeClock.Shared.Constants
 @using NewHeights.TimeClock.Shared.Enums
 @using NewHeights.TimeClock.Web.Services
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Authorization
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ITimesheetService TimesheetService
+@inject IPayPeriodService PayPeriodService
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
 @inject ILogger<TimecardRecalc> Logger
 
 <PageTitle>Timecard Recalculation - @AppConstants.Branding.ShortName</PageTitle>
@@ -36,47 +41,110 @@
         <div class="alert alert-error">@errorMessage</div>
     }
 
-    <!-- ── Section A: cleanup-affected bulk recalc ───────────────────────── -->
+    <!-- ── Section A: period-wide bulk recalc ───────────────────────────── -->
     <div class="admin-card wide">
-        <h2>Cleanup-affected bulk recalc</h2>
+        <h2>Period-wide bulk recalc</h2>
         <p class="section-help">
-            Every (employee, date) pair where a punch was voided by the 2026-04-23 auto-checkout
-            cleanup. Click <strong>Recalculate All</strong> to run
-            <code>RecalculateDailyTimecardAsync</code> for each row.
+            Re-run <code>RecalculateDailyTimecardAsync</code> for every (employee, date) pair in
+            a pay period that has at least one punch or existing daily timecard. Use as a
+            safety pass before closing payroll, after a SQL-level cleanup, or whenever a CSV
+            import may have failed silently per-date.
         </p>
 
-        <div class="row-actions">
-            <button class="btn-secondary" @onclick="LoadAffectedAsync" disabled="@isWorking">
-                @(isWorking ? "Loading…" : "Refresh List")
-            </button>
-            <button class="btn-primary" @onclick="RecalcAllAffectedAsync"
-                    disabled="@(isWorking || affectedPairs.Count == 0)">
-                @(isWorking ? "Recalculating…" : $"Recalculate All ({affectedPairs.Count})")
-            </button>
-            <span class="row-count">@affectedPairs.Count pair(s) pending</span>
+        <div class="bulk-form">
+            <div class="form-field">
+                <label for="bulk-period">Pay Period</label>
+                <select id="bulk-period" class="form-input"
+                        @bind="bulkPayPeriodId"
+                        disabled="@isWorking">
+                    @foreach (var p in availablePeriods)
+                    {
+                        <option value="@p.PayPeriodId">
+                            @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                            @(p.IsOpen ? " · Current" : "")
+                        </option>
+                    }
+                </select>
+            </div>
+
+            <div class="form-field">
+                <label>Scope</label>
+                <div class="bulk-scope-row">
+                    <label class="bulk-scope-radio">
+                        <input type="radio" name="bulk-scope"
+                               checked="@(bulkScope == "all-hourly")"
+                               @onchange="SetScopeAllHourly"
+                               disabled="@isWorking" />
+                        <span>All hourly + part-time employees</span>
+                    </label>
+                    <label class="bulk-scope-radio">
+                        <input type="radio" name="bulk-scope"
+                               checked="@(bulkScope == "specific")"
+                               @onchange="SetScopeSpecific"
+                               disabled="@isWorking" />
+                        <span>Specific employee</span>
+                    </label>
+                </div>
+                @if (bulkScope == "specific")
+                {
+                    <select class="form-input bulk-emp-select" @bind="bulkEmployeeId" disabled="@isWorking">
+                        <option value="0">— Select employee —</option>
+                        @foreach (var emp in allEmployees)
+                        {
+                            <option value="@emp.EmployeeId">
+                                @(emp.DisplayName ?? emp.Email) — @emp.IdNumber (#@emp.EmployeeId · @emp.EmployeeType)
+                            </option>
+                        }
+                    </select>
+                }
+            </div>
+
+            <div class="form-field form-field-action">
+                <button class="btn-primary"
+                        @onclick="RunBulkRecalcAsync"
+                        disabled="@(isWorking || bulkPayPeriodId == 0 || (bulkScope == "specific" && bulkEmployeeId == 0))">
+                    @(isWorking ? $"Recalcing… ({bulkProgressDone} of {bulkProgressTotal})" : "Run Bulk Recalc")
+                </button>
+            </div>
         </div>
 
-        @if (affectedPairs.Count > 0)
+        @if (bulkResults.Count > 0)
         {
+            <div class="bulk-summary-strip">
+                <span><strong>@bulkResults.Count</strong> total</span>
+                <span class="divider">·</span>
+                <span><strong>@bulkResults.Count(r => string.IsNullOrEmpty(r.Error))</strong> succeeded</span>
+                @if (bulkResults.Any(r => !string.IsNullOrEmpty(r.Error)))
+                {
+                    <span class="divider">·</span>
+                    <span class="warn-inline"><strong>@bulkResults.Count(r => !string.IsNullOrEmpty(r.Error))</strong> failed</span>
+                }
+                @if (bulkResults.Any(r => r.HoursBefore != r.HoursAfter))
+                {
+                    <span class="divider">·</span>
+                    <span><strong>@bulkResults.Count(r => r.HoursBefore != r.HoursAfter)</strong> hours changed</span>
+                }
+            </div>
+
             <div class="table-wrapper">
                 <table class="data-table">
                     <thead>
                         <tr>
                             <th>Employee</th>
                             <th>Work Date</th>
-                            <th>Campus</th>
                             <th>Hours Before</th>
                             <th>Hours After</th>
+                            <th>Δ</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
-                        @foreach (var row in affectedPairs)
+                        @foreach (var row in bulkResults)
                         {
-                            <tr class="@(row.HasCompleted ? "recalc-done" : "")">
+                            var changed = row.HoursBefore != row.HoursAfter;
+                            <tr class="@(changed ? "recalc-changed" : "")">
                                 <td>@row.EmployeeDisplay <span class="muted-id">#@row.EmployeeId</span></td>
                                 <td>@row.WorkDate.ToString("yyyy-MM-dd ddd")</td>
-                                <td>@(row.CampusName ?? "—")</td>
                                 <td>@(row.HoursBefore?.ToString("F2") ?? "—")</td>
                                 <td>
                                     @if (row.HoursAfter.HasValue)
@@ -88,18 +156,26 @@
                                         <span>—</span>
                                     }
                                 </td>
-                                <td>
-                                    @if (row.HasCompleted)
+                                <td class="@(changed ? "delta-changed" : "")">
+                                    @if (changed && row.HoursBefore.HasValue && row.HoursAfter.HasValue)
                                     {
-                                        <span class="status-chip success">✓ Recalced</span>
+                                        var delta = row.HoursAfter.Value - row.HoursBefore.Value;
+                                        var sign = delta >= 0 ? "+" : "";
+                                        <strong>@sign@delta.ToString("F2")</strong>
                                     }
-                                    else if (!string.IsNullOrEmpty(row.Error))
+                                    else
+                                    {
+                                        <span>—</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (!string.IsNullOrEmpty(row.Error))
                                     {
                                         <span class="status-chip error" title="@row.Error">✗ Error</span>
                                     }
                                     else
                                     {
-                                        <span class="status-chip pending">Pending</span>
+                                        <span class="status-chip success">✓ Recalced</span>
                                     }
                                 </td>
                             </tr>
@@ -108,11 +184,10 @@
                 </table>
             </div>
         }
-        else if (!isWorking)
+        else if (!isWorking && bulkRanOnce)
         {
             <div class="empty-state">
-                <p>No cleanup-affected pairs found. The affected list is built from punches voided
-                   with the note marker <code>duplicate or orphan auto-checkout</code> in the last 60 days.</p>
+                <p>No (employee, date) pairs with punches or daily timecards were found for that scope/period. Nothing to recalc.</p>
             </div>
         }
     </div>
@@ -212,11 +287,21 @@
     private bool isWorking = false;
     private string successMessage = "";
     private string errorMessage = "";
+    private string currentUserEmail = "";
 
-    private List<AffectedRow> affectedPairs = new();
     private List<TcEmployee> allEmployees = new();
 
-    // Manual recalc state
+    // 2026-04-28 refactor: Section A is now a period-wide bulk recalc.
+    private List<NewHeights.TimeClock.Web.Services.PayPeriodInfo> availablePeriods = new();
+    private int bulkPayPeriodId = 0;
+    private string bulkScope = "all-hourly";
+    private int bulkEmployeeId = 0;
+    private List<BulkResultRow> bulkResults = new();
+    private int bulkProgressDone = 0;
+    private int bulkProgressTotal = 0;
+    private bool bulkRanOnce = false;
+
+    // Manual recalc state (Section B — unchanged)
     private int manualEmployeeId = 0;
     private DateOnly manualStartDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-14));
     private DateOnly manualEndDate = DateOnly.FromDateTime(DateTime.Today);
@@ -224,8 +309,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = auth.User.Identity?.Name ?? "";
         await LoadEmployeesAsync();
-        await LoadAffectedAsync();
+        await LoadAvailablePeriodsAsync();
     }
 
     private async Task LoadEmployeesAsync()
@@ -238,141 +325,212 @@
             .ToListAsync();
     }
 
-    // Queries the audit trail left by the 2026-04-23 cleanup: punches with
-    // IsAutoCheckout=1 + PunchStatus=Voided + the marker note. Groups by
-    // (employee, date). Joins to TC_DailyTimecards for before-hours display.
-    private async Task LoadAffectedAsync()
+    /// <summary>
+    /// Load 6 months of pay periods (back) + 2 months forward. Default selection
+    /// is the current period — that's what HR usually wants to recalc before close.
+    /// </summary>
+    private async Task LoadAvailablePeriodsAsync()
     {
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var current = await PayPeriodService.GetCurrentPayPeriodAsync();
+            var anchor = current.StartDate;
+            var rows = await ctx.TcPayPeriods
+                .AsNoTracking()
+                .Where(p => p.StartDate >= anchor.AddMonths(-6) && p.StartDate <= anchor.AddMonths(2))
+                .OrderByDescending(p => p.StartDate)
+                .ToListAsync();
+            availablePeriods = rows.Select(p => new NewHeights.TimeClock.Web.Services.PayPeriodInfo
+            {
+                PayPeriodId = p.PayPeriodId,
+                PeriodName = p.PeriodName,
+                StartDate = p.StartDate,
+                EndDate = p.EndDate,
+                PayDate = p.PayDate ?? p.EndDate
+            }).ToList();
+            bulkPayPeriodId = current.PayPeriodId;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load pay periods for bulk recalc");
+            errorMessage = "Could not load pay periods: " + ex.Message;
+        }
+    }
+
+    private void SetScopeAllHourly()
+    {
+        bulkScope = "all-hourly";
+        bulkEmployeeId = 0;
+    }
+
+    private void SetScopeSpecific()
+    {
+        bulkScope = "specific";
+    }
+
+    /// <summary>
+    /// Section A — bulk recalc every (employee, date) pair in the selected pay
+    /// period that has at least one TC_TimePunch or TC_DailyTimecard row.
+    /// Hourly + part-time scope by default; can be narrowed to a specific
+    /// employee. Audits a single bulk-action entry summarizing the run.
+    /// </summary>
+    private async Task RunBulkRecalcAsync()
+    {
+        if (isWorking || bulkPayPeriodId == 0) return;
+        if (bulkScope == "specific" && bulkEmployeeId == 0)
+        {
+            errorMessage = "Pick a specific employee or switch to All Hourly scope.";
+            return;
+        }
+
+        var period = availablePeriods.FirstOrDefault(p => p.PayPeriodId == bulkPayPeriodId);
+        if (period == null) { errorMessage = "Pay period not found."; return; }
+
         isWorking = true;
+        successMessage = "";
         errorMessage = "";
+        bulkResults.Clear();
+        bulkProgressDone = 0;
+        bulkRanOnce = false;
+
         try
         {
             using var ctx = await DbFactory.CreateDbContextAsync();
 
-            var cutoff = DateTime.Today.AddDays(-60);
+            // Determine target employees.
+            List<int> targetEmpIds;
+            if (bulkScope == "specific")
+            {
+                targetEmpIds = new List<int> { bulkEmployeeId };
+            }
+            else
+            {
+                targetEmpIds = await ctx.TcEmployees
+                    .AsNoTracking()
+                    .Where(e => e.IsActive && (e.EmployeeType == EmployeeType.HourlyStaff
+                                            || e.EmployeeType == EmployeeType.HourlyPartTime))
+                    .Select(e => e.EmployeeId)
+                    .ToListAsync();
+            }
 
-            var voidedPunches = await ctx.TcTimePunches
+            if (targetEmpIds.Count == 0)
+            {
+                bulkRanOnce = true;
+                return;
+            }
+
+            var startDt = period.StartDate.ToDateTime(TimeOnly.MinValue);
+            var endDt = period.EndDate.ToDateTime(TimeOnly.MaxValue);
+
+            // Find every (employee, date) with at least one punch in range.
+            var fromPunches = await ctx.TcTimePunches
                 .AsNoTracking()
-                .Where(p => p.IsAutoCheckout
-                         && p.PunchStatus == PunchStatus.Voided
-                         && p.PunchDateTime >= cutoff
-                         && p.Notes != null
-                         && p.Notes.Contains("duplicate or orphan auto-checkout"))
+                .Where(p => targetEmpIds.Contains(p.EmployeeId)
+                         && p.PunchDateTime >= startDt
+                         && p.PunchDateTime <= endDt)
                 .Select(p => new { p.EmployeeId, p.PunchDateTime })
                 .ToListAsync();
 
-            // Group by (employee, date). We deliberately do NOT carry the voided
-            // punch's CampusId here — auto-checkout punches inherit CampusId from
-            // whatever IN punch they paired with, and earlier bad pairings left
-            // those values scrambled (every voided row showed Stop Six even for
-            // McCart employees). Campus for display comes from the employee's
-            // HomeCampus or their daily timecard's CampusId below.
-            var pairs = voidedPunches
-                .GroupBy(p => new { p.EmployeeId, WorkDate = DateOnly.FromDateTime(p.PunchDateTime) })
-                .Select(g => new { g.Key.EmployeeId, g.Key.WorkDate })
-                .OrderByDescending(p => p.WorkDate)
-                .ThenBy(p => p.EmployeeId)
-                .ToList();
-
-            affectedPairs.Clear();
-            if (pairs.Count == 0) return;
-
-            var empIds = pairs.Select(p => p.EmployeeId).Distinct().ToList();
-            var empLookup = await ctx.TcEmployees
+            var fromCards = await ctx.TcDailyTimecards
                 .AsNoTracking()
-                .Where(e => empIds.Contains(e.EmployeeId))
-                .ToDictionaryAsync(e => e.EmployeeId, e => e);
-
-            var campusLookup = await ctx.Campuses
-                .AsNoTracking()
-                .ToDictionaryAsync(c => c.CampusId, c => c.CampusName);
-
-            // Prefetch current stored TotalHours from TC_DailyTimecards for the "before" column.
-            var dtRows = await ctx.TcDailyTimecards
-                .AsNoTracking()
-                .Where(t => empIds.Contains(t.EmployeeId)
-                         && pairs.Select(x => x.WorkDate).Contains(t.WorkDate))
+                .Where(t => targetEmpIds.Contains(t.EmployeeId)
+                         && t.WorkDate >= period.StartDate
+                         && t.WorkDate <= period.EndDate)
+                .Select(t => new { t.EmployeeId, t.WorkDate, t.TotalHours })
                 .ToListAsync();
 
-            foreach (var p in pairs)
+            // Deduplicate (employee, date) pairs.
+            var pairKeySet = new HashSet<(int, DateOnly)>();
+            foreach (var p in fromPunches) pairKeySet.Add((p.EmployeeId, DateOnly.FromDateTime(p.PunchDateTime)));
+            foreach (var c in fromCards) pairKeySet.Add((c.EmployeeId, c.WorkDate));
+
+            var orderedPairs = pairKeySet
+                .OrderBy(k => k.Item1)
+                .ThenBy(k => k.Item2)
+                .ToList();
+            bulkProgressTotal = orderedPairs.Count;
+
+            if (bulkProgressTotal == 0)
             {
-                var emp = empLookup.GetValueOrDefault(p.EmployeeId);
-                var dt = dtRows.FirstOrDefault(t => t.EmployeeId == p.EmployeeId && t.WorkDate == p.WorkDate);
-
-                // Campus resolution priority:
-                //   1) Daily timecard's CampusId — where they actually worked that day
-                //   2) Employee's HomeCampusId  — their assigned campus
-                //   3) "—"                       — nothing known
-                int? resolvedCampusId = dt?.CampusId ?? emp?.HomeCampusId;
-                var resolvedCampusName = resolvedCampusId.HasValue
-                    ? campusLookup.GetValueOrDefault(resolvedCampusId.Value)
-                    : null;
-
-                affectedPairs.Add(new AffectedRow
-                {
-                    EmployeeId = p.EmployeeId,
-                    EmployeeDisplay = emp?.DisplayName ?? emp?.Email ?? $"Employee {p.EmployeeId}",
-                    WorkDate = p.WorkDate,
-                    CampusName = resolvedCampusName,
-                    HoursBefore = dt?.TotalHours
-                });
+                bulkRanOnce = true;
+                return;
             }
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, "Failed to load affected timecard pairs");
-            errorMessage = $"Failed to load affected pairs: {ex.Message}";
-        }
-        finally
-        {
-            isWorking = false;
-        }
-    }
 
-    private async Task RecalcAllAffectedAsync()
-    {
-        if (affectedPairs.Count == 0) return;
-        isWorking = true;
-        successMessage = "";
-        errorMessage = "";
+            // Lookup tables for display.
+            var empLookup = allEmployees.ToDictionary(e => e.EmployeeId, e => e);
+            var beforeLookup = fromCards
+                .GroupBy(c => (c.EmployeeId, c.WorkDate))
+                .ToDictionary(g => g.Key, g => (decimal?)g.First().TotalHours);
 
-        int recalcedCount = 0;
-        int errorCount = 0;
-
-        try
-        {
-            foreach (var row in affectedPairs)
+            // Run recalcs.
+            int succeeded = 0, failed = 0;
+            foreach (var (empId, workDate) in orderedPairs)
             {
-                if (row.HasCompleted) continue;
+                var row = new BulkResultRow
+                {
+                    EmployeeId = empId,
+                    EmployeeDisplay = empLookup.TryGetValue(empId, out var e)
+                        ? (e.DisplayName ?? e.Email ?? $"Employee {empId}")
+                        : $"Employee {empId}",
+                    WorkDate = workDate,
+                    HoursBefore = beforeLookup.GetValueOrDefault((empId, workDate))
+                };
+
                 try
                 {
-                    await TimesheetService.RecalculateDailyTimecardAsync(row.EmployeeId, row.WorkDate);
+                    await TimesheetService.RecalculateDailyTimecardAsync(empId, workDate);
 
-                    // Read back to capture the new TotalHours for the UI
-                    using var ctx = await DbFactory.CreateDbContextAsync();
-                    var fresh = await ctx.TcDailyTimecards
+                    using var freshCtx = await DbFactory.CreateDbContextAsync();
+                    var fresh = await freshCtx.TcDailyTimecards
                         .AsNoTracking()
-                        .FirstOrDefaultAsync(t => t.EmployeeId == row.EmployeeId && t.WorkDate == row.WorkDate);
-
+                        .FirstOrDefaultAsync(t => t.EmployeeId == empId && t.WorkDate == workDate);
                     row.HoursAfter = fresh?.TotalHours ?? 0m;
-                    row.HasCompleted = true;
-                    recalcedCount++;
-
-                    // Occasional render so the user sees progress live.
-                    if (recalcedCount % 3 == 0) StateHasChanged();
+                    succeeded++;
                 }
                 catch (Exception ex)
                 {
-                    Logger.LogError(ex,
-                        "Recalc failed for Employee {Id} Date {Date}",
-                        row.EmployeeId, row.WorkDate);
+                    Logger.LogError(ex, "Bulk recalc failed for {Emp} {Date}", empId, workDate);
                     row.Error = ex.Message;
-                    errorCount++;
+                    failed++;
                 }
+
+                bulkResults.Add(row);
+                bulkProgressDone++;
+                if (bulkProgressDone % 5 == 0) StateHasChanged();
             }
 
-            successMessage = $"Recalculated {recalcedCount} timecard(s)" +
-                             (errorCount > 0 ? $" — {errorCount} error(s)." : ".");
+            // Audit one summary entry per run.
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Timecard.Recalculated,
+                entityType: AuditEntityTypes.PayPeriod,
+                entityId: period.PayPeriodId.ToString(),
+                newValues: new
+                {
+                    period.PayPeriodId,
+                    period.PeriodName,
+                    Scope = bulkScope,
+                    SpecificEmployeeId = bulkScope == "specific" ? (int?)bulkEmployeeId : null,
+                    EmployeesInScope = targetEmpIds.Count,
+                    PairsRecalced = bulkProgressTotal,
+                    Succeeded = succeeded,
+                    Failed = failed,
+                    HoursChanged = bulkResults.Count(r => r.HoursBefore != r.HoursAfter),
+                    Source = "BULK_RECALC_PAGE",
+                    RecalcedBy = currentUserEmail
+                },
+                deltaSummary: $"Period-wide bulk recalc on {period.PeriodName} — scope={bulkScope}, {succeeded} ok, {failed} failed, {bulkResults.Count(r => r.HoursBefore != r.HoursAfter)} changed hours",
+                source: AuditSource.AdminUi);
+
+            successMessage = $"Bulk recalc complete — {succeeded} of {bulkProgressTotal} succeeded"
+                + (failed > 0 ? $", {failed} failed" : "")
+                + ".";
+            bulkRanOnce = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Bulk recalc unexpected error");
+            errorMessage = $"Bulk recalc failed: {ex.Message}";
         }
         finally
         {
@@ -460,15 +618,13 @@
 
     // ── Row models ────────────────────────────────────────────────────────
 
-    private class AffectedRow
+    private class BulkResultRow
     {
         public int EmployeeId { get; set; }
         public string EmployeeDisplay { get; set; } = "";
         public DateOnly WorkDate { get; set; }
-        public string? CampusName { get; set; }
         public decimal? HoursBefore { get; set; }
         public decimal? HoursAfter { get; set; }
-        public bool HasCompleted { get; set; }
         public string? Error { get; set; }
     }
 
