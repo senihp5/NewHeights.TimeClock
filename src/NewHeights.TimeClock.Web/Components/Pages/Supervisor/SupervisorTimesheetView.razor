@@ -1376,24 +1376,34 @@
         //      orphan (favors the later, manually-corrected IN over a
         //      duplicate badge IN). OUT with no pending IN: orphan. End
         //      of day with unmatched IN: orphan.
-        //   2. Classify each pair by the MIDPOINT time of the session.
-        //      Reads more naturally for shifts that cross a block
-        //      boundary — e.g. 12:45 PM IN + 4:45 PM OUT has midpoint
-        //      2:45 PM and lands cleanly in PM, while 4:15 PM IN + 9:00
-        //      PM OUT has midpoint 6:37 PM and lands in Eve.
+        //   2. Classify each pair by PLURALITY OF OVERLAP — whichever
+        //      block contains the most session time wins. Keeps an
+        //      extended AM shift (e.g. 7:45 AM IN + 5:30 PM OUT, with
+        //      4h45m in AM, 4h in PM, 1h in Eve) anchored in AM where
+        //      the IN naturally belongs, freeing PM/Eve for separate
+        //      sessions. Also handles late-only shifts: 4:13 PM IN +
+        //      9:00 PM OUT spends 4h30m in Eve vs 17m in PM, so the
+        //      pair lands in Eve. Earlier midpoint-based version
+        //      pushed long AM shifts past ~9.5 hours into PM IN slot
+        //      where the morning IN looked alien.
         //   3. If the natural block is occupied, promote upward (AM→PM,
         //      PM→Eve). Never backward — an Eve session shouldn't show
         //      up in PM. If all upward blocks are full, send the pair
         //      to Extras together so both halves stay visible.
         //   4. Orphans always land in Extras (they aren't a session).
-        //   5. Lunch/Break punches always land in Extras (unchanged).
+        //   5. Lunch punches act as session boundaries — a LunchOut
+        //      closes the current pair and a LunchIn opens a new one,
+        //      so a full-time hourly day with a lunch break renders as
+        //      two clean pairs (AM IN→Lunch OUT, Lunch IN→Work OUT)
+        //      that fall into AM and PM slots. Break punches still go
+        //      to Extras (too short to meaningfully split a session).
         var view = new DaySlotView();
         var punches = day.Punches.OrderBy(p => p.PunchTime).ToList();
 
         var workPunches = new List<PunchEntry>();
         foreach (var p in punches)
         {
-            if (p.PunchType is "LunchIn" or "LunchOut" or "BreakIn" or "BreakOut")
+            if (p.PunchType is "BreakIn" or "BreakOut")
                 view.Extras.Add(p);
             else
                 workPunches.Add(p);
@@ -1405,8 +1415,8 @@
 
         foreach (var p in workPunches)
         {
-            var isIn = p.PunchType.Equals("In", StringComparison.OrdinalIgnoreCase);
-            var isOut = p.PunchType.Equals("Out", StringComparison.OrdinalIgnoreCase);
+            var isIn = p.PunchType is "In" or "LunchIn";
+            var isOut = p.PunchType is "Out" or "LunchOut";
 
             if (isIn)
             {
@@ -1430,8 +1440,7 @@
 
         foreach (var (inP, outP) in pairs)
         {
-            var midpoint = new DateTime((inP.PunchTime.Ticks + outP.PunchTime.Ticks) / 2);
-            var natural = ClassifyBlock(midpoint);
+            var natural = ClassifyPair(inP.PunchTime, outP.PunchTime);
             if (!TryPlacePair(view, natural, inP, outP))
             {
                 view.Extras.Add(inP);
@@ -1472,8 +1481,42 @@
         return false;
     }
 
+    private static DayBlock ClassifyPair(DateTime inTime, DateTime outTime)
+    {
+        // Plurality of overlap — the pair lands in whichever block holds
+        // the most session time. Block boundaries match ClassifyBlock:
+        //   AM  = [00:00,         12:30 PM)
+        //   PM  = [12:30 PM,       4:30 PM]
+        //   Eve = ( 4:30 PM, end of day  ]
+        // Boundary points contribute negligible time so >= ties favor the
+        // earlier block (AM over PM, PM over Eve), which matches "where
+        // the shift started" intuition for borderline cases.
+        var date = inTime.Date;
+        var amEnd = date.AddHours(12).AddMinutes(30);
+        var pmEnd = date.AddHours(16).AddMinutes(30);
+        var dayEnd = date.AddDays(1);
+
+        long amOverlap = OverlapTicks(inTime, outTime, date, amEnd);
+        long pmOverlap = OverlapTicks(inTime, outTime, amEnd, pmEnd);
+        long eveOverlap = OverlapTicks(inTime, outTime, pmEnd, dayEnd);
+
+        if (amOverlap >= pmOverlap && amOverlap >= eveOverlap) return DayBlock.Am;
+        if (pmOverlap >= eveOverlap) return DayBlock.Pm;
+        return DayBlock.Eve;
+    }
+
+    private static long OverlapTicks(DateTime aStart, DateTime aEnd, DateTime bStart, DateTime bEnd)
+    {
+        var start = aStart > bStart ? aStart : bStart;
+        var end = aEnd < bEnd ? aEnd : bEnd;
+        var diff = end - start;
+        return diff.Ticks > 0 ? diff.Ticks : 0;
+    }
+
     private static DayBlock ClassifyBlock(DateTime punchTime)
     {
+        // Single-punch classifier. Retained for any future per-punch use
+        // (no current callers since GetDaySlots switched to ClassifyPair).
         // Compare against minutes-since-midnight so the boundary checks read
         // like the schedule itself (12:30 PM = 750 min, 4:30 PM = 990 min).
         var minutes = punchTime.Hour * 60 + punchTime.Minute;
