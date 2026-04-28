@@ -103,15 +103,12 @@
             </div>
         </div>
 
-        @foreach (var week in payPeriodTimesheet.Weeks)
-        {
-            <div class="week-section">
-                <div class="week-header">
-                    <h3>Week of @week.WeekStartDate.ToString("MMMM d") - @week.WeekEndDate.ToString("MMMM d")</h3>
-                    <span class="week-total">@week.TotalHours.ToString("F2") hours</span>
-                </div>
-                
-                <table class="timesheet-table">
+        @* 2026-04-28: Flattened from per-week sections to a single per-pay-period
+           table. The summary cards above already show the period total; dropping
+           the per-week subtotal removes a layer of header noise so the supervisor
+           scans all weekdays at once instead of hopping between Week 1 / Week 2. *@
+        <div class="period-section">
+            <table class="timesheet-table">
                     <thead>
                         <tr>
                             <th class="col-date">Date</th>
@@ -131,8 +128,11 @@
                            still in TC_TimePunches and would be caught by the
                            per-day exception drill-down on the troubleshoot
                            page. *@
-                        @foreach (var day in week.Days.Where(d => d.Date.DayOfWeek != DayOfWeek.Saturday
-                                                              && d.Date.DayOfWeek != DayOfWeek.Sunday))
+                        @foreach (var day in payPeriodTimesheet.Weeks
+                                                    .SelectMany(w => w.Days)
+                                                    .Where(d => d.Date.DayOfWeek != DayOfWeek.Saturday
+                                                             && d.Date.DayOfWeek != DayOfWeek.Sunday)
+                                                    .OrderBy(d => d.Date))
                         {
                             var amStatus = GetShiftStatus(day, "AM");
                             var pmStatus = GetShiftStatus(day, "PM");
@@ -416,7 +416,6 @@
                     </tbody>
                 </table>
             </div>
-        }
 
         @if (PendingCorrectionRequests.Any())
         {
@@ -461,16 +460,16 @@
             <div id="exceptions" class="exceptions-section">
                 <h3>⚠️ Exceptions Requiring Review</h3>
                 <div class="exception-list">
-                    @foreach (var week in payPeriodTimesheet.Weeks)
+                    @foreach (var day in payPeriodTimesheet.Weeks
+                                                .SelectMany(w => w.Days)
+                                                .Where(d => d.HasException)
+                                                .OrderBy(d => d.Date))
                     {
-                        @foreach (var day in week.Days.Where(d => d.HasException))
-                        {
-                            <div class="exception-item">
-                                <span class="exception-date">@day.Date.ToString("ddd M/d")</span>
-                                <span class="exception-reason">@day.ExceptionNotes</span>
-                                <button class="btn-resolve" @onclick="() => OpenEditDay(day)">Resolve</button>
-                            </div>
-                        }
+                        <div class="exception-item">
+                            <span class="exception-date">@day.Date.ToString("ddd M/d")</span>
+                            <span class="exception-reason">@day.ExceptionNotes</span>
+                            <button class="btn-resolve" @onclick="() => OpenEditDay(day)">Resolve</button>
+                        </div>
                     }
                 </div>
             </div>
