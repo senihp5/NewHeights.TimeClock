@@ -1800,6 +1800,10 @@
 
     private string GetShiftStatus(DailyTimesheetEntry day, string shift)
     {
+        // 2026-04-28: Aligned to ClassifyBlock so the collapsed-row pills
+        // use the same boundaries as the slot table (AM <12:30, PM 12:30–
+        // 4:30, Eve >4:30). Previous version had Evening 16-22 overlapping
+        // with PM 12-17, so a 4:45 PM punch could land in both pills.
         if (day.TotalHours == 0 && !day.Punches.Any())
         {
             if (day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday)
@@ -1807,18 +1811,16 @@
             return "—";
         }
 
-        foreach (var p in day.Punches)
+        var targetBlock = shift switch
         {
-            var hour = p.PunchTime.Hour;
-            bool inShift = shift switch
-            {
-                "AM" => hour >= 6 && hour < 12,
-                "PM" => hour >= 12 && hour < 17,
-                "Evening" => hour >= 16 && hour < 22,
-                _ => false
-            };
-            if (inShift) return "In Office";
-        }
+            "AM"      => (DayBlock?)DayBlock.Am,
+            "PM"      => (DayBlock?)DayBlock.Pm,
+            "Evening" => (DayBlock?)DayBlock.Eve,
+            _         => null
+        };
+
+        if (targetBlock != null && day.Punches.Any(p => ClassifyBlock(p.PunchTime) == targetBlock))
+            return "In Office";
 
         return day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday ? "N/A" : "—";
     }

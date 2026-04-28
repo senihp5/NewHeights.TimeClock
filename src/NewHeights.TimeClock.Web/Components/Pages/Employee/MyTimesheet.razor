@@ -669,19 +669,6 @@
     .punch-detail-panel { background: #f8f9fb; border: 1px solid #e2e8f0; border-top: none;
         margin: 0 0.5rem 0.5rem; padding: 0.75rem; border-radius: 0 0 6px 6px; }
 
-    .punch-pairs-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    .punch-pairs-table th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #ddd;
-        color: #666; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
-    .punch-pairs-table td { padding: 5px 8px; border-bottom: 1px solid #eee; }
-    .punch-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }
-    .punch-badge.work { background: #dcfce7; color: #166534; }
-    .punch-badge.lunch { background: #fef9c3; color: #854d0e; }
-    .punch-badge.break { background: #dbeafe; color: #1e40af; }
-    .punch-badge.unpaired { background: #fee2e2; color: #991b1b; }
-    .punch-time-in, .punch-time-out { font-family: 'Segoe UI', monospace; }
-    .punch-time-rounded { font-family: 'Segoe UI', monospace; color: #666; }
-    .punch-arrow { color: #999; margin: 0 4px; }
-    .pair-hours { font-weight: 600; }
     .source-badge { font-size: 0.7rem; padding: 1px 5px; border-radius: 3px; }
     .source-badge.manual { background: #fef3c7; color: #92400e; }
     .source-badge.modified { background: #e0e7ff; color: #3730a3; }
@@ -1278,84 +1265,6 @@
         }
     }
 
-    // ── Punch pair builder (legacy, replaced 2026-04-28 by GetDaySlots) ─────
-    // Kept for back-compat in case any other callers reference it; the slot
-    // view is the canonical render path now. Safe to delete in a follow-up
-    // sweep once all timesheet pages have moved to GetDaySlots.
-    private List<PunchPairDisplay> GetPunchPairs(DailyTimesheetEntry day)
-    {
-        var pairs = new List<PunchPairDisplay>();
-        var punches = day.Punches.OrderBy(p => p.PunchTime).ToList();
-
-        var inTypes = new HashSet<string> { "In", "LunchIn", "BreakIn" };
-        var outTypes = new HashSet<string> { "Out", "LunchOut", "BreakOut" };
-
-        var unmatched = new List<PunchEntry>(punches);
-
-        // Match In→Out, LunchOut→LunchIn, BreakOut→BreakIn pairs
-        var pairMappings = new[] { ("In", "Out", "Work", "work"), ("LunchOut", "LunchIn", "Lunch", "lunch"), ("BreakOut", "BreakIn", "Break", "break") };
-
-        foreach (var (inType, outType, label, css) in pairMappings)
-        {
-            var ins = unmatched.Where(p => p.PunchType == inType).OrderBy(p => p.PunchTime).ToList();
-            var outs = unmatched.Where(p => p.PunchType == outType).OrderBy(p => p.PunchTime).ToList();
-
-            for (int i = 0; i < ins.Count; i++)
-            {
-                var inP = ins[i];
-                var outP = i < outs.Count ? outs[i] : null;
-                var hours = outP != null ? (decimal)(outP.PunchTime - inP.PunchTime).TotalHours : 0;
-
-                pairs.Add(new PunchPairDisplay
-                {
-                    Label = label,
-                    BadgeClass = css,
-                    InTime = inP.PunchTime.ToString("h:mm tt"),
-                    OutTime = outP?.PunchTime.ToString("h:mm tt") ?? "(open)",
-                    RoundedIn = inP.RoundedTime?.ToString("h:mm tt") ?? inP.PunchTime.ToString("h:mm tt"),
-                    RoundedOut = outP?.RoundedTime?.ToString("h:mm tt") ?? outP?.PunchTime.ToString("h:mm tt") ?? "—",
-                    Hours = outP != null ? hours.ToString("F2") : "—",
-                    IsManual = inP.IsManual || (outP?.IsManual ?? false),
-                    IsModified = inP.IsModified || (outP?.IsModified ?? false),
-                    InPunchId = inP.PunchId,
-                    OutPunchId = outP?.PunchId,
-                    InPunchDateTime = inP.PunchTime,
-                    OutPunchDateTime = outP?.PunchTime,
-                    WorkDate = day.Date
-                });
-
-                unmatched.Remove(inP);
-                if (outP != null) unmatched.Remove(outP);
-            }
-
-            // Leftover outs without matching ins
-            var remainingOuts = unmatched.Where(p => p.PunchType == outType).ToList();
-            foreach (var outP in remainingOuts)
-            {
-                pairs.Add(new PunchPairDisplay
-                {
-                    Label = label,
-                    BadgeClass = "unpaired",
-                    InTime = "(missing)",
-                    OutTime = outP.PunchTime.ToString("h:mm tt"),
-                    RoundedIn = "—",
-                    RoundedOut = outP.RoundedTime?.ToString("h:mm tt") ?? outP.PunchTime.ToString("h:mm tt"),
-                    Hours = "—",
-                    IsManual = outP.IsManual,
-                    IsModified = outP.IsModified,
-                    InPunchId = null,
-                    OutPunchId = outP.PunchId,
-                    InPunchDateTime = null,
-                    OutPunchDateTime = outP.PunchTime,
-                    WorkDate = day.Date
-                });
-                unmatched.Remove(outP);
-            }
-        }
-
-        return pairs.OrderBy(p => p.InTime).ToList();
-    }
-
     // ── Holiday helpers ────────────────────────────────────────────────────
     private decimal GetHolidayHours(DailyTimesheetEntry day)
     {
@@ -1377,6 +1286,10 @@
     // ── Shift status ───────────────────────────────────────────────────────
     private string GetShiftStatus(DailyTimesheetEntry day, string shift)
     {
+        // 2026-04-28: Aligned to ClassifyBlock so the collapsed-row pills
+        // use the same boundaries as the slot table (AM <12:30, PM 12:30–
+        // 4:30, Eve >4:30). Previous version had Evening 16-22 overlapping
+        // with PM 12-17, so a 4:45 PM punch could land in both pills.
         if (day.TotalHours == 0 && !day.Punches.Any())
         {
             if (day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday)
@@ -1384,31 +1297,18 @@
             return "—";
         }
 
-        var punches = day.Punches;
-        bool hasInPunch = false;
-        bool hasOutPunch = false;
-
-        foreach (var p in punches)
+        var targetBlock = shift switch
         {
-            var hour = p.PunchTime.Hour;
-            bool inShift = shift switch
-            {
-                "AM" => hour >= 6 && hour < 12,
-                "PM" => hour >= 12 && hour < 17,
-                "Evening" => hour >= 16 && hour < 22,
-                _ => false
-            };
+            "AM"      => (DayBlock?)DayBlock.Am,
+            "PM"      => (DayBlock?)DayBlock.Pm,
+            "Evening" => (DayBlock?)DayBlock.Eve,
+            _         => null
+        };
 
-            if (inShift)
-            {
-                if (p.PunchType == "In" || p.PunchType == "LunchIn") hasInPunch = true;
-                if (p.PunchType == "Out" || p.PunchType == "LunchOut") hasOutPunch = true;
-            }
-        }
+        if (targetBlock != null && day.Punches.Any(p => ClassifyBlock(p.PunchTime) == targetBlock))
+            return "In Office";
 
-        if (hasInPunch || hasOutPunch) return "In Office";
-        if (day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday) return "N/A";
-        return "—";
+        return day.Date.DayOfWeek == DayOfWeek.Saturday || day.Date.DayOfWeek == DayOfWeek.Sunday ? "N/A" : "—";
     }
 
     private decimal GetLeaveHours(DailyTimesheetEntry day) => 0; // TODO: integrate leave tracking
@@ -1671,26 +1571,4 @@
         _ => type.ToString()
     };
 
-    // ── Display DTOs ───────────────────────────────────────────────────────
-    private class PunchPairDisplay
-    {
-        public string Label { get; set; } = "";
-        public string BadgeClass { get; set; } = "";
-        public string InTime { get; set; } = "";
-        public string OutTime { get; set; } = "";
-        public string RoundedIn { get; set; } = "";
-        public string RoundedOut { get; set; } = "";
-        public string Hours { get; set; } = "";
-        public bool IsManual { get; set; }
-        public bool IsModified { get; set; }
-
-        // Populated for Phase A2 employee inline Edit Time. Null when that
-        // side of the pair is missing. WorkDate is carried so the edit handler
-        // knows which daily timecard to flag as exception.
-        public long? InPunchId { get; set; }
-        public long? OutPunchId { get; set; }
-        public DateTime? InPunchDateTime { get; set; }
-        public DateTime? OutPunchDateTime { get; set; }
-        public DateOnly WorkDate { get; set; }
-    }
 }
