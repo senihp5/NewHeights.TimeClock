@@ -12,6 +12,7 @@
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject ITimesheetService TimesheetService
 @inject ISubstituteTimesheetService SubTimesheetService
+@inject IPayPeriodService PayPeriodService
 @inject IAuditService Audit
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
@@ -91,7 +92,14 @@
                 <div>
                     <h2>@(selectedEmployee.Staff?.FullName ?? selectedEmployee.DisplayName ?? "—")</h2>
                     <p class="tt-meta">
-                        ID: <code>@selectedEmployee.IdNumber</code> ·
+                        @* EmployeeId is the DB primary key (what every query
+                           filters on). IdNumber is the badge number shown to
+                           humans on HR Payroll / Team Timesheets. They are
+                           NOT the same thing — surfacing both prevents the
+                           common confusion where a badge "104" gets mistaken
+                           for "EmployeeId = 104". *@
+                        EmployeeId: <code>@selectedEmployee.EmployeeId</code> ·
+                        Badge IdNumber: <code>@selectedEmployee.IdNumber</code> ·
                         Email: <code>@(selectedEmployee.Email ?? "—")</code> ·
                         Type: <code>@selectedEmployee.EmployeeType</code> ·
                         Campus: <code>@(selectedEmployee.HomeCampus?.CampusName ?? "—")</code> ·
@@ -101,12 +109,26 @@
                 <button class="tt-btn-back" @onclick="ClearSelection">← Back to results</button>
             </div>
 
-            @* Date range picker *@
+            @* Pay-period picker — diagnostics are scoped to the selected period
+               so admins can flip through periods one at a time instead of
+               trying to make sense of a free-form date range that may straddle
+               period boundaries (2026-04-28 refactor). *@
             <div class="tt-range">
-                <label>From: <input type="date" @bind="rangeStart" /></label>
-                <label>To: <input type="date" @bind="rangeEnd" /></label>
+                <label class="tt-pp-label">Pay Period:
+                    <select @bind="selectedPayPeriodId"
+                            @bind:after="LoadDiagnosticsAsync"
+                            disabled="@isLoading">
+                        @foreach (var p in availablePeriods)
+                        {
+                            <option value="@p.PayPeriodId">
+                                @p.PeriodName (@p.StartDate.ToString("MMM d") – @p.EndDate.ToString("MMM d, yyyy"))
+                                @(p.IsOpen ? " · Current" : "")
+                            </option>
+                        }
+                    </select>
+                </label>
                 <button class="tt-btn-load" @onclick="LoadDiagnosticsAsync" disabled="@isLoading">
-                    @(isLoading ? "Loading…" : "Load Diagnostics")
+                    @(isLoading ? "Loading…" : "Reload")
                 </button>
 
                 @* Impersonation links — open the existing supervisor / admin review pages
@@ -129,6 +151,89 @@
             }
             else if (diagnosticsLoaded)
             {
+                @* HR Payroll Visibility Check — answers "why isn't this
+                   employee showing on /hr/payroll?" by walking the three
+                   filters in TimesheetService.GetPayrollSummariesAsync. *@
+                <section class="tt-block tt-visibility">
+                    <h3>HR Payroll Visibility (this pay period)</h3>
+                    <table class="tt-kv">
+                        <tr>
+                            <th>IsActive</th>
+                            <td>
+                                @if (selectedEmployee.IsActive) { <span class="tt-pass">✓ active</span> }
+                                else { <span class="tt-fail">✗ inactive — row will be HIDDEN. Reactivate in TC_Employees.</span> }
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>EmployeeType</th>
+                            <td>
+                                @if (IsHourly(selectedEmployee))
+                                {
+                                    <span class="tt-pass">✓ @selectedEmployee.EmployeeType — qualifies for Hourly tab</span>
+                                }
+                                else if (IsSub(selectedEmployee))
+                                {
+                                    <span class="tt-info">ℹ Substitute — this employee shows on the Substitutes tab, not Hourly. Switch to /hr/payroll → Substitutes tab to find them.</span>
+                                }
+                                else
+                                {
+                                    <span class="tt-fail">✗ @selectedEmployee.EmployeeType — row will be HIDDEN on /hr/payroll. Only HourlyStaff / HourlyPartTime / Substitute appear there. Update via Manual Add or SQL.</span>
+                                }
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>TotalHours in period</th>
+                            <td>
+                                @{
+                                    var dailyHours = dailyCards.Sum(d => d.TotalHours);
+                                    var summaryHours = summary?.TotalHours ?? 0;
+                                    var displayHours = summaryHours > 0 ? summaryHours : dailyHours;
+                                    var punchDateSet = punches.Select(p => DateOnly.FromDateTime(p.PunchDateTime)).Distinct().ToList();
+                                }
+                                @if (displayHours > 0)
+                                {
+                                    <span class="tt-pass">✓ @displayHours.ToString("F2") — qualifies for HR Payroll display</span>
+                                    @if (summaryHours == 0 && dailyHours > 0)
+                                    {
+                                        <span class="tt-info"> · Note: TC_PayPeriodSummary row is missing or stale. Daily timecards sum to @dailyHours.ToString("F2"). HR Payroll computes from daily timecards too, so this employee SHOULD show.</span>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="tt-fail">
+                                        ✗ 0.00 hours — row will be HIDDEN on Hourly tab.
+                                    </span>
+                                    <div class="tt-hint">
+                                        Likely causes (check the Daily Timecards / Punches blocks below):
+                                        <ul>
+                                            <li>No <code>TC_TimePunches</code> rows exist in this period for this employee (currently @punches.Count punch rows in range)</li>
+                                            <li>Punches exist but aren't paired (each IN needs a matching OUT) — recalc the affected dates</li>
+                                            <li>Punches landed on dates OUTSIDE this period — check the Punches block dates</li>
+                                            <li>CSV import succeeded but <code>RecalculateDailyTimecardAsync</code> errored silently — re-run recalc</li>
+                                            <li><code>TC_DailyTimecards.TotalHours</code> is stale relative to current punches — recalc</li>
+                                        </ul>
+                                    </div>
+                                    @if (punchDateSet.Count > 0)
+                                    {
+                                        <div class="tt-recalc-all">
+                                            <button class="tt-btn-recalc-all"
+                                                    @onclick="RecalcEntirePeriodAsync"
+                                                    disabled="@isRecalcingAll">
+                                                @(isRecalcingAll ? "Recalcing…" : $"Recalc all {punchDateSet.Count} dates with punches")
+                                            </button>
+                                            <span class="tt-recalc-hint">Re-runs <code>RecalculateDailyTimecardAsync</code> for every date in the period that has at least one punch row.</span>
+                                        </div>
+                                    }
+                                    @if (!string.IsNullOrEmpty(recalcAllMsg))
+                                    {
+                                        <div class="tt-recalc-result">@recalcAllMsg</div>
+                                    }
+                                }
+                            </td>
+                        </tr>
+                    </table>
+                </section>
+
                 @* Period Summary *@
                 <section class="tt-block">
                     <h3>Pay Period Summary</h3>
@@ -147,7 +252,7 @@
                     }
                     else
                     {
-                        <p class="tt-empty">No TC_PayPeriodSummary row exists for this employee in this date range.</p>
+                        <p class="tt-empty">No TC_PayPeriodSummary row exists for this employee in this pay period.</p>
                     }
                 </section>
 
@@ -192,7 +297,7 @@
                     }
                     else
                     {
-                        <p class="tt-empty">No daily timecards in this range.</p>
+                        <p class="tt-empty">No daily timecards in this pay period.</p>
                     }
                 </section>
 
@@ -233,7 +338,7 @@
                     }
                     else
                     {
-                        <p class="tt-empty">No punches in this range.</p>
+                        <p class="tt-empty">No punches in this pay period.</p>
                     }
                 </section>
 
@@ -305,7 +410,7 @@
                     }
                     else
                     {
-                        <p class="tt-empty">No audit entries scoped to this employee in this range.</p>
+                        <p class="tt-empty">No audit entries scoped to this employee in this pay period.</p>
                     }
                 </section>
             }
@@ -323,7 +428,15 @@
     private List<TcEmployee> searchResults = new();
     private TcEmployee? selectedEmployee = null;
 
-    private DateOnly rangeStart = DateOnly.FromDateTime(DateTime.Today.AddDays(-30));
+    // 2026-04-28: pay-period-scoped diagnostics. Replaces the free date range
+    // picker so admins can step through periods one at a time and the
+    // diagnostics directly correspond to a payroll boundary.
+    private List<NewHeights.TimeClock.Web.Services.PayPeriodInfo> availablePeriods = new();
+    private int selectedPayPeriodId = 0;
+    // Derived from the selected period — kept as locals so the existing LINQ
+    // queries against TC_DailyTimecards / TC_TimePunches / TC_AuditLogs don't
+    // need restructuring.
+    private DateOnly rangeStart = DateOnly.FromDateTime(DateTime.Today);
     private DateOnly rangeEnd = DateOnly.FromDateTime(DateTime.Today);
 
     private TcPayPeriodSummary? summary;
@@ -334,10 +447,55 @@
 
     private string currentUserEmail = "";
 
+    // 2026-04-28: bulk-recalc-period button state.
+    private bool isRecalcingAll = false;
+    private string recalcAllMsg = "";
+
     protected override async Task OnInitializedAsync()
     {
         var auth = await AuthStateProvider.GetAuthenticationStateAsync();
         currentUserEmail = auth.User.Identity?.Name ?? "";
+        await LoadAvailablePeriodsAsync();
+    }
+
+    /// <summary>
+    /// Load the last ~12 pay periods (anchored on the current period) so the
+    /// dropdown gives admins a reasonable look-back window. Same convention as
+    /// /hr/payroll and /supervisor/timesheets so users see a familiar list.
+    /// </summary>
+    private async Task LoadAvailablePeriodsAsync()
+    {
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var current = await PayPeriodService.GetCurrentPayPeriodAsync();
+            // 12 periods back through 2 forward — covers the typical roster of
+            // periods anyone would want to inspect on the troubleshoot page.
+            var anchor = current.StartDate;
+            var rows = await ctx.TcPayPeriods
+                .AsNoTracking()
+                .Where(p => p.StartDate >= anchor.AddMonths(-7) && p.StartDate <= anchor.AddMonths(2))
+                .OrderByDescending(p => p.StartDate)
+                .ToListAsync();
+            availablePeriods = rows.Select(p => new NewHeights.TimeClock.Web.Services.PayPeriodInfo
+            {
+                PayPeriodId = p.PayPeriodId,
+                PeriodName = p.PeriodName,
+                StartDate = p.StartDate,
+                EndDate = p.EndDate,
+                // TC_PayPeriods.PayDate is nullable; PayPeriodInfo.PayDate
+                // is not. Fall back to the period EndDate when the column
+                // is NULL — only used as a display anchor on this page.
+                PayDate = p.PayDate ?? p.EndDate
+                // IsOpen is computed from EndDate; don't try to assign.
+            }).ToList();
+            selectedPayPeriodId = current.PayPeriodId;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load pay periods for troubleshoot page");
+            actionError = "Could not load pay periods: " + ex.Message;
+        }
     }
 
     private async Task OnSearchKeyDown(KeyboardEventArgs e)
@@ -413,17 +571,27 @@
 
         try
         {
+            // Resolve the selected pay period — falls back to the current
+            // period if the dropdown selection isn't in the list (e.g. on
+            // first load before LoadAvailablePeriodsAsync settled).
+            var period = availablePeriods.FirstOrDefault(p => p.PayPeriodId == selectedPayPeriodId);
+            if (period == null)
+            {
+                period = await PayPeriodService.GetCurrentPayPeriodAsync();
+                selectedPayPeriodId = period.PayPeriodId;
+            }
+            rangeStart = period.StartDate;
+            rangeEnd = period.EndDate;
+
             using var ctx = await DbFactory.CreateDbContextAsync();
             var empId = selectedEmployee.EmployeeId;
 
-            // Period summary covering rangeStart (anchor)
+            // Period summary scoped to the exact selected period.
             summary = await ctx.TcPayPeriodSummaries
                 .AsNoTracking()
                 .Include(s => s.PayPeriod)
                 .Where(s => s.EmployeeId == empId
-                         && s.PayPeriod.StartDate <= rangeEnd
-                         && s.PayPeriod.EndDate >= rangeStart)
-                .OrderByDescending(s => s.PayPeriod.StartDate)
+                         && s.PayPeriodId == selectedPayPeriodId)
                 .FirstOrDefaultAsync();
 
             dailyCards = await ctx.TcDailyTimecards
@@ -470,6 +638,70 @@
             actionError = "Could not load diagnostics: " + ex.Message;
         }
         finally { isLoading = false; }
+    }
+
+    /// <summary>
+    /// Re-run RecalculateDailyTimecardAsync for every distinct date in the
+    /// loaded punch list. Useful when a CSV import created punches but the
+    /// follow-on recalc errored silently — this is the one-click fix that
+    /// most often resolves the "0 hours but punches exist" scenario.
+    /// </summary>
+    private async Task RecalcEntirePeriodAsync()
+    {
+        if (selectedEmployee == null || isRecalcingAll) return;
+        isRecalcingAll = true;
+        recalcAllMsg = "";
+        try
+        {
+            var dates = punches
+                .Select(p => DateOnly.FromDateTime(p.PunchDateTime))
+                .Distinct()
+                .OrderBy(d => d)
+                .ToList();
+            int ok = 0, failed = 0;
+            foreach (var d in dates)
+            {
+                try
+                {
+                    await TimesheetService.RecalculateDailyTimecardAsync(selectedEmployee.EmployeeId, d);
+                    ok++;
+                }
+                catch (Exception inner)
+                {
+                    Logger.LogWarning(inner, "Bulk recalc failed for {Emp} {Date}", selectedEmployee.EmployeeId, d);
+                    failed++;
+                }
+            }
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Timecard.Recalculated,
+                entityType: AuditEntityTypes.Employee,
+                entityId: selectedEmployee.EmployeeId.ToString(),
+                newValues: new
+                {
+                    selectedEmployee.EmployeeId,
+                    PeriodStart = rangeStart,
+                    PeriodEnd = rangeEnd,
+                    DatesRecalced = dates.Count,
+                    Succeeded = ok,
+                    Failed = failed,
+                    RecalcedBy = currentUserEmail,
+                    Source = "TROUBLESHOOT_BULK"
+                },
+                deltaSummary: $"Admin bulk-recalc {dates.Count} date(s) for employee {selectedEmployee.EmployeeId} in {rangeStart:yyyy-MM-dd}..{rangeEnd:yyyy-MM-dd} via troubleshoot page ({ok} ok, {failed} failed)",
+                source: AuditSource.AdminUi,
+                employeeId: selectedEmployee.EmployeeId);
+            recalcAllMsg = $"Recalced {ok} date(s){(failed > 0 ? $", {failed} failed" : "")}. Reloading diagnostics…";
+            await LoadDiagnosticsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Bulk recalc unexpected error");
+            recalcAllMsg = "Failed: " + ex.Message;
+        }
+        finally
+        {
+            isRecalcingAll = false;
+        }
     }
 
     private async Task RecalcDayAsync(DateOnly date)

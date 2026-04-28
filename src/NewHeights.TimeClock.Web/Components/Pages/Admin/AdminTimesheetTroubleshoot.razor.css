@@ -217,6 +217,28 @@
     font-size: 0.9rem;
 }
 
+.tt-pp-label {
+    flex: 1 1 auto;
+    min-width: 18rem;
+}
+
+.tt-pp-label select {
+    flex: 1;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid #d1d5db;
+    border-radius: 5px;
+    font-size: 0.9rem;
+    background: #fff;
+    color: #111827;
+    margin-left: 0.4rem;
+    min-width: 14rem;
+}
+
+.tt-pp-label select:disabled {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
 .tt-btn-load {
     padding: 0.45rem 1rem;
     background: #1e3a5f;
@@ -362,4 +384,85 @@
 .tt-btn-recalc:hover {
     background: #1d4ed8;
     color: #fff;
+}
+
+/* HR Payroll Visibility check — explicit pass/fail rows for the three
+   filters in TimesheetService.GetPayrollSummariesAsync (2026-04-28). */
+
+.tt-visibility .tt-pass {
+    color: #047857;
+    font-weight: 600;
+}
+
+.tt-visibility .tt-fail {
+    color: #b91c1c;
+    font-weight: 600;
+}
+
+.tt-visibility .tt-info {
+    color: #1d4ed8;
+    font-weight: 500;
+}
+
+.tt-visibility .tt-hint {
+    margin-top: 0.5rem;
+    color: #475569;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    background: #fef9c3;
+    border-left: 3px solid #f59e0b;
+    padding: 0.55rem 0.7rem;
+    border-radius: 4px;
+}
+
+.tt-visibility .tt-hint ul {
+    margin: 0.4rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.tt-visibility .tt-hint li {
+    margin-bottom: 0.2rem;
+}
+
+.tt-recalc-all {
+    margin-top: 0.65rem;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+}
+
+.tt-btn-recalc-all {
+    padding: 0.45rem 1rem;
+    background: linear-gradient(180deg, #1d4ed8 0%, #1e3a8a 100%);
+    color: #fff;
+    border: 1px solid #1e3a8a;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.88rem;
+    font-weight: 600;
+}
+
+.tt-btn-recalc-all:hover:not(:disabled) {
+    filter: brightness(0.95);
+}
+
+.tt-btn-recalc-all:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.tt-recalc-hint {
+    color: #6b7280;
+    font-size: 0.83rem;
+}
+
+.tt-recalc-result {
+    margin-top: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    color: #065f46;
+    border-radius: 5px;
+    font-size: 0.85rem;
 }
