@@ -217,72 +217,107 @@
                                         </button>
                                         @if (day.Punches.Any())
                                         {
-                                            <table class="punch-pairs-table">
+                                            @* 2026-04-28: Slot-table view ported from SupervisorTimesheetView.
+                                               AM In / AM Out / PM In / PM Out / Eve In / Eve Out columns
+                                               so missing punches are visually obvious instead of silently
+                                               re-paired. Each filled slot shows rounded time + source pip
+                                               + (when the timesheet hasn't been submitted) a pencil-edit
+                                               button that opens the existing per-punch edit modal. *@
+                                            var slots = GetDaySlots(day);
+                                            var capturedDay = day;
+                                            var slotInfos = new (PunchEntry? Punch, bool IsIn)[]
+                                            {
+                                                (slots.AmIn, true),  (slots.AmOut, false),
+                                                (slots.PmIn, true),  (slots.PmOut, false),
+                                                (slots.EveIn, true), (slots.EveOut, false)
+                                            };
+                                            <table class="day-slots-table">
                                                 <thead>
                                                     <tr>
-                                                        <th>Type</th>
-                                                        <th>Actual Time</th>
-                                                        <th>Rounded Time</th>
-                                                        <th>Hours</th>
-                                                        <th>Source</th>
+                                                        <th>AM In</th>
+                                                        <th>AM Out</th>
+                                                        <th>PM In</th>
+                                                        <th>PM Out</th>
+                                                        <th>Eve In</th>
+                                                        <th>Eve Out</th>
+                                                        <th>AM hrs</th>
+                                                        <th>PM hrs</th>
+                                                        <th>Eve hrs</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
-                                                    @foreach (var pair in GetPunchPairs(day))
-                                                    {
-                                                        <tr>
+                                                    <tr>
+                                                        @foreach (var info in slotInfos)
+                                                        {
+                                                            var capturedPunch = info.Punch;
+                                                            var capturedIsIn = info.IsIn;
                                                             <td>
-                                                                <span class="punch-badge @pair.BadgeClass">@pair.Label</span>
-                                                            </td>
-                                                            <td>
-                                                                <span class="punch-time-in">@pair.InTime</span>
-                                                                @if (!weeklyTimesheet.IsSubmitted && pair.InPunchId.HasValue)
+                                                                @if (capturedPunch == null)
                                                                 {
-                                                                    <button type="button" class="btn-inline-edit"
-                                                                            style="border:none;background:transparent;cursor:pointer;color:#2563eb;font-size:0.85rem;margin:0 0.25rem;"
-                                                                            title="Edit clock-in time"
-                                                                            @onclick:stopPropagation="true"
-                                                                            @onclick="() => OpenEditPunch(pair.InPunchId.Value, pair.InPunchDateTime!.Value, pair.WorkDate, isInside: true)">
-                                                                        ✎
-                                                                    </button>
-                                                                }
-                                                                <span class="punch-arrow">→</span>
-                                                                <span class="punch-time-out">@pair.OutTime</span>
-                                                                @if (!weeklyTimesheet.IsSubmitted && pair.OutPunchId.HasValue)
-                                                                {
-                                                                    <button type="button" class="btn-inline-edit"
-                                                                            style="border:none;background:transparent;cursor:pointer;color:#2563eb;font-size:0.85rem;margin:0 0.25rem;"
-                                                                            title="Edit clock-out time"
-                                                                            @onclick:stopPropagation="true"
-                                                                            @onclick="() => OpenEditPunch(pair.OutPunchId.Value, pair.OutPunchDateTime!.Value, pair.WorkDate, isInside: false)">
-                                                                        ✎
-                                                                    </button>
-                                                                }
-                                                            </td>
-                                                            <td>
-                                                                <span class="punch-time-rounded">@pair.RoundedIn</span>
-                                                                <span class="punch-arrow">→</span>
-                                                                <span class="punch-time-rounded">@pair.RoundedOut</span>
-                                                            </td>
-                                                            <td class="pair-hours">@pair.Hours</td>
-                                                            <td>
-                                                                @if (pair.IsManual)
-                                                                {
-                                                                    <span class="source-badge manual" title="Manual Entry">✎ Manual</span>
-                                                                }
-                                                                else if (pair.IsModified)
-                                                                {
-                                                                    <span class="source-badge modified" title="Modified">✏️ Modified</span>
+                                                                    <span class="slot-empty" title="No punch recorded">—</span>
                                                                 }
                                                                 else
                                                                 {
-                                                                    <span class="source-badge auto">Badge</span>
+                                                                    var src = SourceTag(capturedPunch);
+                                                                    <div class="slot-filled">
+                                                                        <span class="slot-time">@(capturedPunch.RoundedTime?.ToString("h:mm tt") ?? capturedPunch.PunchTime.ToString("h:mm tt"))</span>
+                                                                        <span class="slot-source @src.Css" title="@src.Label">@src.Label</span>
+                                                                        @if (!weeklyTimesheet.IsSubmitted)
+                                                                        {
+                                                                            <button type="button" class="slot-edit"
+                                                                                    title="@(capturedIsIn ? "Edit clock-in time" : "Edit clock-out time")"
+                                                                                    @onclick:stopPropagation="true"
+                                                                                    @onclick="() => OpenEditPunch(capturedPunch.PunchId, capturedPunch.PunchTime, capturedDay.Date, isInside: capturedIsIn)">
+                                                                                ✎
+                                                                            </button>
+                                                                        }
+                                                                    </div>
                                                                 }
                                                             </td>
-                                                        </tr>
-                                                    }
+                                                        }
+                                                        <td class="slot-hours">@slots.AmHours</td>
+                                                        <td class="slot-hours">@slots.PmHours</td>
+                                                        <td class="slot-hours">@slots.EveHours</td>
+                                                    </tr>
                                                 </tbody>
                                             </table>
+
+                                            @if (slots.Extras.Any())
+                                            {
+                                                @* Extras: punches that don't fit the six canonical slots —
+                                                   duplicate INs, orphan OUTs, lunch/break punches when present.
+                                                   Read-only for the employee; if any of these need to change,
+                                                   use the per-day "Request Correction" button below. *@
+                                                <div class="day-extras">
+                                                    <h5 class="day-extras-title">Extras (don't fit AM / PM / Eve slots)</h5>
+                                                    <table class="day-extras-table">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Type</th>
+                                                                <th>Time</th>
+                                                                <th>Rounded</th>
+                                                                <th>Source</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            @foreach (var extra in slots.Extras)
+                                                            {
+                                                                var src = SourceTag(extra);
+                                                                <tr>
+                                                                    <td>
+                                                                        <span class="punch-type-pill @(extra.PunchType.Contains("Out", StringComparison.OrdinalIgnoreCase) ? "out" : "in")">
+                                                                            @extra.PunchType
+                                                                        </span>
+                                                                    </td>
+                                                                    <td>@extra.PunchTime.ToString("h:mm tt")</td>
+                                                                    <td>@(extra.RoundedTime?.ToString("h:mm tt") ?? "—")</td>
+                                                                    <td><span class="source-badge @src.Css">@src.Label</span></td>
+                                                                </tr>
+                                                            }
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            }
                                         }
                                         else if (!isHoliday)
                                         {
@@ -651,6 +686,38 @@
     .source-badge.manual { background: #fef3c7; color: #92400e; }
     .source-badge.modified { background: #e0e7ff; color: #3730a3; }
     .source-badge.auto { background: #e5e7eb; color: #374151; }
+    .source-badge.auto-system { background: #fee2e2; color: #991b1b; font-weight: 600; }
+
+    /* ─── Slot-table view (ported 2026-04-28 from SupervisorTimesheetView) ───
+       AM/PM/Eve columns; empty cells show a muted dash; filled cells show
+       rounded time + small source pip + (when not submitted) a pencil-edit
+       button that opens the existing per-punch edit modal. */
+    .day-slots-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; }
+    .day-slots-table th { text-align: center; padding: 4px 6px; border-bottom: 1px solid #ddd;
+        color: #666; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; }
+    .day-slots-table td { padding: 6px 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: middle; }
+    .slot-empty { color: #cbd5e1; font-size: 1rem; font-weight: 600; }
+    .slot-filled { display: inline-flex; align-items: center; gap: 4px; }
+    .slot-time { font-family: 'Segoe UI', monospace; font-weight: 600; color: #1f2937; }
+    .slot-source { font-size: 0.62rem; padding: 0 4px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.02em; }
+    .slot-edit { background: transparent; border: none; cursor: pointer; padding: 0 4px; font-size: 0.85rem; color: #2563eb; opacity: 0.7; }
+    .slot-edit:hover { opacity: 1; transform: scale(1.15); }
+    .slot-hours { font-family: 'Segoe UI', monospace; font-weight: 600; color: #4b5563; }
+
+    /* Extras list — punches that don't fit the six canonical slots.
+       Read-only for the employee. If any of these need to change, the
+       per-day "Request Correction" button below the slot table is the path. */
+    .day-extras { margin-top: 0.6rem; padding: 0.5rem 0.6rem; background: #fff7ed;
+        border: 1px solid #fed7aa; border-radius: 4px; }
+    .day-extras-title { margin: 0 0 0.4rem; font-size: 0.78rem; color: #9a3412; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.02em; }
+    .day-extras-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .day-extras-table th { text-align: left; padding: 3px 6px; border-bottom: 1px solid #fed7aa;
+        color: #7c2d12; font-weight: 600; font-size: 0.7rem; text-transform: uppercase; }
+    .day-extras-table td { padding: 4px 6px; border-bottom: 1px solid #ffedd5; }
+    .punch-type-pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; }
+    .punch-type-pill.in { background: #dcfce7; color: #166534; }
+    .punch-type-pill.out { background: #fee2e2; color: #991b1b; }
 
     .holiday-notice { background: #fefce8; border: 1px solid #f5b81c; border-radius: 4px;
         padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
@@ -1060,7 +1127,161 @@
         }
     }
 
-    // ── Punch pair builder ─────────────────────────────────────────────────
+    // ── Slot-view helpers (ported 2026-04-28 from SupervisorTimesheetView) ───
+    // Same pair-aware classification used by the supervisor view: walk
+    // punches in time order, build (IN, OUT) pairs (Lunch* punches act as
+    // session boundaries), classify each pair by plurality of overlap
+    // across AM / PM / Eve blocks, and let orphan/duplicate punches drop
+    // into Extras. Boundaries: AM < 12:30 PM, PM 12:30–4:30 PM, Eve > 4:30 PM.
+    // For the employee view, slot cells are click-to-edit (calls
+    // OpenEditPunch) when the timesheet hasn't been submitted yet.
+
+    private DaySlotView GetDaySlots(DailyTimesheetEntry day)
+    {
+        var view = new DaySlotView();
+        var punches = day.Punches.OrderBy(p => p.PunchTime).ToList();
+
+        var workPunches = new List<PunchEntry>();
+        foreach (var p in punches)
+        {
+            if (p.PunchType is "BreakIn" or "BreakOut")
+                view.Extras.Add(p);
+            else
+                workPunches.Add(p);
+        }
+
+        var pairs = new List<(PunchEntry In, PunchEntry Out)>();
+        var orphans = new List<PunchEntry>();
+        PunchEntry? pendingIn = null;
+
+        foreach (var p in workPunches)
+        {
+            var isIn = p.PunchType is "In" or "LunchIn";
+            var isOut = p.PunchType is "Out" or "LunchOut";
+
+            if (isIn)
+            {
+                if (pendingIn != null) orphans.Add(pendingIn);
+                pendingIn = p;
+            }
+            else if (isOut)
+            {
+                if (pendingIn != null)
+                {
+                    pairs.Add((pendingIn, p));
+                    pendingIn = null;
+                }
+                else
+                {
+                    orphans.Add(p);
+                }
+            }
+        }
+        if (pendingIn != null) orphans.Add(pendingIn);
+
+        foreach (var (inP, outP) in pairs)
+        {
+            var natural = ClassifyPair(inP.PunchTime, outP.PunchTime);
+            if (!TryPlacePair(view, natural, inP, outP))
+            {
+                view.Extras.Add(inP);
+                view.Extras.Add(outP);
+            }
+        }
+
+        foreach (var o in orphans) view.Extras.Add(o);
+
+        view.Extras = view.Extras.OrderBy(e => e.PunchTime).ToList();
+        return view;
+    }
+
+    private static bool TryPlacePair(DaySlotView view, DayBlock natural, PunchEntry inP, PunchEntry outP)
+    {
+        DayBlock[] order = natural switch
+        {
+            DayBlock.Am => new[] { DayBlock.Am, DayBlock.Pm, DayBlock.Eve },
+            DayBlock.Pm => new[] { DayBlock.Pm, DayBlock.Eve },
+            _           => new[] { DayBlock.Eve }
+        };
+
+        foreach (var b in order)
+        {
+            if (b == DayBlock.Am && view.AmIn == null && view.AmOut == null)
+            {
+                view.AmIn = inP; view.AmOut = outP; return true;
+            }
+            if (b == DayBlock.Pm && view.PmIn == null && view.PmOut == null)
+            {
+                view.PmIn = inP; view.PmOut = outP; return true;
+            }
+            if (b == DayBlock.Eve && view.EveIn == null && view.EveOut == null)
+            {
+                view.EveIn = inP; view.EveOut = outP; return true;
+            }
+        }
+        return false;
+    }
+
+    private static DayBlock ClassifyPair(DateTime inTime, DateTime outTime)
+    {
+        var date = inTime.Date;
+        var amEnd = date.AddHours(12).AddMinutes(30);
+        var pmEnd = date.AddHours(16).AddMinutes(30);
+        var dayEnd = date.AddDays(1);
+
+        long amOverlap = OverlapTicks(inTime, outTime, date, amEnd);
+        long pmOverlap = OverlapTicks(inTime, outTime, amEnd, pmEnd);
+        long eveOverlap = OverlapTicks(inTime, outTime, pmEnd, dayEnd);
+
+        if (amOverlap >= pmOverlap && amOverlap >= eveOverlap) return DayBlock.Am;
+        if (pmOverlap >= eveOverlap) return DayBlock.Pm;
+        return DayBlock.Eve;
+    }
+
+    private static long OverlapTicks(DateTime aStart, DateTime aEnd, DateTime bStart, DateTime bEnd)
+    {
+        var start = aStart > bStart ? aStart : bStart;
+        var end = aEnd < bEnd ? aEnd : bEnd;
+        var diff = end - start;
+        return diff.Ticks > 0 ? diff.Ticks : 0;
+    }
+
+    private static (string Label, string Css) SourceTag(PunchEntry p)
+    {
+        if (p.IsAutoCheckout) return ("SYSTEM", "auto-system");
+        if (p.IsManual) return ("Manual", "manual");
+        if (p.IsModified) return ("Modified", "modified");
+        return ("Badge", "auto");
+    }
+
+    private enum DayBlock { Am, Pm, Eve }
+
+    private class DaySlotView
+    {
+        public PunchEntry? AmIn { get; set; }
+        public PunchEntry? AmOut { get; set; }
+        public PunchEntry? PmIn { get; set; }
+        public PunchEntry? PmOut { get; set; }
+        public PunchEntry? EveIn { get; set; }
+        public PunchEntry? EveOut { get; set; }
+        public List<PunchEntry> Extras { get; set; } = new();
+
+        public string AmHours => HoursOrDash(AmIn, AmOut);
+        public string PmHours => HoursOrDash(PmIn, PmOut);
+        public string EveHours => HoursOrDash(EveIn, EveOut);
+
+        private static string HoursOrDash(PunchEntry? inP, PunchEntry? outP)
+        {
+            if (inP == null || outP == null) return "—";
+            var hours = (decimal)(outP.PunchTime - inP.PunchTime).TotalHours;
+            return hours.ToString("F2");
+        }
+    }
+
+    // ── Punch pair builder (legacy, replaced 2026-04-28 by GetDaySlots) ─────
+    // Kept for back-compat in case any other callers reference it; the slot
+    // view is the canonical render path now. Safe to delete in a follow-up
+    // sweep once all timesheet pages have moved to GetDaySlots.
     private List<PunchPairDisplay> GetPunchPairs(DailyTimesheetEntry day)
     {
         var pairs = new List<PunchPairDisplay>();
