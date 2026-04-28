@@ -638,7 +638,21 @@ public class TimesheetService : ITimesheetService
             //     so zero-hour rows for subs are normal noise, not missing
             //     submissions. (Sub-specific timecard approvals live on
             //     /supervisor/sub-timesheets anyway.)
-            if (member.EmployeeType == EmployeeType.Substitute && timesheet.TotalHours <= 0)
+            //
+            // 2026-04-28 update: expanded the zero-hour filter to ALL employee
+            // types (was Substitute-only). Per Patrick's request — supervisors
+            // were seeing too many empty rows. Reminder service still chases
+            // missing submissions via email/SMS so visibility on Team
+            // Timesheets isn't load-bearing for that workflow.
+            if (timesheet.TotalHours <= 0)
+                continue;
+
+            // Hide test / scratch accounts (e.g. TestTeacher1) from supervisor
+            // and admin views. Match on Staff full name OR DisplayName starting
+            // with "Test" (case-insensitive). Real employees with names that
+            // happen to begin with "Test" are vanishingly rare; if one does
+            // exist, rename the test account instead.
+            if (LooksLikeTestAccount(member))
                 continue;
 
             summaries.Add(new TeamTimesheetSummary
@@ -703,10 +717,11 @@ public class TimesheetService : ITimesheetService
         {
             var timesheet = await GetPayPeriodTimesheetAsync(member.EmployeeId, periodStart, periodEnd);
 
-            // Same visibility rule as the scoped method: subs with zero hours
-            // are hidden (they only work when an assignment lands); hourly FT/PT
-            // always shown so admin sees who hasn't punched before deadline.
-            if (member.EmployeeType == EmployeeType.Substitute && timesheet.TotalHours <= 0)
+            // 2026-04-28: same visibility rule as the scoped method — hide all
+            // zero-hour rows, not just subs. Plus drop test/scratch accounts.
+            if (timesheet.TotalHours <= 0)
+                continue;
+            if (LooksLikeTestAccount(member))
                 continue;
 
             summaries.Add(new TeamTimesheetSummary
@@ -772,6 +787,10 @@ public class TimesheetService : ITimesheetService
             // HR doesn't need to see zero-hour rows during payroll review.
             if (timesheet.TotalHours <= 0) continue;
 
+            // 2026-04-28: hide test/scratch accounts (e.g. TestTeacher1) from
+            // HR Payroll Review — same filter applied on Team Timesheets.
+            if (LooksLikeTestAccount(employee)) continue;
+
             summaries.Add(new PayrollSummary
             {
                 EmployeeId = employee.EmployeeId,
@@ -795,6 +814,23 @@ public class TimesheetService : ITimesheetService
         }
 
         return summaries.OrderBy(s => s.SupervisorName).ThenBy(s => s.EmployeeName).ToList();
+    }
+
+    /// <summary>
+    /// Heuristic test-account detector. Matches employees whose Staff full name
+    /// or DisplayName starts with "Test" (case-insensitive). Used by Team
+    /// Timesheets, the All-Teams admin view, and HR Payroll Review to keep
+    /// scratch accounts (e.g. TestTeacher1) out of the supervisor / HR queues.
+    ///
+    /// If a real employee ever has a name starting with "Test", rename the
+    /// scratch account or wire an explicit IsTestAccount flag on TC_Employees.
+    /// </summary>
+    private static bool LooksLikeTestAccount(TcEmployee member)
+    {
+        var fullName = member.Staff?.FullName ?? "";
+        var displayName = member.DisplayName ?? "";
+        return fullName.StartsWith("Test", StringComparison.OrdinalIgnoreCase)
+            || displayName.StartsWith("Test", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task RecalculateDailyTimecardAsync(int employeeId, DateOnly workDate)
