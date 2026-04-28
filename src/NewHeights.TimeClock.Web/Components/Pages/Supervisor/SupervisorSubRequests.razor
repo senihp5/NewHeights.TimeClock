@@ -50,6 +50,16 @@
             }
         </div>
         <div class="info-item">
+            <span class="info-label">Week:</span>
+            <select @bind="selectedWeekFilter" @bind:after="LoadDataAsync">
+                <option value="all">All weeks</option>
+                @foreach (var w in availableWeeks)
+                {
+                    <option value="@w.Offset">@w.Label@(w.IsCurrent ? " · This week" : "")</option>
+                }
+            </select>
+        </div>
+        <div class="info-item">
             <span class="info-label">Show:</span>
             <select @bind="filterStatus" @bind:after="LoadDataAsync">
                 <option value="needs_approval">Needs My Final Approval</option>
@@ -111,32 +121,64 @@
         {
             var statusClass = "status-" + req.Status.ToString().ToLower();
             var isDenyingThis = denyingRequestId == req.SubRequestId;
-            <div class="request-card @statusClass">
-
-                <div class="request-header">
-                    <div class="request-who">
-                        <strong>@(req.RequestingEmployee?.Staff?.FullName ?? req.RequestingEmployee?.DisplayName ?? req.RequestingEmployee?.Email ?? "—")</strong>
+            <details class="request-card @statusClass">
+                @* Collapsed-state preview line. Click summary to drill in.
+                   Shows status chip, requester, dates, campus chip on row 1;
+                   reason + accepted-subs-with-periods on row 2 when present. *@
+                <summary class="request-summary">
+                    <span class="summary-chevron" aria-hidden="true">▶</span>
+                    <div class="summary-primary">
+                        <span class="chip @statusClass">@FormatStatus(req.Status)</span>
+                        <strong class="summary-who">@(req.RequestingEmployee?.Staff?.FullName ?? req.RequestingEmployee?.DisplayName ?? req.RequestingEmployee?.Email ?? "—")</strong>
                         @if (req.CreatedByEmployeeId.HasValue && req.CreatedByEmployee != null)
                         {
-                            <span class="on-behalf-badge"
-                                  style="display:inline-block; margin-left:8px; padding:2px 10px; background:#eff6ff; color:#0369a1; border:1px solid #93c5fd; border-radius:12px; font-size:0.8rem; font-weight:500;">
+                            <span class="on-behalf-badge">
                                 Created by @(req.CreatedByEmployee.Staff?.FullName ?? req.CreatedByEmployee.DisplayName ?? req.CreatedByEmployee.Email ?? "Admin")
                             </span>
                         }
-                        <span class="request-dates">
+                        <span class="summary-dates">
                             @(req.StartDate == req.EndDate
                                 ? req.StartDate.ToString("ddd, MMM d, yyyy")
                                 : $"{req.StartDate:ddd MMM d} – {req.EndDate:ddd MMM d, yyyy}")
                         </span>
-                    </div>
-                    <div class="request-badges">
-                        <span class="chip @statusClass">@FormatStatus(req.Status)</span>
                         @if (!string.IsNullOrWhiteSpace(req.Campus?.CampusName))
                         {
                             <span class="chip campus">@req.Campus.CampusName</span>
                         }
                     </div>
-                </div>
+                    @{
+                        var hasReason = !string.IsNullOrWhiteSpace(req.AbsenceReason);
+                        var hasAssignments = req.Assignments != null && req.Assignments.Count > 0;
+                    }
+                    @if (hasReason || hasAssignments)
+                    {
+                        <div class="summary-secondary">
+                            @if (hasReason)
+                            {
+                                <span class="summary-reason"><strong>Reason:</strong> @req.AbsenceReason</span>
+                            }
+                            @if (hasAssignments)
+                            {
+                                <span class="summary-subs">
+                                    <strong>Subs:</strong>
+                                    @foreach (var (asg, idx) in req.Assignments!.OrderBy(a => a.AcceptedAt).Select((a, i) => (a, i)))
+                                    {
+                                        if (idx > 0)
+                                        {
+                                            <span class="summary-sep">,&nbsp;</span>
+                                        }
+                                        <span class="summary-sub-pill">
+                                            @(asg.SubEmployee?.Staff?.FullName ?? asg.SubEmployee?.DisplayName ?? asg.SubEmployee?.Email ?? "Sub")
+                                            <span class="summary-periods">(@(string.IsNullOrWhiteSpace(asg.PeriodsCovered) ? "—" : asg.PeriodsCovered))</span>
+                                        </span>
+                                    }
+                                </span>
+                            }
+                        </div>
+                    }
+                </summary>
+
+                <div class="request-body">
 
                 <div class="request-meta">
                     <div><span class="meta-label">Absence:</span> @req.AbsenceType</div>
@@ -309,7 +351,8 @@
                 {
                     <div class="cancelled-panel">Cancelled by the requester.</div>
                 }
-            </div>
+                </div>
+            </details>
         }
     }
 
@@ -328,6 +371,14 @@
     private int selectedCampusFilter = 0;
 
     private string filterStatus = "needs_approval";
+
+    // Week filter — "all" = no week constraint (default, preserves original
+    // behavior). Otherwise a numeric offset relative to today's Monday: 0 =
+    // this week, -1 = last week, +1 = next week, etc. Same convention as
+    // SupervisorSubCalendar for consistency.
+    private string selectedWeekFilter = "all";
+    private List<WeekOption> availableWeeks = new();
+    private record WeekOption(int Offset, string Label, bool IsCurrent);
 
     private Dictionary<int, string> campusNameById = new();
 
@@ -364,7 +415,29 @@
             scopedCampusDisplay = userCtx.CampusDisplayName;
         }
 
+        BuildWeekOptions();
         await LoadDataAsync();
+    }
+
+    /// <summary>
+    /// Build the week-picker options once. Range mirrors SupervisorSubCalendar:
+    /// 8 weeks back through 4 weeks forward. Anchored on today's Monday so
+    /// options stay stable across renders within a session.
+    /// </summary>
+    private void BuildWeekOptions()
+    {
+        var today = DateOnly.FromDateTime(DateTime.Today);
+        var dowIdx = (int)today.DayOfWeek;
+        var todayMonday = today.AddDays(-(dowIdx == 0 ? 6 : dowIdx - 1));
+
+        availableWeeks.Clear();
+        for (int off = -8; off <= 4; off++)
+        {
+            var monday = todayMonday.AddDays(off * 7);
+            var sunday = monday.AddDays(6);
+            var label = $"{monday:MMM d} – {sunday:MMM d, yyyy}";
+            availableWeeks.Add(new WeekOption(off, label, off == 0));
+        }
     }
 
     private async Task LoadDataAsync()
@@ -393,6 +466,10 @@
                 .Include(r => r.AssignedSubEmployee).ThenInclude(e => e!.Staff)
                 .Include(r => r.Campus)
                 .Include(r => r.CreatedByEmployee).ThenInclude(e => e!.Staff)
+                // Include partial-acceptance assignments + their sub employees so
+                // the collapsed summary line on the request card can show
+                // "Subs: SmithJ (P1,P2), DoeM (P3)" without a second round-trip.
+                .Include(r => r.Assignments).ThenInclude(a => a.SubEmployee).ThenInclude(e => e!.Staff)
                 // Phase D4B: this is the TEACHER supervisor view. Reception
                 // requests live on /reception/sub-requests with their own
                 // isolated pool. NULL is treated as TEACHER (legacy data).
@@ -401,6 +478,19 @@
 
             if (filterCampusId.HasValue)
                 query = query.Where(r => r.CampusId == filterCampusId.Value);
+
+            // Week filter — narrows requests whose absence overlaps the
+            // selected Mon–Sun window. Default "all" leaves the original
+            // status-only query in place. Same week semantics as Sub Calendar.
+            if (selectedWeekFilter != "all" && int.TryParse(selectedWeekFilter, out var weekOff))
+            {
+                var todayLocal = DateOnly.FromDateTime(DateTime.Today);
+                var dowIdx = (int)todayLocal.DayOfWeek;
+                var todayMonday = todayLocal.AddDays(-(dowIdx == 0 ? 6 : dowIdx - 1));
+                var weekMonday = todayMonday.AddDays(weekOff * 7);
+                var weekSunday = weekMonday.AddDays(6);
+                query = query.Where(r => r.StartDate <= weekSunday && r.EndDate >= weekMonday);
+            }
 
             query = filterStatus switch
             {

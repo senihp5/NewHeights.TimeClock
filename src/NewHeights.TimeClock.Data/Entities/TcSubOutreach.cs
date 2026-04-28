@@ -39,6 +39,16 @@ public class TcSubOutreach
 
     public DateTime? RespondedAt { get; set; }
 
+    /// <summary>
+    /// Migration 059 (2026-04-27): SQL-computed PERSISTED column —
+    /// DATEDIFF(SECOND, MessageSentAt, RespondedAt) when both are set, else
+    /// NULL. Read-only; EF treats it as ValueGeneratedOnAddOrUpdate so
+    /// inserts and updates don't try to round-trip a value. Useful for
+    /// analytics queries (avg time-to-accept by sub, decline-rate trends,
+    /// cascade-stage performance).
+    /// </summary>
+    public int? ResponseTimeSeconds { get; private set; }
+
     /// <summary>Email of the supervisor who triggered the send.</summary>
     public string? SentBy { get; set; }
 

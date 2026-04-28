@@ -446,3 +446,177 @@
     color: #374151;
     font-style: italic;
 }
+
+/* =========================================================================
+   2026-04-27: convert each request to a <details>/<summary> accordion so
+   the page collapses to a scannable preview list. Click a summary line to
+   drill into the full request meta + action panel. The summary line shows
+   the existing status chip + requester + dates + campus on row 1, plus an
+   inline reason snippet and accepted-subs-with-periods list on row 2.
+   ========================================================================= */
+
+/* Override the original .request-card (was a <div>) — now <details>.
+   Padding moves down to .request-summary + .request-body so the chevron
+   sits flush against the left edge and toggling doesn't reflow. */
+details.request-card {
+    padding: 0;
+    overflow: visible;
+}
+
+.request-summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.7rem 0.95rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    transition: background 0.12s ease;
+    border-radius: 6px;
+}
+
+.request-summary::-webkit-details-marker { display: none; }
+
+.request-summary:hover {
+    background: #f9fafb;
+}
+
+details.request-card[open] > .request-summary {
+    background: #f3f4f6;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.summary-chevron {
+    display: inline-block;
+    margin-right: 0.45rem;
+    color: #1e3a5f;
+    font-size: 0.7rem;
+    transition: transform 0.15s ease;
+    transform-origin: center;
+}
+
+details.request-card[open] > .request-summary > .summary-chevron {
+    transform: rotate(90deg);
+}
+
+.summary-primary {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 0.92rem;
+    color: #111827;
+}
+
+.summary-who {
+    color: #1e3a5f;
+    font-weight: 700;
+    font-size: 1rem;
+}
+
+.summary-dates {
+    color: #4b5563;
+    font-size: 0.88rem;
+}
+
+/* "Created by [admin]" badge — was an inline style; now scoped class. */
+.on-behalf-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    background: #eff6ff;
+    color: #0369a1;
+    border: 1px solid #93c5fd;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+/* Row 2 of the summary — reason snippet + accepted-subs list. Hidden when
+   neither is populated (handled in markup). */
+.summary-secondary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    padding-left: 1.45rem;
+    font-size: 0.86rem;
+    color: #374151;
+    line-height: 1.45;
+}
+
+.summary-reason strong,
+.summary-subs strong {
+    color: #4b5563;
+    font-weight: 600;
+    margin-right: 0.2rem;
+}
+
+.summary-reason {
+    color: #1f2937;
+}
+
+.summary-subs {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    align-items: center;
+    color: #065f46;
+}
+
+.summary-sub-pill {
+    background: #ecfdf5;
+    border: 1px solid #6ee7b7;
+    border-radius: 9999px;
+    padding: 0.1rem 0.6rem;
+    font-size: 0.82rem;
+    white-space: nowrap;
+    color: #065f46;
+    font-weight: 500;
+}
+
+.summary-periods {
+    color: #047857;
+    font-weight: 600;
+    margin-left: 0.25rem;
+    font-size: 0.78rem;
+}
+
+.summary-sep {
+    color: transparent;
+    width: 0;
+}
+
+/* The expanded body — full meta + action area lives here. */
+.request-body {
+    padding: 0.85rem 1rem 1rem;
+    background: #fff;
+    border-radius: 0 0 8px 8px;
+}
+
+/* Mobile (<= 768 px) — looser tap targets, the secondary row indents less. */
+@media (max-width: 768px) {
+
+    .filter-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.55rem;
+    }
+
+    .filter-bar select {
+        width: 100%;
+        min-height: 44px;
+        font-size: 16px;
+    }
+
+    .request-summary {
+        padding: 0.85rem 0.85rem;
+        min-height: 44px;
+    }
+
+    .summary-secondary {
+        padding-left: 1.25rem;
+    }
+
+    .request-body {
+        padding: 0.7rem 0.85rem 0.95rem;
+    }
+}

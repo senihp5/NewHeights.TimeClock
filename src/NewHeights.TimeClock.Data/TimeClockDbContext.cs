@@ -370,6 +370,14 @@ public class TimeClockDbContext : DbContext
             entity.HasIndex(e => e.SubRequestId);
             entity.HasIndex(e => e.ResponseStatus);
             entity.HasIndex(e => e.TokenExpiresAt);
+
+            // Migration 059 (2026-04-27): SQL-computed analytics column.
+            // EF reads it but never writes it — DB maintains the value
+            // whenever MessageSentAt or RespondedAt change.
+            entity.Property(e => e.ResponseTimeSeconds)
+                  .HasComputedColumnSql(
+                      "CASE WHEN MessageSentAt IS NOT NULL AND RespondedAt IS NOT NULL THEN DATEDIFF(SECOND, MessageSentAt, RespondedAt) END",
+                      stored: true);
         });
 
         modelBuilder.Entity<TcCalendarEvent>(entity =>
