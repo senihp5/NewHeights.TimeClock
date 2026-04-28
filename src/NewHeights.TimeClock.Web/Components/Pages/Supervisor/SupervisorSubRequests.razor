@@ -115,36 +115,56 @@
                 <span class="stat-value">@requests.Count(r => r.Status == SubRequestStatus.AbsenceApproved)</span>
                 <span class="stat-label">Approved (Final)</span>
             </div>
+            <div class="expand-controls">
+                <button type="button" class="btn-expand-all" @onclick="ExpandAll" title="Expand every request card">
+                    Expand all
+                </button>
+                <button type="button" class="btn-collapse-all" @onclick="CollapseAll" title="Collapse every request card">
+                    Collapse all
+                </button>
+            </div>
         </div>
 
         @foreach (var req in requests)
         {
             var statusClass = "status-" + req.Status.ToString().ToLower();
             var isDenyingThis = denyingRequestId == req.SubRequestId;
-            <details class="request-card @statusClass">
+            <details class="request-card @statusClass" open="@expandedRequests.Contains(req.SubRequestId)">
                 @* Collapsed-state preview line. Click summary to drill in.
-                   Shows status chip, requester, dates, campus chip on row 1;
-                   reason + accepted-subs-with-periods on row 2 when present. *@
-                <summary class="request-summary">
-                    <span class="summary-chevron" aria-hidden="true">▶</span>
-                    <div class="summary-primary">
-                        <span class="chip @statusClass">@FormatStatus(req.Status)</span>
-                        <strong class="summary-who">@(req.RequestingEmployee?.Staff?.FullName ?? req.RequestingEmployee?.DisplayName ?? req.RequestingEmployee?.Email ?? "—")</strong>
-                        @if (req.CreatedByEmployeeId.HasValue && req.CreatedByEmployee != null)
-                        {
-                            <span class="on-behalf-badge">
-                                Created by @(req.CreatedByEmployee.Staff?.FullName ?? req.CreatedByEmployee.DisplayName ?? req.CreatedByEmployee.Email ?? "Admin")
+                   Row 1: chevron + requester + dates on the left, status chip
+                          + campus chip on the right (matches the original
+                          .request-header layout supervisors were used to).
+                   Row 2: reason + accepted-subs-with-periods when present. *@
+                @* preventDefault stops the browser's native <details> toggle so
+                   Blazor's expandedRequests HashSet is the sole source of truth.
+                   ToggleExpanded mutates the set; the open="@..." attribute on
+                   <details> reads the set on the next render. *@
+                <summary class="request-summary"
+                         @onclick="@(() => ToggleExpanded(req.SubRequestId))"
+                         @onclick:preventDefault>
+                    <div class="summary-row">
+                        <div class="summary-left">
+                            <span class="summary-chevron" aria-hidden="true">▶</span>
+                            <strong class="summary-who">@(req.RequestingEmployee?.Staff?.FullName ?? req.RequestingEmployee?.DisplayName ?? req.RequestingEmployee?.Email ?? "—")</strong>
+                            @if (req.CreatedByEmployeeId.HasValue && req.CreatedByEmployee != null)
+                            {
+                                <span class="on-behalf-badge">
+                                    Created by @(req.CreatedByEmployee.Staff?.FullName ?? req.CreatedByEmployee.DisplayName ?? req.CreatedByEmployee.Email ?? "Admin")
+                                </span>
+                            }
+                            <span class="summary-dates">
+                                @(req.StartDate == req.EndDate
+                                    ? req.StartDate.ToString("ddd, MMM d, yyyy")
+                                    : $"{req.StartDate:ddd MMM d} – {req.EndDate:ddd MMM d, yyyy}")
                             </span>
-                        }
-                        <span class="summary-dates">
-                            @(req.StartDate == req.EndDate
-                                ? req.StartDate.ToString("ddd, MMM d, yyyy")
-                                : $"{req.StartDate:ddd MMM d} – {req.EndDate:ddd MMM d, yyyy}")
-                        </span>
-                        @if (!string.IsNullOrWhiteSpace(req.Campus?.CampusName))
-                        {
-                            <span class="chip campus">@req.Campus.CampusName</span>
-                        }
+                        </div>
+                        <div class="summary-right">
+                            <span class="chip @statusClass">@FormatStatus(req.Status)</span>
+                            @if (!string.IsNullOrWhiteSpace(req.Campus?.CampusName))
+                            {
+                                <span class="chip campus">@req.Campus.CampusName</span>
+                            }
+                        </div>
                     </div>
                     @{
                         var hasReason = !string.IsNullOrWhiteSpace(req.AbsenceReason);
@@ -372,13 +392,19 @@
 
     private string filterStatus = "needs_approval";
 
-    // Week filter — "all" = no week constraint (default, preserves original
-    // behavior). Otherwise a numeric offset relative to today's Monday: 0 =
-    // this week, -1 = last week, +1 = next week, etc. Same convention as
-    // SupervisorSubCalendar for consistency.
-    private string selectedWeekFilter = "all";
+    // Week filter — defaults to "0" (this week) per supervisor request 2026-04-27.
+    // "all" disables the week filter; numeric offsets are relative to today's
+    // Monday: 0 = this week, -1 = last week, +1 = next week, etc. Same week
+    // convention as SupervisorSubCalendar.
+    private string selectedWeekFilter = "0";
     private List<WeekOption> availableWeeks = new();
     private record WeekOption(int Offset, string Label, bool IsCurrent);
+
+    // Per-request accordion state. A request ID in the set means the card is
+    // expanded. Mutated by user clicks on a summary AND by the Expand all /
+    // Collapse all buttons. The <details open="@..."> attribute reads from
+    // this set on every render so DOM and state stay in sync.
+    private HashSet<long> expandedRequests = new();
 
     private Dictionary<int, string> campusNameById = new();
 
@@ -438,6 +464,25 @@
             var label = $"{monday:MMM d} – {sunday:MMM d, yyyy}";
             availableWeeks.Add(new WeekOption(off, label, off == 0));
         }
+    }
+
+    /// <summary>Toggle a single request's expand state on summary click.</summary>
+    private void ToggleExpanded(long requestId)
+    {
+        if (!expandedRequests.Add(requestId))
+            expandedRequests.Remove(requestId);
+    }
+
+    /// <summary>Expand every currently-loaded request.</summary>
+    private void ExpandAll()
+    {
+        expandedRequests = requests.Select(r => r.SubRequestId).ToHashSet();
+    }
+
+    /// <summary>Collapse every currently-loaded request.</summary>
+    private void CollapseAll()
+    {
+        expandedRequests.Clear();
     }
 
     private async Task LoadDataAsync()

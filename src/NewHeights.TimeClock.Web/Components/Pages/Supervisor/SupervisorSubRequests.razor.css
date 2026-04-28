@@ -448,63 +448,128 @@
 }
 
 /* =========================================================================
-   2026-04-27: convert each request to a <details>/<summary> accordion so
-   the page collapses to a scannable preview list. Click a summary line to
-   drill into the full request meta + action panel. The summary line shows
-   the existing status chip + requester + dates + campus on row 1, plus an
-   inline reason snippet and accepted-subs-with-periods list on row 2.
+   2026-04-27 (revised): convert each request to a <details>/<summary> with
+   the original styled-header look intact — per-status background tints,
+   left/right column split (chevron + name + dates on the left, status +
+   campus chips on the right), reason + subs list on row 2 when present.
+   Each .summary-sub-pill picks up the parent card's status colors so the
+   coverage list visually echoes the row state.
    ========================================================================= */
 
-/* Override the original .request-card (was a <div>) — now <details>.
-   Padding moves down to .request-summary + .request-body so the chevron
-   sits flush against the left edge and toggling doesn't reflow. */
+/* Card was a <div> with flat padding; now it's a <details>. Padding moves
+   down to .request-summary and .request-body so the colored left-border
+   stripe stays crisp on toggle. */
 details.request-card {
     padding: 0;
     overflow: visible;
 }
 
 .request-summary {
+    /* Per-status header tints come from the .request-card.status-X overrides
+       below via these CSS custom properties. Default = neutral gray. */
+    --header-tint: linear-gradient(180deg, #f9fafb 0%, #f3f4f6 100%);
+    --header-tint-hover: linear-gradient(180deg, #f3f4f6 0%, #e5e7eb 100%);
+
     list-style: none;
     cursor: pointer;
-    padding: 0.7rem 0.95rem;
+    padding: 0.75rem 1rem;
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.5rem;
+    background: var(--header-tint);
+    border-radius: 6px 6px 0 0;
     transition: background 0.12s ease;
-    border-radius: 6px;
 }
 
 .request-summary::-webkit-details-marker { display: none; }
 
 .request-summary:hover {
-    background: #f9fafb;
+    background: var(--header-tint-hover);
+}
+
+/* When closed, the summary is rounded on all corners; when open the bottom
+   corners square so it joins the body block cleanly. */
+details.request-card:not([open]) > .request-summary {
+    border-radius: 6px;
 }
 
 details.request-card[open] > .request-summary {
-    background: #f3f4f6;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
 }
 
-.summary-chevron {
-    display: inline-block;
-    margin-right: 0.45rem;
-    color: #1e3a5f;
-    font-size: 0.7rem;
-    transition: transform 0.15s ease;
-    transform-origin: center;
+/* Per-status header tints — match each status chip but lighter. */
+details.request-card.status-submitted > .request-summary {
+    --header-tint: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+    --header-tint-hover: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
+}
+details.request-card.status-absenceapproved > .request-summary {
+    --header-tint: linear-gradient(180deg, #f0f6ff 0%, #dbeafe 100%);
+    --header-tint-hover: linear-gradient(180deg, #dbeafe 0%, #bfdbfe 100%);
+}
+details.request-card.status-subassigned > .request-summary {
+    --header-tint: linear-gradient(180deg, #f6f4ff 0%, #ede9fe 100%);
+    --header-tint-hover: linear-gradient(180deg, #ede9fe 0%, #ddd6fe 100%);
+}
+details.request-card.status-subconfirmed > .request-summary {
+    --header-tint: linear-gradient(180deg, #f0fdf4 0%, #d1fae5 100%);
+    --header-tint-hover: linear-gradient(180deg, #d1fae5 0%, #a7f3d0 100%);
+}
+details.request-card.status-partiallyassigned > .request-summary {
+    --header-tint: linear-gradient(180deg, #fff7ed 0%, #fed7aa 100%);
+    --header-tint-hover: linear-gradient(180deg, #fed7aa 0%, #fdba74 100%);
+}
+details.request-card.status-awaitingsub > .request-summary {
+    --header-tint: linear-gradient(180deg, #fffbeb 0%, #fde68a 100%);
+    --header-tint-hover: linear-gradient(180deg, #fde68a 0%, #fcd34d 100%);
+}
+details.request-card.status-denied > .request-summary {
+    --header-tint: linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%);
+    --header-tint-hover: linear-gradient(180deg, #fee2e2 0%, #fecaca 100%);
+}
+details.request-card.status-cancelled > .request-summary {
+    --header-tint: linear-gradient(180deg, #f9fafb 0%, #f3f4f6 100%);
+    --header-tint-hover: linear-gradient(180deg, #f3f4f6 0%, #e5e7eb 100%);
 }
 
-details.request-card[open] > .request-summary > .summary-chevron {
-    transform: rotate(90deg);
+/* Row 1: chevron + name + dates on the left, status chip + campus chip
+   pushed to the right via justify-content: space-between. */
+.summary-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    width: 100%;
 }
 
-.summary-primary {
+.summary-left {
     display: inline-flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.55rem;
-    font-size: 0.92rem;
-    color: #111827;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.summary-right {
+    display: inline-flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+    align-items: center;
+}
+
+.summary-chevron {
+    display: inline-block;
+    color: #1e3a5f;
+    font-size: 0.7rem;
+    transition: transform 0.15s ease;
+    transform-origin: center;
+    margin-right: 0.1rem;
+}
+
+details.request-card[open] > .request-summary .summary-chevron {
+    transform: rotate(90deg);
 }
 
 .summary-who {
@@ -531,8 +596,7 @@ details.request-card[open] > .request-summary > .summary-chevron {
     white-space: nowrap;
 }
 
-/* Row 2 of the summary — reason snippet + accepted-subs list. Hidden when
-   neither is populated (handled in markup). */
+/* Row 2 — reason snippet + accepted-subs list. */
 .summary-secondary {
     display: flex;
     flex-wrap: wrap;
@@ -557,27 +621,60 @@ details.request-card[open] > .request-summary > .summary-chevron {
 .summary-subs {
     display: inline-flex;
     flex-wrap: wrap;
-    gap: 0.25rem;
+    gap: 0.3rem;
     align-items: center;
-    color: #065f46;
 }
 
+/* Sub pills inherit the parent card's status colors so the coverage list
+   visually matches the row. Defaults match status-subconfirmed (green)
+   since accepted subs is the most-common case for the submitted state. */
 .summary-sub-pill {
-    background: #ecfdf5;
-    border: 1px solid #6ee7b7;
+    --pill-bg: #ecfdf5;
+    --pill-border: #6ee7b7;
+    --pill-fg: #065f46;
+    --pill-fg-strong: #047857;
+
+    background: var(--pill-bg);
+    border: 1px solid var(--pill-border);
     border-radius: 9999px;
     padding: 0.1rem 0.6rem;
     font-size: 0.82rem;
     white-space: nowrap;
-    color: #065f46;
+    color: var(--pill-fg);
     font-weight: 500;
 }
 
 .summary-periods {
-    color: #047857;
+    color: var(--pill-fg-strong);
     font-weight: 600;
     margin-left: 0.25rem;
     font-size: 0.78rem;
+}
+
+/* Per-status sub-pill colors — match the parent card's chip palette. */
+details.request-card.status-submitted .summary-sub-pill {
+    --pill-bg: #fef3c7; --pill-border: #fcd34d; --pill-fg: #92400e; --pill-fg-strong: #78350f;
+}
+details.request-card.status-absenceapproved .summary-sub-pill {
+    --pill-bg: #dbeafe; --pill-border: #93c5fd; --pill-fg: #1e40af; --pill-fg-strong: #1e3a8a;
+}
+details.request-card.status-subassigned .summary-sub-pill {
+    --pill-bg: #ede9fe; --pill-border: #c4b5fd; --pill-fg: #5b21b6; --pill-fg-strong: #4c1d95;
+}
+details.request-card.status-subconfirmed .summary-sub-pill {
+    --pill-bg: #d1fae5; --pill-border: #6ee7b7; --pill-fg: #065f46; --pill-fg-strong: #047857;
+}
+details.request-card.status-partiallyassigned .summary-sub-pill {
+    --pill-bg: #fed7aa; --pill-border: #fdba74; --pill-fg: #9a3412; --pill-fg-strong: #7c2d12;
+}
+details.request-card.status-awaitingsub .summary-sub-pill {
+    --pill-bg: #fef3c7; --pill-border: #fbbf24; --pill-fg: #78350f; --pill-fg-strong: #713f12;
+}
+details.request-card.status-denied .summary-sub-pill {
+    --pill-bg: #fee2e2; --pill-border: #fca5a5; --pill-fg: #991b1b; --pill-fg-strong: #7f1d1d;
+}
+details.request-card.status-cancelled .summary-sub-pill {
+    --pill-bg: #e5e7eb; --pill-border: #d1d5db; --pill-fg: #374151; --pill-fg-strong: #1f2937;
 }
 
 .summary-sep {
@@ -585,14 +682,43 @@ details.request-card[open] > .request-summary > .summary-chevron {
     width: 0;
 }
 
-/* The expanded body — full meta + action area lives here. */
+/* Expanded body — meta + action area. */
 .request-body {
     padding: 0.85rem 1rem 1rem;
     background: #fff;
     border-radius: 0 0 8px 8px;
 }
 
-/* Mobile (<= 768 px) — looser tap targets, the secondary row indents less. */
+/* Expand all / Collapse all controls — appended to .summary-stats so they
+   sit next to the count cards on desktop and wrap below on narrow screens. */
+.expand-controls {
+    margin-left: auto;
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+}
+
+.btn-expand-all,
+.btn-collapse-all {
+    padding: 0.4rem 0.85rem;
+    background: #fff;
+    color: #1e3a5f;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.btn-expand-all:hover,
+.btn-collapse-all:hover {
+    background: #f3f4f6;
+    border-color: #1e3a5f;
+    color: #152840;
+}
+
+/* Mobile (<= 768 px) — looser tap targets, controls stack. */
 @media (max-width: 768px) {
 
     .filter-bar {
@@ -607,9 +733,34 @@ details.request-card[open] > .request-summary > .summary-chevron {
         font-size: 16px;
     }
 
+    .summary-stats {
+        flex-wrap: wrap;
+    }
+
+    .expand-controls {
+        margin-left: 0;
+        width: 100%;
+        justify-content: stretch;
+    }
+
+    .btn-expand-all,
+    .btn-collapse-all {
+        flex: 1;
+        min-height: 44px;
+    }
+
     .request-summary {
         padding: 0.85rem 0.85rem;
         min-height: 44px;
+    }
+
+    .summary-row {
+        gap: 0.5rem;
+    }
+
+    .summary-right {
+        flex: 1 1 100%;
+        justify-content: flex-end;
     }
 
     .summary-secondary {
