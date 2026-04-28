@@ -125,7 +125,7 @@ public class PayrollPdfService : IPayrollPdfService
             .AsNoTracking()
             .Include(e => e.Staff)
             .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
-            .Include(e => e.Campus)
+            .Include(e => e.HomeCampus)
             .FirstOrDefaultAsync(e => e.EmployeeId == employeeId, ct);
         if (employee == null) return;
 
@@ -149,7 +149,7 @@ public class PayrollPdfService : IPayrollPdfService
         y += 22;
 
         // Period strip.
-        gfx.DrawString($"Pay period: {periodStart:MMM d} – {periodEnd:MMM d, yyyy}    ·    ID: {employee.IdNumber}    ·    Campus: {employee.Campus?.CampusName ?? "—"}    ·    Supervisor: {employee.Supervisor?.Staff?.FullName ?? "—"}",
+        gfx.DrawString($"Pay period: {periodStart:MMM d} – {periodEnd:MMM d, yyyy}    ·    ID: {employee.IdNumber}    ·    Campus: {employee.HomeCampus?.CampusName ?? "—"}    ·    Supervisor: {employee.Supervisor?.Staff?.FullName ?? "—"}",
             smallFont, XBrushes.DimGray, new XRect(x, y, width, 14), XStringFormats.TopLeft);
         y += 20;
 
@@ -172,7 +172,10 @@ public class PayrollPdfService : IPayrollPdfService
         gfx.DrawString("Note", labelFont, XBrushes.Black, new XRect(col7 + 4, y + 2, 90, 14), XStringFormats.TopLeft);
         y += 18;
 
-        foreach (var day in timesheet.Days)
+        // PayPeriodTimesheet groups days by week — flatten into a single
+        // chronological day list for the PDF row-by-row render.
+        var allDays = timesheet.Weeks.SelectMany(w => w.Days).OrderBy(d => d.Date);
+        foreach (var day in allDays)
         {
             if (y > page.Height - PageMargin - 80)
             {
@@ -293,7 +296,7 @@ public class PayrollPdfService : IPayrollPdfService
                 gfx.DrawString(card.WorkDate.ToString("M/d"), bodyFont, XBrushes.Black, new XRect(x + 4, y, 70, 14), XStringFormats.TopLeft);
                 gfx.DrawString(card.Campus?.CampusName ?? "—", bodyFont, XBrushes.Black, new XRect(x + 80, y, 90, 14), XStringFormats.TopLeft);
                 gfx.DrawString($"P{entry.PeriodNumber}", bodyFont, XBrushes.Black, new XRect(x + 180, y, 50, 14), XStringFormats.TopLeft);
-                var teacherDisplay = !string.IsNullOrWhiteSpace(entry.TeacherName) ? entry.TeacherName! : "—";
+                var teacherDisplay = !string.IsNullOrWhiteSpace(entry.TeacherReplaced) ? entry.TeacherReplaced! : "—";
                 if (teacherDisplay.Length > 22) teacherDisplay = teacherDisplay.Substring(0, 21) + "…";
                 gfx.DrawString(teacherDisplay, bodyFont, XBrushes.Black, new XRect(x + 230, y, 130, 14), XStringFormats.TopLeft);
                 var subj = entry.ContentArea ?? entry.CourseName ?? "—";

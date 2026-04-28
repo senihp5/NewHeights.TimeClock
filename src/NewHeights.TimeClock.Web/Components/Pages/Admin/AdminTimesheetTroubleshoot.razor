@@ -71,7 +71,7 @@
                             <td>@(emp.Email ?? "—")</td>
                             <td>@emp.IdNumber</td>
                             <td>@emp.EmployeeType</td>
-                            <td>@(emp.Campus?.CampusName ?? "—")</td>
+                            <td>@(emp.HomeCampus?.CampusName ?? "—")</td>
                             <td>@(emp.IsActive ? "✓" : "✗")</td>
                             <td>
                                 <button class="tt-btn-pick" @onclick="() => SelectEmployeeAsync(emp.EmployeeId)">Inspect</button>
@@ -94,7 +94,7 @@
                         ID: <code>@selectedEmployee.IdNumber</code> ·
                         Email: <code>@(selectedEmployee.Email ?? "—")</code> ·
                         Type: <code>@selectedEmployee.EmployeeType</code> ·
-                        Campus: <code>@(selectedEmployee.Campus?.CampusName ?? "—")</code> ·
+                        Campus: <code>@(selectedEmployee.HomeCampus?.CampusName ?? "—")</code> ·
                         Active: <code>@selectedEmployee.IsActive</code>
                     </p>
                 </div>
@@ -359,7 +359,7 @@
             searchResults = await ctx.TcEmployees
                 .AsNoTracking()
                 .Include(e => e.Staff)
-                .Include(e => e.Campus)
+                .Include(e => e.HomeCampus)
                 .Where(e =>
                     e.IdNumber.Contains(q)
                  || (e.Email != null && e.Email.ToLower().Contains(qLower))
@@ -392,7 +392,7 @@
             selectedEmployee = await ctx.TcEmployees
                 .AsNoTracking()
                 .Include(e => e.Staff)
-                .Include(e => e.Campus)
+                .Include(e => e.HomeCampus)
                 .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
                 .FirstOrDefaultAsync(e => e.EmployeeId == employeeId);
             await LoadDiagnosticsAsync();
@@ -480,7 +480,7 @@
             await TimesheetService.RecalculateDailyTimecardAsync(selectedEmployee.EmployeeId, date);
             await Audit.LogActionAsync(
                 actionCode: AuditActions.Timecard.Recalculated,
-                entityType: AuditEntityTypes.DailyTimecard,
+                entityType: AuditEntityTypes.Timecard,
                 entityId: $"{selectedEmployee.EmployeeId}@{date:yyyy-MM-dd}",
                 newValues: new { selectedEmployee.EmployeeId, date, RecalcedBy = currentUserEmail, Source = "TROUBLESHOOT" },
                 deltaSummary: $"Admin recalc daily timecard {selectedEmployee.EmployeeId} {date:yyyy-MM-dd} via troubleshoot page",
@@ -519,10 +519,15 @@
             entityType: AuditEntityTypes.Employee,
             entityId: selectedEmployee.EmployeeId.ToString(),
             newValues: new { selectedEmployee.EmployeeId, OpenedBy = currentUserEmail, Mode = "SUB", Source = "TROUBLESHOOT" },
-            deltaSummary: $"Admin {currentUserEmail} opened sub timesheet view for employee {selectedEmployee.EmployeeId} from troubleshoot page",
+            deltaSummary: $"Admin {currentUserEmail} opened sub timesheet review for employee {selectedEmployee.EmployeeId} from troubleshoot page",
             source: AuditSource.AdminUi,
             employeeId: selectedEmployee.EmployeeId);
-        Navigation.NavigateTo($"/my/sub-timesheet?asEmployeeId={selectedEmployee.EmployeeId}");
+        // The supervisor sub-timesheet review page is the canonical admin
+        // edit surface for sub timecards (it lets admins approve/reject and
+        // edit per-period entries for any sub via the same UI sub managers
+        // use). Routing here from the troubleshoot page keeps audit trails
+        // clean and avoids re-implementing impersonation infrastructure.
+        Navigation.NavigateTo("/supervisor/sub-timesheets");
     }
 
     private void ClearSelection()
