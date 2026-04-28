@@ -133,7 +133,12 @@ public class TimesheetService : ITimesheetService
                     PunchTime = p.PunchDateTime,
                     RoundedTime = p.RoundedDateTime,
                     IsManual = p.IsManualEntry,
-                    IsModified = p.IsModified
+                    IsModified = p.IsModified,
+                    // 2026-04-28: surfaced so the day-expansion view can label
+                    // SYSTEM-generated auto-out punches distinctly from badge
+                    // / manual rows. Supervisors specifically need to spot
+                    // legacy 9:30 PM auto-outs that should be voided.
+                    IsAutoCheckout = p.IsAutoCheckout
                 }).ToList(),
                 TotalHours = dayCard?.TotalHours ?? CalculateDayHours(dayPunches),
                 RegularHours = dayCard?.RegularHours ?? 0,
@@ -1136,6 +1141,10 @@ public class PunchEntry
     public DateTime? RoundedTime { get; set; }
     public bool IsManual { get; set; }
     public bool IsModified { get; set; }
+    // 2026-04-28: true when the punch was created by AutoCheckoutService.
+    // Lets the supervisor day-expansion view distinguish "real" badge OUTs
+    // from system-generated auto-outs that may need to be voided.
+    public bool IsAutoCheckout { get; set; }
 }
 
 public class PayPeriodTimesheet

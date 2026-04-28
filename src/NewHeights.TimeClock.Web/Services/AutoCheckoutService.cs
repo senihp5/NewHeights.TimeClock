@@ -17,8 +17,14 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AutoCheckoutService> _logger;
-    private const int AutoCheckoutHour = 21; // 9 PM
-    private const int AutoCheckoutMinute = 30; // 30 minutes
+    // 2026-04-28: changed AutoCheckoutMinute from 30 to 0 per Patrick.
+    // Night session ends at 9:00 PM, so auto-out fires at the same time
+    // someone forgetting to punch would have intended. The unpaired-IN
+    // guard below still ensures we ONLY create an OUT when an active IN
+    // has no matching OUT — duplicate phantoms (the source of legacy
+    // 9:30 PM ghost rows) are not produced by this loop.
+    private const int AutoCheckoutHour = 21;   // 9 PM
+    private const int AutoCheckoutMinute = 0;  // on the hour
 
     public AutoCheckoutService(
         IServiceScopeFactory scopeFactory,
@@ -148,7 +154,7 @@ public class AutoCheckoutService : BackgroundService, IAutoCheckoutService
                     PairedPunchId = inPunch.PunchId,
                     IsManualEntry = false,
                     IsAutoCheckout = true,
-                    Notes = $"Auto-checkout at {AutoCheckoutHour}:{AutoCheckoutMinute:D2} PM - Please verify with supervisor",
+                    Notes = $"Auto-checkout at {(AutoCheckoutHour > 12 ? AutoCheckoutHour - 12 : AutoCheckoutHour)}:{AutoCheckoutMinute:D2} PM — Please verify with supervisor",
                     PunchSource = "SYSTEM",
                     SessionType = inPunch.SessionType,
                     CreatedDate = now

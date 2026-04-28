@@ -238,52 +238,111 @@
                                         <div class="punch-detail-panel">
                                             @if (day.Punches.Any())
                                             {
-                                                <table class="punch-pairs-table">
+                                                @* 2026-04-28: Slot-table view modeled after the CSV import
+                                                   preview (AM In, AM Out, PM In, PM Out, Eve In, Eve Out).
+                                                   Block boundaries: AM before 12:30 PM, PM 12:30 PM through
+                                                   4:30 PM, Eve after 4:30 PM. Punches that don't fit the
+                                                   six slots drop into the Extras row below so orphan
+                                                   auto-outs and duplicate INs surface for cleanup. *@
+                                                var slots = GetDaySlots(day);
+                                                var capturedDay = day; // closure target for the void buttons below
+                                                var slotCells = new[]
+                                                {
+                                                    slots.AmIn, slots.AmOut,
+                                                    slots.PmIn, slots.PmOut,
+                                                    slots.EveIn, slots.EveOut
+                                                };
+                                                <table class="day-slots-table">
                                                     <thead>
                                                         <tr>
-                                                            <th>Type</th>
-                                                            <th>Actual Time</th>
-                                                            <th>Rounded Time</th>
-                                                            <th>Hours</th>
-                                                            <th>Source</th>
+                                                            <th>AM In</th>
+                                                            <th>AM Out</th>
+                                                            <th>PM In</th>
+                                                            <th>PM Out</th>
+                                                            <th>Eve In</th>
+                                                            <th>Eve Out</th>
+                                                            <th>AM hrs</th>
+                                                            <th>PM hrs</th>
+                                                            <th>Eve hrs</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
-                                                        @foreach (var pair in GetPunchPairs(day))
-                                                        {
-                                                            <tr>
+                                                        <tr>
+                                                            @foreach (var cell in slotCells)
+                                                            {
+                                                                var capturedPunch = cell;
                                                                 <td>
-                                                                    <span class="punch-badge @pair.BadgeClass">@pair.Label</span>
-                                                                </td>
-                                                                <td>
-                                                                    <span class="punch-time-in">@pair.InTime</span>
-                                                                    <span class="punch-arrow">→</span>
-                                                                    <span class="punch-time-out">@pair.OutTime</span>
-                                                                </td>
-                                                                <td>
-                                                                    <span class="punch-time-rounded">@pair.RoundedIn</span>
-                                                                    <span class="punch-arrow">→</span>
-                                                                    <span class="punch-time-rounded">@pair.RoundedOut</span>
-                                                                </td>
-                                                                <td class="pair-hours">@pair.Hours</td>
-                                                                <td>
-                                                                    @if (pair.IsManual)
+                                                                    @if (capturedPunch == null)
                                                                     {
-                                                                        <span class="source-badge manual" title="Manual Entry">✎ Manual</span>
-                                                                    }
-                                                                    else if (pair.IsModified)
-                                                                    {
-                                                                        <span class="source-badge modified" title="Modified">✏️ Modified</span>
+                                                                        <span class="slot-empty" title="No punch recorded">—</span>
                                                                     }
                                                                     else
                                                                     {
-                                                                        <span class="source-badge auto">Badge</span>
+                                                                        var src = SourceTag(capturedPunch);
+                                                                        <div class="slot-filled">
+                                                                            <span class="slot-time">@(capturedPunch.RoundedTime?.ToString("h:mm tt") ?? capturedPunch.PunchTime.ToString("h:mm tt"))</span>
+                                                                            <span class="slot-source @src.Css" title="@src.Label">@src.Label</span>
+                                                                            <button class="slot-void"
+                                                                                    @onclick="() => OpenVoidPunchDialog(capturedDay, capturedPunch)"
+                                                                                    @onclick:stopPropagation="true"
+                                                                                    title="Void this punch">🗑</button>
+                                                                        </div>
                                                                     }
                                                                 </td>
-                                                            </tr>
-                                                        }
+                                                            }
+                                                            <td class="slot-hours">@slots.AmHours</td>
+                                                            <td class="slot-hours">@slots.PmHours</td>
+                                                            <td class="slot-hours">@slots.EveHours</td>
+                                                        </tr>
                                                     </tbody>
                                                 </table>
+
+                                                @if (slots.Extras.Any())
+                                                {
+                                                    @* Extras: punches that don't fit the six canonical slots.
+                                                       Most common cause: duplicate auto-outs at 9:00/9:30 PM,
+                                                       or a second IN inside the same block. Each row carries a
+                                                       Void button so the supervisor can soft-delete one click. *@
+                                                    <div class="day-extras">
+                                                        <h5 class="day-extras-title">Extras (don't fit AM / PM / Eve slots)</h5>
+                                                        <table class="day-extras-table">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th>Type</th>
+                                                                    <th>Time</th>
+                                                                    <th>Rounded</th>
+                                                                    <th>Source</th>
+                                                                    <th>Action</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                @foreach (var extra in slots.Extras)
+                                                                {
+                                                                    var src = SourceTag(extra);
+                                                                    var capturedExtra = extra; // closure capture
+                                                                    <tr>
+                                                                        <td>
+                                                                            <span class="punch-type-pill @(extra.PunchType.Contains("Out", StringComparison.OrdinalIgnoreCase) ? "out" : "in")">
+                                                                                @extra.PunchType
+                                                                            </span>
+                                                                        </td>
+                                                                        <td>@extra.PunchTime.ToString("h:mm tt")</td>
+                                                                        <td>@(extra.RoundedTime?.ToString("h:mm tt") ?? "—")</td>
+                                                                        <td><span class="source-badge @src.Css">@src.Label</span></td>
+                                                                        <td>
+                                                                            <button class="btn-void-extra"
+                                                                                    @onclick="() => OpenVoidPunchDialog(day, capturedExtra)"
+                                                                                    @onclick:stopPropagation="true"
+                                                                                    title="Void this punch (soft-delete; stays in audit log)">
+                                                                                🗑 Void
+                                                                            </button>
+                                                                        </td>
+                                                                    </tr>
+                                                                }
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                }
                                             }
                                             else if (!isHoliday)
                                             {
@@ -530,6 +589,18 @@
 
                 <hr />
 
+                @if (pendingVoidPunchId.HasValue)
+                {
+                    @* Void queue: the supervisor clicked 🗑 on a slot/extras
+                       row. The punch is committed (PunchStatus = Voided) on
+                       Save. Showing the summary here so it's clear what's
+                       about to be deleted. *@
+                    <div class="void-pending-banner">
+                        <strong>🗑 Punch queued for void:</strong> @pendingVoidPunchSummary
+                        <button type="button" class="link-btn" @onclick="CancelPendingVoid">Cancel void</button>
+                    </div>
+                }
+
                 <h4>Edit Entry</h4>
 
                 <label style="display:flex;align-items:center;gap:6px;margin:0.5rem 0;">
@@ -587,7 +658,7 @@
             <div class="modal-footer">
                 <button class="btn-cancel" @onclick="CloseEditModal">Cancel</button>
                 <button class="btn-save" @onclick="SaveCorrection"
-                        disabled="@(string.IsNullOrWhiteSpace(correctionReason) || (!addPunchInCorrection && !markExceptionResolved && !flagAsException))">
+                        disabled="@(string.IsNullOrWhiteSpace(correctionReason) || (!addPunchInCorrection && !markExceptionResolved && !flagAsException && !pendingVoidPunchId.HasValue))">
                     Save
                 </button>
             </div>
@@ -679,10 +750,25 @@
 
         // Populate pay-period dropdown; seed from URL offset for back-compat.
         availablePeriods = await PayPeriodService.GetRecentPayPeriodsAsync();
-        var initialPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
-        selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
-            ? initialPeriod.PayPeriodId
-            : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+
+        // 2026-04-28 (fix): Team Timesheets passes ?backPp={selectedPayPeriodId}
+        // on the deep-link. The route's PeriodOffset is hardcoded to 0 from
+        // that page (it never recomputes when the supervisor changes the
+        // dropdown), so honoring backPp first guarantees we land on the EXACT
+        // pay period the supervisor was viewing — not whatever period the
+        // stale offset arithmetic resolves to. Falls back to the offset-based
+        // seed only when no backPp hint was provided (direct link, bookmark).
+        if (BackPayPeriodId.HasValue && availablePeriods.Any(p => p.PayPeriodId == BackPayPeriodId.Value))
+        {
+            selectedPayPeriodId = BackPayPeriodId.Value;
+        }
+        else
+        {
+            var initialPeriod = await PayPeriodService.GetPayPeriodForDateAsync(periodAnchorDate);
+            selectedPayPeriodId = availablePeriods.Any(p => p.PayPeriodId == initialPeriod.PayPeriodId)
+                ? initialPeriod.PayPeriodId
+                : availablePeriods.FirstOrDefault(p => p.IsOpen)?.PayPeriodId ?? availablePeriods.FirstOrDefault()?.PayPeriodId ?? 0;
+        }
 
         await LoadEmployeeData();
     }
@@ -1004,6 +1090,10 @@
         // silently add an 8:00 AM IN punch if the supervisor forgets to uncheck.
         addPunchInCorrection = !day.HasException;
         flagAsException = false;
+        // Clear any stale void queue so the pencil-edit modal doesn't pick
+        // up a punch the supervisor queued and abandoned earlier.
+        pendingVoidPunchId = null;
+        pendingVoidPunchSummary = "";
         showEditModal = true;
     }
 
@@ -1013,12 +1103,22 @@
         editingDay = null;
         addPunchInCorrection = false;
         flagAsException = false;
+        pendingVoidPunchId = null;
+        pendingVoidPunchSummary = "";
+    }
+
+    /// <summary>Drops a queued void without closing the modal — supervisor
+    /// can change their mind and pick a different action instead.</summary>
+    private void CancelPendingVoid()
+    {
+        pendingVoidPunchId = null;
+        pendingVoidPunchSummary = "";
     }
 
     private async Task SaveCorrection()
     {
         if (editingDay == null || string.IsNullOrWhiteSpace(correctionReason)) return;
-        if (!addPunchInCorrection && !markExceptionResolved && !flagAsException) return;
+        if (!addPunchInCorrection && !markExceptionResolved && !flagAsException && !pendingVoidPunchId.HasValue) return;
 
         try
         {
@@ -1028,6 +1128,68 @@
             if (employee == null) return;
 
             TcTimePunch? newPunch = null;
+
+            // 0. Soft-delete (void) a punch when queued via the 🗑 buttons
+            //    on the slot table or Extras list. Voided punches drop out of
+            //    the timesheet view (TimesheetService filters PunchStatus =
+            //    Active) and stop counting toward hours, but the row stays
+            //    in the database for audit. Any paired-punch linkage on the
+            //    surviving partner is cleared so the next render doesn't
+            //    show a phantom pair pointing at a voided ID.
+            if (pendingVoidPunchId.HasValue)
+            {
+                var voidTarget = await context.TcTimePunches
+                    .FirstOrDefaultAsync(p => p.PunchId == pendingVoidPunchId.Value
+                                           && p.EmployeeId == EmployeeId
+                                           && p.PunchStatus == PunchStatus.Active);
+                if (voidTarget != null)
+                {
+                    var oldStatus = voidTarget.PunchStatus.ToString();
+                    voidTarget.PunchStatus = PunchStatus.Voided;
+                    voidTarget.IsModified = true;
+                    voidTarget.ModifiedBy = currentUserEmail;
+                    voidTarget.ModifiedReason = $"[Supervisor Void] {correctionReason}";
+
+                    // Break the pairing on the surviving partner so the day
+                    // re-renders cleanly. We don't delete the partner — only
+                    // the punch the supervisor explicitly queued.
+                    if (voidTarget.PairedPunchId.HasValue)
+                    {
+                        var partner = await context.TcTimePunches
+                            .FirstOrDefaultAsync(p => p.PunchId == voidTarget.PairedPunchId.Value);
+                        if (partner != null && partner.PairedPunchId == voidTarget.PunchId)
+                        {
+                            partner.PairedPunchId = null;
+                        }
+                        voidTarget.PairedPunchId = null;
+                    }
+
+                    await context.SaveChangesAsync();
+
+                    await Audit.LogActionAsync(
+                        actionCode: AuditActions.Punch.Modified,
+                        entityType: AuditEntityTypes.Punch,
+                        entityId: voidTarget.PunchId.ToString(),
+                        oldValues: new { PunchStatus = oldStatus },
+                        newValues: new
+                        {
+                            PunchStatus = voidTarget.PunchStatus.ToString(),
+                            voidTarget.PunchType,
+                            voidTarget.PunchDateTime,
+                            voidTarget.IsAutoCheckout,
+                            VoidedBy = currentUserEmail,
+                            Source = "SUPERVISOR_VOID"
+                        },
+                        reason: correctionReason,
+                        deltaSummary:
+                            $"Supervisor voided {voidTarget.PunchType} at {voidTarget.PunchDateTime:MMM d h:mm tt} for employee {EmployeeId} by {currentUserEmail}",
+                        source: AuditSource.AdminUi,
+                        employeeId: EmployeeId,
+                        punchId: voidTarget.PunchId);
+
+                    await TimesheetService.RecalculateDailyTimecardAsync(EmployeeId, editingDay.Date);
+                }
+            }
 
             // 1. Optional punch creation
             if (addPunchInCorrection)
@@ -1178,62 +1340,144 @@
         return employeeCorrectionRequests.Any(cr => cr.WorkDate == date && cr.Status == CorrectionRequestStatus.Submitted);
     }
 
-    private List<PunchPairDisplay> GetPunchPairs(DailyTimesheetEntry day)
+    /// <summary>
+    /// Builds a slot-based view of a day's punches that mirrors the CSV
+    /// import's AM / PM / Eve column layout. Each work-block exposes one IN
+    /// slot and one OUT slot; punches that don't fit any slot land in Extras
+    /// so the supervisor can void them.
+    ///
+    /// Block boundaries (matching the Stop Six reception schedule + general
+    /// night session):
+    ///   AM  = punch time before 12:30 PM
+    ///   PM  = 12:30 PM through 4:30 PM (inclusive of 4:30)
+    ///   Eve = after 4:30 PM
+    ///
+    /// Within each block: first IN-type punch fills the In slot, first OUT-
+    /// type punch fills the Out slot. Lunch / Break punches and any second
+    /// IN or OUT inside a block are pushed to Extras. This makes a missing
+    /// AM IN visually obvious — the AM In cell sits empty next to a filled
+    /// AM Out, instead of the old pair-by-index layout that hid the gap by
+    /// re-pairing the next IN against the orphan OUT.
+    /// </summary>
+    private DaySlotView GetDaySlots(DailyTimesheetEntry day)
     {
-        var pairs = new List<PunchPairDisplay>();
+        var view = new DaySlotView();
         var punches = day.Punches.OrderBy(p => p.PunchTime).ToList();
-        var unmatched = new List<PunchEntry>(punches);
 
-        var pairMappings = new[] { ("In", "Out", "Work", "work"), ("LunchOut", "LunchIn", "Lunch", "lunch"), ("BreakOut", "BreakIn", "Break", "break") };
-
-        foreach (var (inType, outType, label, css) in pairMappings)
+        foreach (var p in punches)
         {
-            var ins = unmatched.Where(p => p.PunchType == inType).OrderBy(p => p.PunchTime).ToList();
-            var outs = unmatched.Where(p => p.PunchType == outType).OrderBy(p => p.PunchTime).ToList();
+            var block = ClassifyBlock(p.PunchTime);
+            var isIn = p.PunchType is "In" or "LunchIn" or "BreakIn";
+            var isOut = p.PunchType is "Out" or "LunchOut" or "BreakOut";
 
-            for (int i = 0; i < ins.Count; i++)
+            // Lunch / Break: never claim a Work In/Out slot — always Extras.
+            // Reception + admin staff don't currently log lunch via the clock,
+            // but if they ever do we want those punches visible separately so
+            // the slot layout doesn't get muddied.
+            if (p.PunchType is "LunchIn" or "LunchOut" or "BreakIn" or "BreakOut")
             {
-                var inP = ins[i];
-                var outP = i < outs.Count ? outs[i] : null;
-                var hours = outP != null ? (decimal)(outP.PunchTime - inP.PunchTime).TotalHours : 0;
-
-                pairs.Add(new PunchPairDisplay
-                {
-                    Label = label,
-                    BadgeClass = css,
-                    InTime = inP.PunchTime.ToString("h:mm tt"),
-                    OutTime = outP?.PunchTime.ToString("h:mm tt") ?? "(open)",
-                    RoundedIn = inP.RoundedTime?.ToString("h:mm tt") ?? inP.PunchTime.ToString("h:mm tt"),
-                    RoundedOut = outP?.RoundedTime?.ToString("h:mm tt") ?? outP?.PunchTime.ToString("h:mm tt") ?? "—",
-                    Hours = outP != null ? hours.ToString("F2") : "—",
-                    IsManual = inP.IsManual || (outP?.IsManual ?? false),
-                    IsModified = inP.IsModified || (outP?.IsModified ?? false)
-                });
-
-                unmatched.Remove(inP);
-                if (outP != null) unmatched.Remove(outP);
+                view.Extras.Add(p);
+                continue;
             }
 
-            var remainingOuts = unmatched.Where(p => p.PunchType == outType).ToList();
-            foreach (var outP in remainingOuts)
+            // Try to place into this block's IN or OUT slot; on conflict
+            // (slot already filled, wrong punch direction, etc.) fall through
+            // to Extras. Properties can't be passed by ref in C#, so we
+            // expand each block as a small explicit branch — verbose but
+            // unambiguous.
+            bool placed = false;
+            if (block == DayBlock.Am)
             {
-                pairs.Add(new PunchPairDisplay
-                {
-                    Label = label,
-                    BadgeClass = "unpaired",
-                    InTime = "(missing)",
-                    OutTime = outP.PunchTime.ToString("h:mm tt"),
-                    RoundedIn = "—",
-                    RoundedOut = outP.RoundedTime?.ToString("h:mm tt") ?? outP.PunchTime.ToString("h:mm tt"),
-                    Hours = "—",
-                    IsManual = outP.IsManual,
-                    IsModified = outP.IsModified
-                });
-                unmatched.Remove(outP);
+                if (isIn && view.AmIn == null) { view.AmIn = p; placed = true; }
+                else if (isOut && view.AmOut == null) { view.AmOut = p; placed = true; }
             }
+            else if (block == DayBlock.Pm)
+            {
+                if (isIn && view.PmIn == null) { view.PmIn = p; placed = true; }
+                else if (isOut && view.PmOut == null) { view.PmOut = p; placed = true; }
+            }
+            else // Eve
+            {
+                if (isIn && view.EveIn == null) { view.EveIn = p; placed = true; }
+                else if (isOut && view.EveOut == null) { view.EveOut = p; placed = true; }
+            }
+
+            if (!placed) view.Extras.Add(p);
         }
 
-        return pairs.OrderBy(p => p.InTime).ToList();
+        return view;
+    }
+
+    private static DayBlock ClassifyBlock(DateTime punchTime)
+    {
+        // Compare against minutes-since-midnight so the boundary checks read
+        // like the schedule itself (12:30 PM = 750 min, 4:30 PM = 990 min).
+        var minutes = punchTime.Hour * 60 + punchTime.Minute;
+        if (minutes < 12 * 60 + 30) return DayBlock.Am;     // before 12:30 PM
+        if (minutes <= 16 * 60 + 30) return DayBlock.Pm;    // 12:30 PM – 4:30 PM
+        return DayBlock.Eve;                                 // after 4:30 PM
+    }
+
+    private enum DayBlock { Am, Pm, Eve }
+
+    private class DaySlotView
+    {
+        public PunchEntry? AmIn { get; set; }
+        public PunchEntry? AmOut { get; set; }
+        public PunchEntry? PmIn { get; set; }
+        public PunchEntry? PmOut { get; set; }
+        public PunchEntry? EveIn { get; set; }
+        public PunchEntry? EveOut { get; set; }
+        public List<PunchEntry> Extras { get; set; } = new();
+
+        // Hours per block — only computed when both In and Out are filled.
+        // Returns "—" otherwise so the column reads the same way as the CSV
+        // import preview when a slot is incomplete.
+        public string AmHours => HoursOrDash(AmIn, AmOut);
+        public string PmHours => HoursOrDash(PmIn, PmOut);
+        public string EveHours => HoursOrDash(EveIn, EveOut);
+
+        private static string HoursOrDash(PunchEntry? inP, PunchEntry? outP)
+        {
+            if (inP == null || outP == null) return "—";
+            var hours = (decimal)(outP.PunchTime - inP.PunchTime).TotalHours;
+            return hours.ToString("F2");
+        }
+    }
+
+    // Source label helper — distinguishes Badge / Manual / SYSTEM (auto-out)
+    // / Modified so the supervisor can tell at a glance which 9:00 PM OUTs
+    // came from the auto-checkout loop vs an actual scan.
+    private static (string Label, string Css) SourceTag(PunchEntry p)
+    {
+        if (p.IsAutoCheckout) return ("SYSTEM", "auto-system");
+        if (p.IsManual) return ("Manual", "manual");
+        if (p.IsModified) return ("Modified", "modified");
+        return ("Badge", "auto");
+    }
+
+    // ── Void-punch flow ───────────────────────────────────────────────
+    // Soft-delete model: clicking 🗑 on any slot or extras row queues the
+    // punch in `pendingVoidPunchId` and pre-fills + opens the existing
+    // Add Correction modal. The supervisor types a reason and clicks Save.
+    // SaveCorrection then VOIDS the punch (PunchStatus = Voided), audits
+    // the action, and clears any paired-punch linkage. The audit row
+    // preserves the original PunchTime + reason for HR investigations.
+
+    private long? pendingVoidPunchId;
+    private string pendingVoidPunchSummary = "";
+
+    private void OpenVoidPunchDialog(DailyTimesheetEntry day, PunchEntry punch)
+    {
+        editingDay = day;
+        pendingVoidPunchId = punch.PunchId;
+        pendingVoidPunchSummary =
+            $"{punch.PunchType} at {punch.PunchTime:h:mm tt} ({SourceTag(punch).Label})";
+        correctionReason = "";
+        addPunchInCorrection = false;
+        markExceptionResolved = false;
+        flagAsException = false;
+        showEditModal = true;
     }
 
     private async Task ApproveCorrectionRequest(TcCorrectionRequest request)
@@ -1516,18 +1760,9 @@
         return new DateTime(dt.Year, dt.Month, dt.Day, dt.Hour, minutes, 0);
     }
 
-    private class PunchPairDisplay
-    {
-        public string Label { get; set; } = "";
-        public string BadgeClass { get; set; } = "";
-        public string InTime { get; set; } = "";
-        public string OutTime { get; set; } = "";
-        public string RoundedIn { get; set; } = "";
-        public string RoundedOut { get; set; } = "";
-        public string Hours { get; set; } = "";
-        public bool IsManual { get; set; }
-        public bool IsModified { get; set; }
-    }
+    // PunchPairDisplay removed 2026-04-28 — replaced by DaySlotView (defined
+    // alongside GetDaySlots above) which models the AM / PM / Eve layout
+    // mirroring the CSV import preview.
 }
 
 <style>
@@ -1564,6 +1799,50 @@
     .source-badge.manual { background: #fef3c7; color: #92400e; }
     .source-badge.modified { background: #e0e7ff; color: #3730a3; }
     .source-badge.auto { background: #e5e7eb; color: #374151; }
+    .source-badge.auto-system { background: #fee2e2; color: #991b1b; font-weight: 600; }
+
+    /* ─── Slot-table view (2026-04-28) ─────────────────────────────
+       AM/PM/Eve column layout mirroring CSV import. Empty cells get a
+       muted dash so missing punches stand out next to filled slots.
+       Each filled cell shows rounded time + small source pip + a void
+       button (🗑) that opens the Add Correction modal pre-queued. */
+    .day-slots-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: fixed; }
+    .day-slots-table th { text-align: center; padding: 4px 6px; border-bottom: 1px solid #ddd;
+        color: #666; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; }
+    .day-slots-table td { padding: 6px 6px; border-bottom: 1px solid #eee; text-align: center; vertical-align: middle; }
+    .slot-empty { color: #cbd5e1; font-size: 1rem; font-weight: 600; }
+    .slot-filled { display: inline-flex; align-items: center; gap: 4px; }
+    .slot-time { font-family: 'Segoe UI', monospace; font-weight: 600; color: #1f2937; }
+    .slot-source { font-size: 0.62rem; padding: 0 4px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.02em; }
+    .slot-void { background: transparent; border: none; cursor: pointer; padding: 0 4px; font-size: 0.85rem; color: #b91c1c; opacity: 0.55; }
+    .slot-void:hover { opacity: 1; transform: scale(1.15); }
+    .slot-hours { font-family: 'Segoe UI', monospace; font-weight: 600; color: #4b5563; }
+
+    /* Extras list — punches that don't fit AM / PM / Eve. The 🗑 Void
+       button on each row opens the same correction modal so deletion
+       still requires an audit reason. */
+    .day-extras { margin-top: 0.6rem; padding: 0.5rem 0.6rem; background: #fff7ed;
+        border: 1px solid #fed7aa; border-radius: 4px; }
+    .day-extras-title { margin: 0 0 0.4rem; font-size: 0.78rem; color: #9a3412; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.02em; }
+    .day-extras-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .day-extras-table th { text-align: left; padding: 3px 6px; border-bottom: 1px solid #fed7aa;
+        color: #7c2d12; font-weight: 600; font-size: 0.7rem; text-transform: uppercase; }
+    .day-extras-table td { padding: 4px 6px; border-bottom: 1px solid #ffedd5; }
+    .punch-type-pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; }
+    .punch-type-pill.in { background: #dcfce7; color: #166534; }
+    .punch-type-pill.out { background: #fee2e2; color: #991b1b; }
+    .btn-void-extra { background: white; color: #b91c1c; border: 1px solid #fca5a5;
+        padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 0.78rem; }
+    .btn-void-extra:hover { background: #fee2e2; }
+
+    /* Void-pending banner inside the Add Correction modal. */
+    .void-pending-banner { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+        border-radius: 4px; padding: 0.45rem 0.75rem; margin: 0.6rem 0; font-size: 0.88rem;
+        display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+    .link-btn { background: transparent; border: none; color: #1d4ed8; text-decoration: underline;
+        cursor: pointer; padding: 0; font-size: 0.85rem; }
+    .link-btn:hover { color: #1e3a8a; }
 
     .holiday-notice { background: #fefce8; border: 1px solid #f5b81c; border-radius: 4px;
         padding: 8px 12px; margin-top: 8px; font-size: 0.85rem; }
