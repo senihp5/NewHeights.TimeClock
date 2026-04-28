@@ -15,6 +15,14 @@ public class TcPayPeriodSummary
     public int DaysLate { get; set; }
     public int ExceptionCount { get; set; }
     public ApprovalStatus ApprovalStatus { get; set; } = ApprovalStatus.Pending;
+
+    // Migration 060 (2026-04-27): EmployeeApprovedBy + EmployeeApprovedDate
+    // mirror the Supervisor/HR pattern so the paper-approval workflow can
+    // record who stamped the employee submission stage and when. Audit log
+    // still has the canonical trail, but having the identity on the summary
+    // row itself simplifies queries + reduces joins for HR reporting.
+    public string? EmployeeApprovedBy { get; set; }
+    public DateTime? EmployeeApprovedDate { get; set; }
     public string? SupervisorApprovedBy { get; set; }
     public DateTime? SupervisorApprovedDate { get; set; }
     public string? HRApprovedBy { get; set; }

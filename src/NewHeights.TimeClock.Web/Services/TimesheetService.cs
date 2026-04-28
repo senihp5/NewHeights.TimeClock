@@ -32,6 +32,21 @@ public interface ITimesheetService
     Task<List<PayrollSummary>> GetPayrollSummariesAsync(DateOnly periodStart, DateOnly periodEnd);
     Task RecalculateDailyTimecardAsync(int employeeId, DateOnly workDate);
     Task RecalculateWeeklyOvertimeAsync(int employeeId, DateOnly weekStartDate);
+
+    /// <summary>
+    /// 2026-04-27: Paper-approval. Stamps Employee + Supervisor + HR all three
+    /// stages on the period summary row with the same admin email and a single
+    /// timestamp, sets ApprovalStatus = Locked, and writes THREE distinct audit
+    /// log entries (EmployeePaperApproved / SupervisorPaperApproved /
+    /// HRPaperApproved) each carrying Source = "PAPER" so downstream queries
+    /// can distinguish paper from real workflow.
+    ///
+    /// Used when the period was approved via paper before the system was set
+    /// up (or during transition periods where the digital workflow hasn't
+    /// caught up). Idempotent: re-running on a row that's already paper-
+    /// approved is a no-op.
+    /// </summary>
+    Task<bool> MarkPaperApprovedAsync(int employeeId, DateOnly periodStart, DateOnly periodEnd, string adminEmail);
 }
 
 public class TimesheetService : ITimesheetService
@@ -355,6 +370,108 @@ public class TimesheetService : ITimesheetService
             deltaSummary: $"{approverRole} approved pay-period summary for employee {employeeId}, {periodStart:yyyy-MM-dd} to {periodEnd:yyyy-MM-dd} by {approvedBy}",
             source: AuditSource.AdminUi,
             employeeId: employeeId);
+
+        return true;
+    }
+
+    /// <inheritdoc cref="ITimesheetService.MarkPaperApprovedAsync"/>
+    public async Task<bool> MarkPaperApprovedAsync(int employeeId, DateOnly periodStart, DateOnly periodEnd, string adminEmail)
+    {
+        if (string.IsNullOrWhiteSpace(adminEmail))
+            throw new ArgumentException("adminEmail required", nameof(adminEmail));
+
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var payPeriod = await context.TcPayPeriods
+            .FirstOrDefaultAsync(p => p.StartDate == periodStart && p.EndDate == periodEnd);
+        if (payPeriod == null)
+        {
+            payPeriod = new TcPayPeriod
+            {
+                PeriodName = $"{periodStart:MMM d} - {periodEnd:MMM d, yyyy}",
+                StartDate = periodStart,
+                EndDate = periodEnd,
+                PayDate = periodEnd.Day == 15 ? periodEnd : periodEnd.AddDays(1),
+                Status = PayPeriodStatus.Open,
+                CreatedDate = DateTime.Now
+            };
+            context.TcPayPeriods.Add(payPeriod);
+            await context.SaveChangesAsync();
+        }
+
+        var summary = await context.TcPayPeriodSummaries
+            .FirstOrDefaultAsync(s => s.PayPeriodId == payPeriod.PayPeriodId && s.EmployeeId == employeeId);
+
+        if (summary == null)
+        {
+            var ts = await GetPayPeriodTimesheetAsync(employeeId, periodStart, periodEnd);
+            summary = new TcPayPeriodSummary
+            {
+                PayPeriodId = payPeriod.PayPeriodId,
+                EmployeeId = employeeId,
+                TotalRegularHours = ts.TotalRegularHours,
+                TotalOvertimeHours = ts.TotalOvertimeHours,
+                TotalHours = ts.TotalHours,
+                DaysWorked = ts.DaysWorked,
+                ExceptionCount = ts.ExceptionCount,
+                CreatedDate = DateTime.Now
+            };
+            context.TcPayPeriodSummaries.Add(summary);
+        }
+
+        // Idempotency: skip if already paper-approved (HR stamp present).
+        if (!string.IsNullOrWhiteSpace(summary.HRApprovedBy))
+        {
+            _logger.LogInformation("MarkPaperApproved: summary {Id} already HR-approved — skipping", summary.SummaryId);
+            return false;
+        }
+
+        var now = DateTime.Now;
+        summary.EmployeeApprovedBy   = adminEmail;
+        summary.EmployeeApprovedDate = now;
+        summary.SupervisorApprovedBy = adminEmail;
+        summary.SupervisorApprovedDate = now;
+        summary.HRApprovedBy         = adminEmail;
+        summary.HRApprovedDate       = now;
+        summary.ApprovalStatus       = ApprovalStatus.Locked;
+        summary.ModifiedDate         = now;
+
+        await context.SaveChangesAsync();
+
+        // Three distinct audit entries per stage so downstream queries can
+        // see when each "stage" was paper-stamped. Source flag distinguishes
+        // paper from real workflow.
+        async Task LogStage(string actionCode, string stage)
+        {
+            await _audit.LogActionAsync(
+                actionCode: actionCode,
+                entityType: AuditEntityTypes.PaySummary,
+                entityId: summary.SummaryId.ToString(),
+                newValues: new
+                {
+                    summary.SummaryId,
+                    summary.PayPeriodId,
+                    summary.EmployeeId,
+                    Stage = stage,
+                    StampedBy = adminEmail,
+                    StampedAt = now.ToString("yyyy-MM-dd HH:mm:ss"),
+                    Source = "PAPER",
+                    ApprovalStatus = summary.ApprovalStatus.ToString(),
+                    summary.TotalRegularHours,
+                    summary.TotalHours
+                },
+                deltaSummary: $"Paper-approved {stage} stage on summary {summary.SummaryId} by {adminEmail}",
+                source: AuditSource.AdminUi,
+                employeeId: employeeId);
+        }
+
+        await LogStage(AuditActions.Timesheet.EmployeePaperApproved,   "Employee");
+        await LogStage(AuditActions.Timesheet.SupervisorPaperApproved, "Supervisor");
+        await LogStage(AuditActions.Payroll.HRPaperApproved,           "HR");
+
+        _logger.LogInformation(
+            "Paper-approved summary {Id} (employee {Emp}, period {Start}-{End}) by {Admin}",
+            summary.SummaryId, employeeId, periodStart, periodEnd, adminEmail);
 
         return true;
     }

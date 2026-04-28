@@ -18,6 +18,7 @@
 @inject IPayPeriodService PayPeriodService
 @inject IEmailService EmailService
 @inject IAuditService Audit
+@inject IPayrollPdfService PayrollPdf
 @inject AuthenticationStateProvider AuthStateProvider
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -104,13 +105,30 @@
                     <option value="pending_hr">Ready for HR</option>
                     <option value="approved">Approved</option>
                 </select>
-                <button class="btn-approve-all" @onclick="ApproveAllReady">Approve All Ready</button>
+                <span class="selection-counter" title="Rows checked for paper-approve + export">
+                    @selectedHourlyIds.Count of @FilteredSummaries.Count() selected
+                </span>
+                <button class="btn-approve-export" @onclick="ApproveSelectedAndExportPdfAsync"
+                        disabled="@(selectedHourlyIds.Count == 0 || isApprovingExport)"
+                        title="Paper-approve every checked row (Employee + Supervisor + HR) and download a combined PDF">
+                    @(isApprovingExport ? "Working…" : $"Approve Selected & Export PDF ({selectedHourlyIds.Count})")
+                </button>
                 <button class="btn-export" @onclick="ExportToCSV" disabled="@(!allHRApproved)">Export CSV</button>
             </div>
+            @if (!string.IsNullOrEmpty(approveExportMsg))
+            {
+                <div class="approve-export-msg @(approveExportIsError ? "error" : "ok")" role="alert">@approveExportMsg</div>
+            }
 
             <table class="payroll-table">
                 <thead>
                     <tr>
+                        <th class="check-col">
+                            <input type="checkbox"
+                                   title="Select all visible rows"
+                                   @onchange="ToggleAllHourlyChecked"
+                                   checked="@AllHourlyChecked" />
+                        </th>
                         <th>Employee</th>
                         <th>Supervisor</th>
                         <th>Regular</th>
@@ -125,6 +143,12 @@
                     @foreach (var emp in FilteredSummaries)
                     {
                         <tr class="@(emp.ExceptionCount > 0 && !emp.HRApproved ? "has-exception" : emp.HRApproved ? "approved" : emp.SupervisorApproved ? "ready" : "pending")">
+                            <td class="check-col">
+                                <input type="checkbox"
+                                       title="Approve (paper) and add to PDF export"
+                                       checked="@selectedHourlyIds.Contains(emp.EmployeeId)"
+                                       @onchange="@((ChangeEventArgs e) => ToggleHourlyChecked(emp.EmployeeId, (bool)(e.Value ?? false)))" />
+                            </td>
                             <td>@emp.EmployeeName<br/><small>@emp.IdNumber</small></td>
                             <td>@emp.SupervisorName</td>
                             <td>@emp.RegularHours.ToString("F2")</td>
@@ -184,6 +208,30 @@
     private string currentUserEmail = "";
     private PayPeriodInfo? currentPayPeriod;
     private List<PayrollSummary> payrollSummaries = new();
+
+    // 2026-04-27: per-row checkbox state for "Approve & Add to Export". Each
+    // checked employee is paper-approved (3 stages) AND included in the
+    // combined PDF when the "Approve Selected & Export PDF" button is clicked.
+    private HashSet<int> selectedHourlyIds = new();
+    private bool isApprovingExport = false;
+    private string approveExportMsg = "";
+    private bool approveExportIsError = false;
+    private bool AllHourlyChecked => FilteredSummaries.Any() && FilteredSummaries.All(e => selectedHourlyIds.Contains(e.EmployeeId));
+
+    private void ToggleHourlyChecked(int employeeId, bool isChecked)
+    {
+        if (isChecked) selectedHourlyIds.Add(employeeId);
+        else selectedHourlyIds.Remove(employeeId);
+    }
+
+    private void ToggleAllHourlyChecked(ChangeEventArgs e)
+    {
+        var checkAll = (bool)(e.Value ?? false);
+        if (checkAll)
+            foreach (var emp in FilteredSummaries) selectedHourlyIds.Add(emp.EmployeeId);
+        else
+            foreach (var emp in FilteredSummaries.ToList()) selectedHourlyIds.Remove(emp.EmployeeId);
+    }
     // Substitutes roll up to their own payroll grain (per-period, not per-hour).
     // Loaded at page level so the status bar can show hourly hours + sub periods
     // side-by-side in a single header, matching HR's payroll workflow.
@@ -335,7 +383,154 @@
             deltaSummary: $"Exported payroll for {pp.PeriodName} ({exportedEmployees.Count} employees, {exportedEmployees.Sum(e => e.RegularHours + e.OvertimeHours):F2}h total) as {fn2}",
             source: AuditSource.AdminUi);
 
-        await JS.InvokeVoidAsync("downloadFile", fn2, Convert.ToBase64String(Encoding.UTF8.GetBytes(csv.ToString())));
+        // Migration 060: archive the CSV bytes into TC_PayrollExport so HR can
+        // recover the exact file later even after row edits.
+        var csvBytes = Encoding.UTF8.GetBytes(csv.ToString());
+        await ArchiveExportAsync(pp.PayPeriodId, fn2, csvBytes, null, exportedEmployees.Count,
+            (decimal)exportedEmployees.Sum(e => e.RegularHours), (decimal)exportedEmployees.Sum(e => e.OvertimeHours));
+
+        await JS.InvokeVoidAsync("downloadFile", fn2, Convert.ToBase64String(csvBytes));
         await LoadPayrollData();
+    }
+
+    /// <summary>
+    /// 2026-04-27: combined paper-approve + PDF-export. For every checked
+    /// hourly row, calls TimesheetService.MarkPaperApprovedAsync (which writes
+    /// 3 distinct audit entries — Employee + Supervisor + HR — with Source =
+    /// "PAPER"). Then generates a combined PDF via IPayrollPdfService and
+    /// archives the bytes into TC_PayrollExport.PdfBlob for historical recovery.
+    /// </summary>
+    private async Task ApproveSelectedAndExportPdfAsync()
+    {
+        if (currentPayPeriod == null || selectedHourlyIds.Count == 0 || isApprovingExport) return;
+
+        isApprovingExport = true;
+        approveExportMsg = "";
+        approveExportIsError = false;
+
+        try
+        {
+            var ids = selectedHourlyIds.ToList();
+            int approved = 0, skipped = 0;
+            foreach (var empId in ids)
+            {
+                try
+                {
+                    var did = await TimesheetService.MarkPaperApprovedAsync(
+                        empId, currentPayPeriod.StartDate, currentPayPeriod.EndDate, currentUserEmail);
+                    if (did) approved++; else skipped++;
+                }
+                catch (Exception inner)
+                {
+                    Logger.LogWarning(inner, "Paper-approve failed for employee {Id}", empId);
+                    skipped++;
+                }
+            }
+
+            // Generate combined PDF (subs not selected from this tab — passed empty list).
+            var pdfBytes = await PayrollPdf.GenerateCombinedPdfAsync(
+                currentPayPeriod.StartDate,
+                currentPayPeriod.EndDate,
+                ids,
+                Array.Empty<int>(),
+                currentUserEmail);
+
+            // Archive PDF blob.
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var pp = await ctx.TcPayPeriods
+                .FirstOrDefaultAsync(p => p.StartDate == currentPayPeriod.StartDate && p.EndDate == currentPayPeriod.EndDate);
+            if (pp != null)
+            {
+                await ArchiveExportAsync(pp.PayPeriodId,
+                    $"Payroll_{currentPayPeriod.StartDate:yyyyMMdd}.pdf",
+                    null, pdfBytes,
+                    ids.Count,
+                    payrollSummaries.Where(p => ids.Contains(p.EmployeeId)).Sum(p => p.RegularHours),
+                    payrollSummaries.Where(p => ids.Contains(p.EmployeeId)).Sum(p => p.OvertimeHours));
+            }
+
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Payroll.PdfExported,
+                entityType: AuditEntityTypes.PayPeriod,
+                entityId: pp?.PayPeriodId.ToString() ?? "0",
+                newValues: new
+                {
+                    PayPeriodId = pp?.PayPeriodId,
+                    EmployeeIds = ids,
+                    Approved = approved,
+                    Skipped = skipped,
+                    Bytes = pdfBytes.Length,
+                    ExportedBy = currentUserEmail
+                },
+                deltaSummary: $"Combined PDF export — {ids.Count} employees ({approved} paper-approved, {skipped} already-approved/skipped) by {currentUserEmail}",
+                source: AuditSource.AdminUi);
+
+            // Push to the browser.
+            var fileName = $"Payroll_{currentPayPeriod.StartDate:yyyyMMdd}.pdf";
+            await JS.InvokeVoidAsync("downloadFile", fileName, Convert.ToBase64String(pdfBytes));
+
+            approveExportMsg = $"Paper-approved {approved} row(s) ({skipped} skipped) and downloaded combined PDF.";
+            await LoadPayrollData();
+            selectedHourlyIds.Clear();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ApproveSelectedAndExportPdf failed");
+            approveExportMsg = "Failed: " + ex.Message;
+            approveExportIsError = true;
+        }
+        finally
+        {
+            isApprovingExport = false;
+        }
+    }
+
+    /// <summary>
+    /// Archive an export's bytes into TC_PayrollExport (migration 060).
+    /// CsvBlob and PdfBlob may be null individually; at least one should be
+    /// non-null. Logs PAYROLL_EXPORT_ARCHIVED on success.
+    /// </summary>
+    private async Task ArchiveExportAsync(
+        int payPeriodId, string fileName,
+        byte[]? csvBytes, byte[]? pdfBytes,
+        int recordCount, decimal totalRegular, decimal totalOt)
+    {
+        using var ctx = await DbFactory.CreateDbContextAsync();
+        var export = new TcPayrollExport
+        {
+            PayPeriodId    = payPeriodId,
+            ExportFormat   = pdfBytes != null && csvBytes == null ? "PDF"
+                            : csvBytes != null && pdfBytes == null ? "CSV"
+                            : "BUNDLE",
+            ExportMethod   = "DOWNLOAD",
+            FileName       = fileName,
+            RecordCount    = recordCount,
+            TotalRegularHours = totalRegular,
+            TotalOvertimeHours = totalOt,
+            Status         = ExportStatus.Generated,
+            ExportedBy     = currentUserEmail,
+            ExportDate     = DateTime.Now,
+            CsvBlob        = csvBytes,
+            PdfBlob        = pdfBytes
+        };
+        ctx.TcPayrollExports.Add(export);
+        await ctx.SaveChangesAsync();
+
+        await Audit.LogActionAsync(
+            actionCode: AuditActions.Payroll.ExportArchived,
+            entityType: AuditEntityTypes.PayPeriod,
+            entityId: payPeriodId.ToString(),
+            newValues: new
+            {
+                ExportId = export.ExportId,
+                payPeriodId,
+                fileName,
+                Format = export.ExportFormat,
+                CsvBytes = csvBytes?.Length,
+                PdfBytes = pdfBytes?.Length,
+                ExportedBy = currentUserEmail
+            },
+            deltaSummary: $"Archived {export.ExportFormat} export {fileName} ({(csvBytes?.Length ?? 0) + (pdfBytes?.Length ?? 0)} bytes) for pay period {payPeriodId} by {currentUserEmail}",
+            source: AuditSource.AdminUi);
     }
 }

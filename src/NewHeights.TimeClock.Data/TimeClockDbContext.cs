@@ -252,6 +252,7 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.TotalOvertimeHours).HasColumnType("decimal(6,2)");
             entity.Property(e => e.TotalHours).HasColumnType("decimal(6,2)");
             entity.Property(e => e.ApprovalStatus).HasConversion<string>().HasMaxLength(15);
+            entity.Property(e => e.EmployeeApprovedBy).HasMaxLength(100);
             entity.Property(e => e.SupervisorApprovedBy).HasMaxLength(100);
             entity.Property(e => e.HRApprovedBy).HasMaxLength(100);
 

@@ -233,6 +233,9 @@ builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
 // In-portal help system — backs /help (migration 054, 2026-04-27).
 builder.Services.AddScoped<IHelpArticleService, HelpArticleService>();
 
+// Combined-PDF payroll export (migration 060, 2026-04-27). Uses PdfSharpCore.
+builder.Services.AddScoped<IPayrollPdfService, PayrollPdfService>();
+
 // Stale outreach token expiry job — runs every 4 hours (Phase 7a)
 // Phase D2: sub outreach cascade timing (token validity + scan cadence).
 // Defaults to 2h token validity + 15min scan interval. Override via

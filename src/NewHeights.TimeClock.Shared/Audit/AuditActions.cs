@@ -48,15 +48,38 @@ public static class AuditActions
         // which is what HR/compliance reviewers typically want to see.
         public const string ReminderEmailSent       = "TIMESHEET_REMINDER_SENT";
         public const string ReminderEmailFailed     = "TIMESHEET_REMINDER_FAILED";
+
+        // Paper-approval stages — admin-initiated, used when timesheets were
+        // approved on paper before this system existed (or during transition
+        // periods). Each stage logs separately so the audit trail mirrors the
+        // normal three-stage workflow with a paper provenance flag in
+        // newValues.Source = "PAPER".
+        public const string EmployeePaperApproved   = "TIMESHEET_EMPLOYEE_PAPER_APPROVED";
+        public const string SupervisorPaperApproved = "TIMESHEET_SUPERVISOR_PAPER_APPROVED";
+
+        // Substitute paper-approval — sub stage only. Per 2026-04-27 decision,
+        // the paper workflow only stamps the sub's submission; the supervisor
+        // and HR follow the regular flow once paper period ends.
+        public const string SubPaperApproved        = "TIMESHEET_SUB_PAPER_APPROVED";
+
+        // Admin impersonation lifecycle — every "view as employee" + every
+        // edit performed during impersonation logs through these codes so the
+        // audit trail clearly distinguishes admin-impersonated edits from
+        // legitimate self-service edits.
+        public const string ImpersonationStarted    = "TIMESHEET_IMPERSONATION_STARTED";
+        public const string ImpersonationEnded      = "TIMESHEET_IMPERSONATION_ENDED";
     }
 
     // F. HR Payroll
     public static class Payroll
     {
-        public const string HRApproved      = "PAYROLL_HR_APPROVED";
-        public const string HRRejected      = "PAYROLL_HR_REJECTED";
-        public const string Exported        = "PAYROLL_EXPORTED";
-        public const string PeriodUnlocked  = "PAYROLL_PERIOD_UNLOCKED";
+        public const string HRApproved        = "PAYROLL_HR_APPROVED";
+        public const string HRPaperApproved   = "PAYROLL_HR_PAPER_APPROVED";
+        public const string HRRejected        = "PAYROLL_HR_REJECTED";
+        public const string Exported          = "PAYROLL_EXPORTED";
+        public const string PdfExported       = "PAYROLL_PDF_EXPORTED";
+        public const string ExportArchived    = "PAYROLL_EXPORT_ARCHIVED";
+        public const string PeriodUnlocked    = "PAYROLL_PERIOD_UNLOCKED";
     }
 
     // G. Pay Periods

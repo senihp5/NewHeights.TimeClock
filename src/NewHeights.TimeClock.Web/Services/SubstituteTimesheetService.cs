@@ -164,6 +164,17 @@ public interface ISubstituteTimesheetService
     Task UnlockCardsAsync(
         int employeeId, DateOnly periodStart, DateOnly periodEnd,
         string unlockedByEmail, string reason);
+
+    /// <summary>
+    /// 2026-04-27 paper-approval. Marks every TcSubstituteTimecard for the sub
+    /// in the given period as Approved (sub-level submission/approval). Per
+    /// 2026-04-27 decision, ONLY the sub stage is stamped — the supervisor
+    /// (campus manager) and HR continue through the normal flow once the
+    /// paper-period transition ends. Fires SubPaperApproved once per card.
+    /// Idempotent: cards already Approved or Locked are skipped.
+    /// </summary>
+    Task<int> MarkSubPaperApprovedAsync(
+        int employeeId, DateOnly periodStart, DateOnly periodEnd, string adminEmail);
 }
 
 /// <summary>
@@ -1417,5 +1428,66 @@ public class SubstituteTimesheetService : ISubstituteTimesheetService
                 employeeId: card.EmployeeId,
                 campusId: card.CampusId);
         }
+    }
+
+    /// <inheritdoc cref="ISubstituteTimesheetService.MarkSubPaperApprovedAsync"/>
+    public async Task<int> MarkSubPaperApprovedAsync(
+        int employeeId, DateOnly periodStart, DateOnly periodEnd, string adminEmail)
+    {
+        if (string.IsNullOrWhiteSpace(adminEmail))
+            throw new ArgumentException("adminEmail required", nameof(adminEmail));
+
+        using var context = await _contextFactory.CreateDbContextAsync();
+
+        var pendingCards = await context.TcSubstituteTimecards
+            .Where(t => t.EmployeeId == employeeId
+                     && t.WorkDate >= periodStart
+                     && t.WorkDate <= periodEnd
+                     && t.ApprovalStatus == ApprovalStatus.Pending)
+            .ToListAsync();
+
+        if (pendingCards.Count == 0) return 0;
+
+        var now = DateTime.Now;
+        foreach (var card in pendingCards)
+        {
+            card.ApprovalStatus = ApprovalStatus.Approved;
+            card.ApprovedBy     = adminEmail;
+            card.ApprovedDate   = now;
+            card.ModifiedDate   = now;
+        }
+        await context.SaveChangesAsync();
+
+        // One audit row per card so each day's paper-stamp is independently
+        // queryable. Source = "PAPER" distinguishes from real-flow approvals.
+        foreach (var card in pendingCards)
+        {
+            await _audit.LogActionAsync(
+                actionCode: AuditActions.Timesheet.SubPaperApproved,
+                entityType: AuditEntityTypes.SubTimecard,
+                entityId: card.SubTimecardId.ToString(),
+                newValues: new
+                {
+                    card.SubTimecardId,
+                    card.EmployeeId,
+                    card.WorkDate,
+                    card.CampusId,
+                    Stage = "Sub",
+                    StampedBy = adminEmail,
+                    StampedAt = now.ToString("yyyy-MM-dd HH:mm:ss"),
+                    Source = "PAPER",
+                    NewStatus = card.ApprovalStatus.ToString()
+                },
+                deltaSummary: $"Paper-approved sub card {card.SubTimecardId} ({card.WorkDate:yyyy-MM-dd}) by {adminEmail}",
+                source: AuditSource.AdminUi,
+                employeeId: card.EmployeeId,
+                campusId: card.CampusId);
+        }
+
+        _logger.LogInformation(
+            "Paper-approved {Count} sub timecard(s) for employee {Emp}, {Start}-{End} by {Admin}",
+            pendingCards.Count, employeeId, periodStart, periodEnd, adminEmail);
+
+        return pendingCards.Count;
     }
 }

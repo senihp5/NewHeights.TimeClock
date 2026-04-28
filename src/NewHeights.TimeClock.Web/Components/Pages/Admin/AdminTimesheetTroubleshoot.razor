@@ -1,0 +1,543 @@
+@page "/admin/timesheet-troubleshoot"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject ITimesheetService TimesheetService
+@inject ISubstituteTimesheetService SubTimesheetService
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Navigation
+@inject ILogger<AdminTimesheetTroubleshoot> Logger
+
+<PageTitle>Timesheet Troubleshoot - @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="tt-page">
+    <header class="tt-header">
+        <h1>Timesheet Troubleshoot</h1>
+        <p class="tt-subtitle">
+            Diagnostic tool for individual hourly + substitute timesheets. Search any
+            employee, see their raw punches / daily timecards / period summary / audit log,
+            recalc a day, or open their timesheet in admin view to make corrections.
+        </p>
+    </header>
+
+    @* Search bar *@
+    <div class="tt-search-bar">
+        <input type="search" class="tt-search-input"
+               placeholder="Search employee by name, email, or ID number…"
+               @bind="searchText"
+               @bind:event="oninput"
+               @onkeydown="OnSearchKeyDown" />
+        <button class="tt-btn-search" @onclick="RunSearchAsync" disabled="@isSearching">
+            @(isSearching ? "Searching…" : "Search")
+        </button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(actionError))
+    {
+        <div class="tt-error" role="alert">@actionError</div>
+    }
+
+    @* Results list *@
+    @if (searchResults.Count > 0 && selectedEmployee == null)
+    {
+        <div class="tt-results">
+            <h3>@searchResults.Count match(es) — pick one</h3>
+            <table class="tt-results-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Email</th>
+                        <th>ID</th>
+                        <th>Type</th>
+                        <th>Campus</th>
+                        <th>Active</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var emp in searchResults)
+                    {
+                        <tr class="@(emp.IsActive ? "" : "inactive")">
+                            <td><strong>@(emp.Staff?.FullName ?? emp.DisplayName ?? "—")</strong></td>
+                            <td>@(emp.Email ?? "—")</td>
+                            <td>@emp.IdNumber</td>
+                            <td>@emp.EmployeeType</td>
+                            <td>@(emp.Campus?.CampusName ?? "—")</td>
+                            <td>@(emp.IsActive ? "✓" : "✗")</td>
+                            <td>
+                                <button class="tt-btn-pick" @onclick="() => SelectEmployeeAsync(emp.EmployeeId)">Inspect</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+
+    @* Selected employee diagnostics *@
+    @if (selectedEmployee != null)
+    {
+        <div class="tt-selected">
+            <div class="tt-selected-header">
+                <div>
+                    <h2>@(selectedEmployee.Staff?.FullName ?? selectedEmployee.DisplayName ?? "—")</h2>
+                    <p class="tt-meta">
+                        ID: <code>@selectedEmployee.IdNumber</code> ·
+                        Email: <code>@(selectedEmployee.Email ?? "—")</code> ·
+                        Type: <code>@selectedEmployee.EmployeeType</code> ·
+                        Campus: <code>@(selectedEmployee.Campus?.CampusName ?? "—")</code> ·
+                        Active: <code>@selectedEmployee.IsActive</code>
+                    </p>
+                </div>
+                <button class="tt-btn-back" @onclick="ClearSelection">← Back to results</button>
+            </div>
+
+            @* Date range picker *@
+            <div class="tt-range">
+                <label>From: <input type="date" @bind="rangeStart" /></label>
+                <label>To: <input type="date" @bind="rangeEnd" /></label>
+                <button class="tt-btn-load" @onclick="LoadDiagnosticsAsync" disabled="@isLoading">
+                    @(isLoading ? "Loading…" : "Load Diagnostics")
+                </button>
+
+                @* Impersonation links — open the existing supervisor / admin review pages
+                   for this employee. Those pages already allow full edit access for admins,
+                   so the troubleshoot page hands off rather than re-implementing. Audit
+                   trail captures admin's identity through those pages' existing handlers. *@
+                <button class="tt-btn-impersonate" @onclick="OpenAsHourlyAsync"
+                        disabled="@(!IsHourly(selectedEmployee))" title="Open Supervisor Timesheet view for this employee (admin can edit punches + approvals)">
+                    Open as Hourly →
+                </button>
+                <button class="tt-btn-impersonate" @onclick="OpenAsSubAsync"
+                        disabled="@(!IsSub(selectedEmployee))" title="Open the substitute timesheet review page scoped to this sub">
+                    Open as Substitute →
+                </button>
+            </div>
+
+            @if (isLoading)
+            {
+                <div class="tt-loading">Loading diagnostics…</div>
+            }
+            else if (diagnosticsLoaded)
+            {
+                @* Period Summary *@
+                <section class="tt-block">
+                    <h3>Pay Period Summary</h3>
+                    @if (summary != null)
+                    {
+                        <table class="tt-kv">
+                            <tr><th>SummaryId</th><td>@summary.SummaryId</td></tr>
+                            <tr><th>Period</th><td>@summary.PayPeriod?.PeriodName (@summary.PayPeriod?.StartDate – @summary.PayPeriod?.EndDate)</td></tr>
+                            <tr><th>TotalHours</th><td>@summary.TotalHours.ToString("F2") (Reg @summary.TotalRegularHours.ToString("F2") · OT @summary.TotalOvertimeHours.ToString("F2"))</td></tr>
+                            <tr><th>DaysWorked</th><td>@summary.DaysWorked</td></tr>
+                            <tr><th>ApprovalStatus</th><td><strong>@summary.ApprovalStatus</strong></td></tr>
+                            <tr><th>EmployeeApprovedBy</th><td>@(summary.EmployeeApprovedBy ?? "—") @(summary.EmployeeApprovedDate?.ToString("yyyy-MM-dd HH:mm") ?? "")</td></tr>
+                            <tr><th>SupervisorApprovedBy</th><td>@(summary.SupervisorApprovedBy ?? "—") @(summary.SupervisorApprovedDate?.ToString("yyyy-MM-dd HH:mm") ?? "")</td></tr>
+                            <tr><th>HRApprovedBy</th><td>@(summary.HRApprovedBy ?? "—") @(summary.HRApprovedDate?.ToString("yyyy-MM-dd HH:mm") ?? "")</td></tr>
+                        </table>
+                    }
+                    else
+                    {
+                        <p class="tt-empty">No TC_PayPeriodSummary row exists for this employee in this date range.</p>
+                    }
+                </section>
+
+                @* Daily Timecards *@
+                <section class="tt-block">
+                    <h3>Daily Timecards (@dailyCards.Count)</h3>
+                    @if (dailyCards.Any())
+                    {
+                        <table class="tt-list">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>First In</th>
+                                    <th>Last Out</th>
+                                    <th>Reg</th>
+                                    <th>OT</th>
+                                    <th>Total</th>
+                                    <th>Status</th>
+                                    <th>Exception</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var d in dailyCards)
+                                {
+                                    <tr>
+                                        <td>@d.WorkDate</td>
+                                        <td>@(d.FirstPunchIn?.ToString("h:mm tt") ?? "—")</td>
+                                        <td>@(d.LastPunchOut?.ToString("h:mm tt") ?? "—")</td>
+                                        <td>@d.RegularHours.ToString("F2")</td>
+                                        <td>@d.OvertimeHours.ToString("F2")</td>
+                                        <td><strong>@d.TotalHours.ToString("F2")</strong></td>
+                                        <td>@d.ApprovalStatus</td>
+                                        <td>@(d.HasException ? "⚠ " + (d.ExceptionNotes ?? "") : "—")</td>
+                                        <td>
+                                            <button class="tt-btn-recalc" @onclick="() => RecalcDayAsync(d.WorkDate)">Recalc</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                    else
+                    {
+                        <p class="tt-empty">No daily timecards in this range.</p>
+                    }
+                </section>
+
+                @* Time Punches *@
+                <section class="tt-block">
+                    <h3>Time Punches (@punches.Count)</h3>
+                    @if (punches.Any())
+                    {
+                        <table class="tt-list">
+                            <thead>
+                                <tr>
+                                    <th>PunchId</th>
+                                    <th>Type</th>
+                                    <th>DateTime</th>
+                                    <th>Campus</th>
+                                    <th>Status</th>
+                                    <th>Source</th>
+                                    <th>Paired</th>
+                                    <th>Notes</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var p in punches)
+                                {
+                                    <tr class="@(p.PunchStatus != PunchStatus.Active ? "voided" : "")">
+                                        <td><code>@p.PunchId</code></td>
+                                        <td>@p.PunchType</td>
+                                        <td>@p.PunchDateTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                                        <td>@p.CampusId</td>
+                                        <td>@p.PunchStatus</td>
+                                        <td>@p.GeofenceStatus</td>
+                                        <td>@(p.PairedPunchId?.ToString() ?? "—")</td>
+                                        <td class="tt-notes">@(p.Notes ?? "")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                    else
+                    {
+                        <p class="tt-empty">No punches in this range.</p>
+                    }
+                </section>
+
+                @* Substitute timecards (sub only) *@
+                @if (IsSub(selectedEmployee) && subCards.Any())
+                {
+                    <section class="tt-block">
+                        <h3>Substitute Timecards (@subCards.Count)</h3>
+                        <table class="tt-list">
+                            <thead>
+                                <tr>
+                                    <th>WorkDate</th>
+                                    <th>Campus</th>
+                                    <th>Periods</th>
+                                    <th>Total</th>
+                                    <th>Status</th>
+                                    <th>ApprovedBy</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var c in subCards)
+                                {
+                                    <tr>
+                                        <td>@c.WorkDate</td>
+                                        <td>@c.CampusId</td>
+                                        <td>@c.PeriodEntries.Count</td>
+                                        <td>@c.TotalPeriodsWorked</td>
+                                        <td>@c.ApprovalStatus</td>
+                                        <td>@(c.ApprovedBy ?? "—")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </section>
+                }
+
+                @* Audit log *@
+                <section class="tt-block">
+                    <h3>Recent Audit Log (@auditEntries.Count)</h3>
+                    @if (auditEntries.Any())
+                    {
+                        <table class="tt-list">
+                            <thead>
+                                <tr>
+                                    <th>When</th>
+                                    <th>ActionCode</th>
+                                    <th>EntityType</th>
+                                    <th>EntityId</th>
+                                    <th>By</th>
+                                    <th>Source</th>
+                                    <th>Summary</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var a in auditEntries)
+                                {
+                                    <tr>
+                                        <td>@a.CreatedDate.ToString("MM-dd HH:mm:ss")</td>
+                                        <td><code>@a.ActionCode</code></td>
+                                        <td>@a.EntityType</td>
+                                        <td>@a.EntityId</td>
+                                        <td>@(a.UserEmail ?? a.UserName ?? "—")</td>
+                                        <td>@a.Source</td>
+                                        <td class="tt-notes">@a.DeltaSummary</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                    else
+                    {
+                        <p class="tt-empty">No audit entries scoped to this employee in this range.</p>
+                    }
+                </section>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private string searchText = "";
+    private bool isSearching = false;
+    private bool isLoading = false;
+    private bool diagnosticsLoaded = false;
+    private string actionError = "";
+
+    private List<TcEmployee> searchResults = new();
+    private TcEmployee? selectedEmployee = null;
+
+    private DateOnly rangeStart = DateOnly.FromDateTime(DateTime.Today.AddDays(-30));
+    private DateOnly rangeEnd = DateOnly.FromDateTime(DateTime.Today);
+
+    private TcPayPeriodSummary? summary;
+    private List<TcDailyTimecard> dailyCards = new();
+    private List<TcTimePunch> punches = new();
+    private List<TcSubstituteTimecard> subCards = new();
+    private List<TcAuditLog> auditEntries = new();
+
+    private string currentUserEmail = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = auth.User.Identity?.Name ?? "";
+    }
+
+    private async Task OnSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await RunSearchAsync();
+    }
+
+    private async Task RunSearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(searchText)) return;
+        isSearching = true;
+        actionError = "";
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var q = searchText.Trim();
+            var qLower = q.ToLowerInvariant();
+
+            searchResults = await ctx.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .Include(e => e.Campus)
+                .Where(e =>
+                    e.IdNumber.Contains(q)
+                 || (e.Email != null && e.Email.ToLower().Contains(qLower))
+                 || (e.DisplayName != null && e.DisplayName.ToLower().Contains(qLower))
+                 || (e.Staff != null && (
+                        e.Staff.FirstName.ToLower().Contains(qLower)
+                     || e.Staff.LastName.ToLower().Contains(qLower)
+                     || (e.Staff.FirstName + " " + e.Staff.LastName).ToLower().Contains(qLower))))
+                .OrderByDescending(e => e.IsActive)
+                .ThenBy(e => e.Staff != null ? e.Staff.LastName : (e.DisplayName ?? ""))
+                .Take(50)
+                .ToListAsync();
+
+            selectedEmployee = null;
+            diagnosticsLoaded = false;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Troubleshoot search failed");
+            actionError = "Search failed: " + ex.Message;
+        }
+        finally { isSearching = false; }
+    }
+
+    private async Task SelectEmployeeAsync(int employeeId)
+    {
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            selectedEmployee = await ctx.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .Include(e => e.Campus)
+                .Include(e => e.Supervisor).ThenInclude(s => s!.Staff)
+                .FirstOrDefaultAsync(e => e.EmployeeId == employeeId);
+            await LoadDiagnosticsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Troubleshoot select failed");
+            actionError = "Could not load employee: " + ex.Message;
+        }
+    }
+
+    private async Task LoadDiagnosticsAsync()
+    {
+        if (selectedEmployee == null) return;
+        isLoading = true;
+        actionError = "";
+        diagnosticsLoaded = false;
+
+        try
+        {
+            using var ctx = await DbFactory.CreateDbContextAsync();
+            var empId = selectedEmployee.EmployeeId;
+
+            // Period summary covering rangeStart (anchor)
+            summary = await ctx.TcPayPeriodSummaries
+                .AsNoTracking()
+                .Include(s => s.PayPeriod)
+                .Where(s => s.EmployeeId == empId
+                         && s.PayPeriod.StartDate <= rangeEnd
+                         && s.PayPeriod.EndDate >= rangeStart)
+                .OrderByDescending(s => s.PayPeriod.StartDate)
+                .FirstOrDefaultAsync();
+
+            dailyCards = await ctx.TcDailyTimecards
+                .AsNoTracking()
+                .Where(d => d.EmployeeId == empId
+                         && d.WorkDate >= rangeStart
+                         && d.WorkDate <= rangeEnd)
+                .OrderBy(d => d.WorkDate)
+                .ToListAsync();
+
+            var startDt = rangeStart.ToDateTime(TimeOnly.MinValue);
+            var endDt = rangeEnd.ToDateTime(TimeOnly.MaxValue);
+            punches = await ctx.TcTimePunches
+                .AsNoTracking()
+                .Where(p => p.EmployeeId == empId
+                         && p.PunchDateTime >= startDt
+                         && p.PunchDateTime <= endDt)
+                .OrderBy(p => p.PunchDateTime)
+                .ToListAsync();
+
+            subCards = await ctx.TcSubstituteTimecards
+                .AsNoTracking()
+                .Include(t => t.PeriodEntries)
+                .Where(t => t.EmployeeId == empId
+                         && t.WorkDate >= rangeStart
+                         && t.WorkDate <= rangeEnd)
+                .OrderBy(t => t.WorkDate)
+                .ToListAsync();
+
+            auditEntries = await ctx.TcAuditLogs
+                .AsNoTracking()
+                .Where(a => a.EmployeeId == empId
+                         && a.CreatedDate >= startDt
+                         && a.CreatedDate <= endDt)
+                .OrderByDescending(a => a.CreatedDate)
+                .Take(100)
+                .ToListAsync();
+
+            diagnosticsLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Troubleshoot load diagnostics failed");
+            actionError = "Could not load diagnostics: " + ex.Message;
+        }
+        finally { isLoading = false; }
+    }
+
+    private async Task RecalcDayAsync(DateOnly date)
+    {
+        if (selectedEmployee == null) return;
+        try
+        {
+            await TimesheetService.RecalculateDailyTimecardAsync(selectedEmployee.EmployeeId, date);
+            await Audit.LogActionAsync(
+                actionCode: AuditActions.Timecard.Recalculated,
+                entityType: AuditEntityTypes.DailyTimecard,
+                entityId: $"{selectedEmployee.EmployeeId}@{date:yyyy-MM-dd}",
+                newValues: new { selectedEmployee.EmployeeId, date, RecalcedBy = currentUserEmail, Source = "TROUBLESHOOT" },
+                deltaSummary: $"Admin recalc daily timecard {selectedEmployee.EmployeeId} {date:yyyy-MM-dd} via troubleshoot page",
+                source: AuditSource.AdminUi,
+                employeeId: selectedEmployee.EmployeeId);
+            await LoadDiagnosticsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Recalc failed");
+            actionError = "Recalc failed: " + ex.Message;
+        }
+    }
+
+    private async Task OpenAsHourlyAsync()
+    {
+        if (selectedEmployee == null) return;
+        // Audit the impersonation event so the trail clearly shows admin opened
+        // the employee's view from the troubleshoot page.
+        await Audit.LogActionAsync(
+            actionCode: AuditActions.Timesheet.ImpersonationStarted,
+            entityType: AuditEntityTypes.Employee,
+            entityId: selectedEmployee.EmployeeId.ToString(),
+            newValues: new { selectedEmployee.EmployeeId, OpenedBy = currentUserEmail, Mode = "HOURLY", Source = "TROUBLESHOOT" },
+            deltaSummary: $"Admin {currentUserEmail} opened hourly timesheet view for employee {selectedEmployee.EmployeeId} from troubleshoot page",
+            source: AuditSource.AdminUi,
+            employeeId: selectedEmployee.EmployeeId);
+        Navigation.NavigateTo($"/supervisor/timesheet/{selectedEmployee.EmployeeId}/0");
+    }
+
+    private async Task OpenAsSubAsync()
+    {
+        if (selectedEmployee == null) return;
+        await Audit.LogActionAsync(
+            actionCode: AuditActions.Timesheet.ImpersonationStarted,
+            entityType: AuditEntityTypes.Employee,
+            entityId: selectedEmployee.EmployeeId.ToString(),
+            newValues: new { selectedEmployee.EmployeeId, OpenedBy = currentUserEmail, Mode = "SUB", Source = "TROUBLESHOOT" },
+            deltaSummary: $"Admin {currentUserEmail} opened sub timesheet view for employee {selectedEmployee.EmployeeId} from troubleshoot page",
+            source: AuditSource.AdminUi,
+            employeeId: selectedEmployee.EmployeeId);
+        Navigation.NavigateTo($"/my/sub-timesheet?asEmployeeId={selectedEmployee.EmployeeId}");
+    }
+
+    private void ClearSelection()
+    {
+        selectedEmployee = null;
+        diagnosticsLoaded = false;
+        summary = null;
+        dailyCards.Clear();
+        punches.Clear();
+        subCards.Clear();
+        auditEntries.Clear();
+    }
+
+    private static bool IsHourly(TcEmployee e)
+        => e.EmployeeType == EmployeeType.HourlyStaff || e.EmployeeType == EmployeeType.HourlyPartTime;
+    private static bool IsSub(TcEmployee e)
+        => e.EmployeeType == EmployeeType.Substitute;
+}
