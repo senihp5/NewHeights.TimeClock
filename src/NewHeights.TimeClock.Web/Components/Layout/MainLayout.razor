@@ -25,6 +25,14 @@
 
     <main>
         <div class="top-row px-4">
+            @* Need Help link — outside AuthorizeView so it appears for everyone,
+               authenticated or not. Unauthenticated users tapping it land on
+               /help which requires sign-in, so they will be redirected through
+               Microsoft Identity sign-in and then to the help page. *@
+            <a href="/help" class="help-link" title="Open the in-portal help system">
+                <span aria-hidden="true">❓</span>
+                <span>Need Help?</span>
+            </a>
             <AuthorizeView>
                 <Authorized>
                     <span class="user-name">@context.User.Identity?.Name</span>

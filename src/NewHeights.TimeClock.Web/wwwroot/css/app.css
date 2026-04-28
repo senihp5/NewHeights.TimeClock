@@ -67,6 +67,50 @@ main {
     text-decoration: underline;
 }
 
+/* "Need Help?" pill in the persistent top-row. Always visible (placed
+   outside AuthorizeView in MainLayout), so it appears for unauthenticated
+   visitors too — they'll bounce through the sign-in flow when they click,
+   which is the correct behavior since /help requires sign-in.
+
+   Gold theme to make it stand out from the default navy text links and
+   to telegraph "this is the helpful action" — same color family as the
+   home-page Reception Live accent and the admin "Show all roles" toggle. */
+.top-row .help-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.85rem;
+    background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+    border: 1px solid #fbbf24;
+    border-radius: 6px;
+    color: #78350f;
+    font-weight: 600;
+    font-size: 0.88rem;
+    text-decoration: none;
+    transition: background 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
+}
+
+.top-row .help-link:hover {
+    background: linear-gradient(180deg, #fef3c7 0%, #fde68a 100%);
+    color: #78350f;
+    text-decoration: none;
+    box-shadow: 0 2px 5px rgba(120, 53, 15, 0.18);
+}
+
+.top-row .help-link:active {
+    transform: translateY(1px);
+}
+
+@media (max-width: 480px) {
+    .top-row .help-link {
+        padding: 0.35rem 0.6rem;
+        font-size: 0.82rem;
+    }
+    .top-row .help-link span:nth-child(2) {
+        display: none;
+    }
+}
+
 .user-name {
     font-weight: 500;
     color: var(--gray-700);
@@ -1454,7 +1498,7 @@ main {
 .reception-home-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
 .reception-home-header .section-title { margin-bottom: 0; border-bottom: none; padding-bottom: 0; display: flex; align-items: center; gap: 0.5rem; }
 .live-badge { background: #dc3545; color: #fff; font-size: 0.6rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; letter-spacing: 0.08em; animation: livePulse 2s infinite; }
-@@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 .reception-home-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .last-updated-sm { font-size: 0.75rem; color: #6b7280; }
