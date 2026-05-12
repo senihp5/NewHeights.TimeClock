@@ -420,6 +420,15 @@
     private string scopedCampusDisplay = "";
     private int selectedCampusFilter = 0;
 
+    // 2026-04-28: CM's own EmployeeId, resolved once at init from their email.
+    // Used to widen the scope filter so a CM also sees requests from teachers
+    // they directly supervise — important for the cross-campus case where a
+    // CM supervises a teacher whose home campus differs from theirs (e.g.
+    // multi-campus teachers, or Entra manager attribute crossing campuses).
+    // Before this, such requests were silently filtered out and only an admin
+    // could see them, which blocked the final-approval workflow.
+    private int? currentUserEmployeeId = null;
+
     private string filterStatus = "all";
 
     // Week filter — defaults to "0" (this week) per supervisor request 2026-04-27.
@@ -469,6 +478,22 @@
             }
             scopedCampusId = userCtx.CampusId;
             scopedCampusDisplay = userCtx.CampusDisplayName;
+
+            // Look up the CM's own EmployeeId so LoadDataAsync can widen the
+            // scope filter to "campus match OR I am the requesting teacher's
+            // supervisor". Single small query; cached for the rest of the
+            // page's lifetime.
+            if (!string.IsNullOrWhiteSpace(currentUserEmail))
+            {
+                using var initCtx = await DbFactory.CreateDbContextAsync();
+                currentUserEmployeeId = await initCtx.TcEmployees
+                    .AsNoTracking()
+                    .Where(e => e.Email != null
+                             && e.Email.ToLower() == currentUserEmail.ToLower()
+                             && e.IsActive)
+                    .Select(e => (int?)e.EmployeeId)
+                    .FirstOrDefaultAsync();
+            }
         }
 
         // Seed the dropdown from the route param (when arriving via deep-link
@@ -575,7 +600,28 @@
                 .AsQueryable();
 
             if (filterCampusId.HasValue)
-                query = query.Where(r => r.CampusId == filterCampusId.Value);
+            {
+                // 2026-04-28: For non-admin CMs, widen the filter so they
+                // also see requests from teachers they directly supervise,
+                // regardless of campus. Required for the cross-campus case
+                // (multi-campus teacher, or Entra manager attribute crossing
+                // campuses) where a request's CampusId doesn't match the CM's
+                // scopedCampusId but they're still the approver. Admin's
+                // explicit campus filter selection stays strict.
+                if (!isAdmin && currentUserEmployeeId.HasValue)
+                {
+                    var supId = currentUserEmployeeId.Value;
+                    var campusValue = filterCampusId.Value;
+                    query = query.Where(r =>
+                        r.CampusId == campusValue
+                     || (r.RequestingEmployee != null
+                         && r.RequestingEmployee.SupervisorEmployeeId == supId));
+                }
+                else
+                {
+                    query = query.Where(r => r.CampusId == filterCampusId.Value);
+                }
+            }
 
             // Week filter — narrows requests whose absence overlaps the
             // selected Mon–Sun window. Default "all" leaves the original

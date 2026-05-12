@@ -1589,6 +1589,27 @@ public class SubOutreachService : ISubOutreachService
         }
     }
 
+    /// <summary>
+    /// Computes the supervisor sub-requests URL route segment for the week
+    /// containing the given absence start date, matching the page's week
+    /// convention (Monday-anchored, offset relative to today's Monday).
+    /// Returns "" for the current week (page route /supervisor/sub-requests)
+    /// or "/{offset}" for any other week (e.g. "/-1" for last week, "/1" for
+    /// next week). Page reads the route segment via WeekFilterParam.
+    /// </summary>
+    private static string BuildWeekPath(DateOnly absenceStart)
+    {
+        var todayLocal = DateOnly.FromDateTime(DateTime.Today);
+        var todayDow = (int)todayLocal.DayOfWeek;
+        var todayMonday = todayLocal.AddDays(-(todayDow == 0 ? 6 : todayDow - 1));
+
+        var startDow = (int)absenceStart.DayOfWeek;
+        var startMonday = absenceStart.AddDays(-(startDow == 0 ? 6 : startDow - 1));
+
+        var weekOff = (startMonday.DayNumber - todayMonday.DayNumber) / 7;
+        return weekOff == 0 ? "" : $"/{weekOff}";
+    }
+
     private static (string smsBody, string subject, string html) BuildStakeholderContent(
         string eventKind, bool isSupervisor,
         string subName, string teacherName, string campusName, string dates,
@@ -1611,11 +1632,20 @@ public class SubOutreachService : ISubOutreachService
 
         if (isAccept && isSupervisor)
         {
-            smsBody  = $"New Heights: {subName} accepted for {teacherName} at {campusName} on {dates}. Please give final approval: clock.newheightsed.com/supervisor/sub-requests";
+            // 2026-04-28: Deep-link to the week that contains the request's
+            // StartDate. Previously the URL was bare /supervisor/sub-requests
+            // which landed the CM on the current week \u2014 for a request that
+            // covers next week or last week, the CM would have to manually
+            // switch the dropdown to find it. Page reads the route segment
+            // via WeekFilterParam and seeds selectedWeekFilter at init.
+            var weekPath = BuildWeekPath(request.StartDate);
+            var approvalUrl = $"https://clock.newheightsed.com/supervisor/sub-requests{weekPath}";
+
+            smsBody  = $"New Heights: {subName} accepted for {teacherName} at {campusName} on {dates}. Please give final approval: {approvalUrl}";
             subject  = $"Action needed: final approval \u2014 {subName} for {teacherName} ({dates})";
             color    = "#059669";
             headline = "Substitute Confirmed \u2014 Final Approval Needed";
-            body     = $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> accepted the sub request for <strong>{System.Net.WebUtility.HtmlEncode(teacherName)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> on <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong>.</p><p><strong>Next step:</strong> review and give final approval so the absence is officially confirmed.</p><p><a href='https://clock.newheightsed.com/supervisor/sub-requests' style='display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;text-decoration:none;border-radius:4px;font-weight:500;'>Open Sub Requests</a></p>";
+            body     = $"<p><strong>{System.Net.WebUtility.HtmlEncode(subName)}</strong> accepted the sub request for <strong>{System.Net.WebUtility.HtmlEncode(teacherName)}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(campusName)}</strong> on <strong>{System.Net.WebUtility.HtmlEncode(dates)}</strong>.</p><p><strong>Next step:</strong> review and give final approval so the absence is officially confirmed.</p><p><a href='{approvalUrl}' style='display:inline-block;padding:10px 20px;background:#2563eb;color:#fff;text-decoration:none;border-radius:4px;font-weight:500;'>Open Sub Requests</a></p>";
         }
         else if (isAccept && !isSupervisor)
         {
