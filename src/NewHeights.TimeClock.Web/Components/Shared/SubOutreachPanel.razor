@@ -250,6 +250,84 @@
             }
         </div>
 
+        @* ── Teacher-as-sub fallback (2026-04-28) ───────────────────────────
+           Visible only when the sub queue has been fully exhausted. Lets the
+           requesting teacher (or supervisor on their behalf) pick a fellow
+           campus teacher to cover the periods. Required gate: they must
+           confirm they've spoken with the candidate personally first — the
+           system can't enforce that humanly, but the checkbox is auditable
+           and a small forcing function so this isn't accidentally used as
+           a shortcut around the regular sub pool. *@
+        @if (Request != null && Request.Status == SubRequestStatus.AllSubsExhausted)
+        {
+            <div class="panel-section" style="background:#fff7ed; border:1px solid #fed7aa; border-radius:6px; padding:1rem; margin-top:.75rem;">
+                <div class="section-title" style="color:#9a3412;">
+                    No subs available — assign a campus teacher
+                </div>
+                <p style="font-size:.88rem; color:#475569; margin:0 0 .75rem;">
+                    Every substitute we contacted declined or didn't respond. You can
+                    assign a fellow @scopedCampusLabel teacher as a one-off sub.
+                    <strong>Talk to them in person first</strong> — the system will
+                    then email them an accept/decline link, and after they accept
+                    the request goes to the campus manager for final approval.
+                </p>
+
+                @if (teacherCandidates.Count == 0)
+                {
+                    <p style="color:#7c2d12; font-style:italic; font-size:.85rem;">
+                        No other active teachers are listed for this campus.
+                        Contact your campus manager for help.
+                    </p>
+                }
+                else
+                {
+                    <div style="display:flex; flex-direction:column; gap:.6rem;">
+                        <label style="font-size:.88rem; font-weight:600; color:#374151;">
+                            Pick a teacher:
+                            <select @bind="teacherFallbackSelectedId"
+                                    style="width:100%; max-width:340px; padding:.45rem .55rem; margin-top:.2rem;
+                                           border:1px solid #d1d5db; border-radius:4px; font-size:.95rem; background:#fff;">
+                                <option value="">— Choose a teacher —</option>
+                                @foreach (var t in teacherCandidates)
+                                {
+                                    var label = t.Staff?.FullName ?? t.DisplayName ?? t.Email ?? $"Employee {t.EmployeeId}";
+                                    <option value="@t.EmployeeId">@label</option>
+                                }
+                            </select>
+                        </label>
+
+                        <label style="font-size:.88rem; color:#374151; display:flex; align-items:flex-start; gap:.4rem;">
+                            <input type="checkbox" @bind="teacherFallbackSpokenConfirmed" style="margin-top:.2rem;" />
+                            <span>
+                                I have spoken with this teacher in person and they have
+                                tentatively agreed to cover these periods. I understand
+                                they will still receive an accept/decline email.
+                            </span>
+                        </label>
+
+                        @if (!string.IsNullOrEmpty(teacherFallbackError))
+                        {
+                            <div style="background:#fef2f2; border:1px solid #fecaca; color:#991b1b;
+                                        padding:.5rem .75rem; border-radius:4px; font-size:.85rem;">
+                                @teacherFallbackError
+                            </div>
+                        }
+
+                        <div>
+                            <button type="button"
+                                    style="background:#9a3412; color:#fff; border:none;
+                                           padding:.55rem 1.1rem; border-radius:4px;
+                                           font-size:.95rem; font-weight:600; cursor:pointer;"
+                                    @onclick="AssignTeacherFallbackAsync"
+                                    disabled="@(!CanSendTeacherFallback() || teacherFallbackIsSending)">
+                                @(teacherFallbackIsSending ? "Sending…" : "Assign teacher + send email")
+                            </button>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+
         @if (assignments.Count > 0)
         {
             <div class="panel-section">
@@ -348,6 +426,17 @@
     // Phase A: partial-acceptance assignments for this request.
     private List<TcSubRequestAssignment> assignments = new();
     private string assignmentsCoverageSummary = "";
+
+    // 2026-04-28: teacher-as-sub fallback (Patrick smoke-test #3). When the
+    // sub queue is fully exhausted, the requesting teacher (or supervisor)
+    // can pick a fellow CAMPUS teacher as a one-off sub. Gated on
+    // Request.Status == AllSubsExhausted in the UI. Picker requires
+    // confirmation that they've spoken with the proposed teacher first.
+    private List<TcEmployee> teacherCandidates = new();
+    private int? teacherFallbackSelectedId = null;
+    private bool teacherFallbackSpokenConfirmed = false;
+    private bool teacherFallbackIsSending = false;
+    private string teacherFallbackError = "";
     // 2026-04-28: Default to AutoCascade — Patrick wants cascade to be the
     // common path so the system walks an ordered queue automatically and
     // teachers / supervisors only fall back to manual selection for special
@@ -372,6 +461,11 @@
         manualSelectedId = null;
         cascadeOrderedIds = new();
         sendError = "";
+        // 2026-04-28: also reset teacher-fallback picker so opening a
+        // different request doesn't carry over leftover selection.
+        teacherFallbackSelectedId = null;
+        teacherFallbackSpokenConfirmed = false;
+        teacherFallbackError = "";
         await LoadAsync();
     }
 
@@ -435,6 +529,26 @@
                     .ThenBy(e => e.Staff!.FirstName)
                     .ToListAsync();
             }
+
+            // 2026-04-28: teacher fallback pool — active teachers at the same
+            // campus as the request, excluding the requesting teacher
+            // themselves. Conservatively does NOT exclude teachers who are
+            // themselves absent on the same date; the human-conversation gate
+            // (teacher must confirm "I have spoken with them") catches that
+            // case better than a brittle DB-only check. Loaded for every
+            // request; UI only renders the picker when Status =
+            // AllSubsExhausted, so the data is wasted when not needed but the
+            // query is small and runs once per panel open.
+            teacherCandidates = await context.TcEmployees
+                .AsNoTracking()
+                .Include(e => e.Staff)
+                .Where(e => e.IsActive
+                         && e.EmployeeType == EmployeeType.Teacher
+                         && e.HomeCampusId == Request.CampusId
+                         && e.EmployeeId != Request.RequestingEmployeeId)
+                .OrderBy(e => e.Staff!.LastName)
+                .ThenBy(e => e.Staff!.FirstName)
+                .ToListAsync();
 
             // Phase D5: load specialty assignments for the candidate set
             // (admin subs only — TEACHER subs don't carry specialties in this
@@ -619,6 +733,72 @@
             OutreachMode.AutoCascade => cascadeOrderedIds.Count > 0,
             _ => false
         };
+    }
+
+    // 2026-04-28: friendly campus label for the teacher-fallback panel copy
+    // ("assign a fellow {campus} teacher"). Resolved from the Request's
+    // Campus navigation, with a generic fallback when Campus isn't loaded.
+    private string scopedCampusLabel => Request?.Campus?.CampusName ?? "campus";
+
+    private bool CanSendTeacherFallback()
+    {
+        if (string.IsNullOrWhiteSpace(CurrentUserEmail)) return false;
+        if (Request == null || Request.Status != SubRequestStatus.AllSubsExhausted) return false;
+        if (!teacherFallbackSelectedId.HasValue || teacherFallbackSelectedId.Value <= 0) return false;
+        if (!teacherFallbackSpokenConfirmed) return false;
+        return true;
+    }
+
+    private async Task AssignTeacherFallbackAsync()
+    {
+        if (!CanSendTeacherFallback() || teacherFallbackIsSending) return;
+        teacherFallbackError = "";
+        teacherFallbackIsSending = true;
+        try
+        {
+            // Reuse SendOutreachAsync — same machinery as a single-sub manual
+            // assignment. The service already allows AllSubsExhausted as a
+            // starting status, and ProcessAccept / ProcessDecline handle the
+            // single-row case identically: accept -> SubConfirmed (CM email
+            // fires automatically); decline -> AdvanceQueueOrRevertAsync sees
+            // no next queued row and reverts to AllSubsExhausted, leaving the
+            // teacher free to pick another.
+            await OutreachService.SendOutreachAsync(
+                Request!.SubRequestId,
+                new List<int> { teacherFallbackSelectedId!.Value },
+                OutreachMode.Manual,
+                CurrentUserEmail);
+
+            // Surface a transient success state by clearing the picker;
+            // parent page reloads the request so Status flips to SubAssigned
+            // and this entire panel re-renders without the fallback UI.
+            teacherFallbackSelectedId = null;
+            teacherFallbackSpokenConfirmed = false;
+
+            await OnOutreachSent.InvokeAsync();
+        }
+        catch (InvalidOperationException ex)
+        {
+            teacherFallbackError = ex.Message;
+            Logger.LogWarning(ex,
+                "AssignTeacherFallbackAsync refused for request {Id}", Request?.SubRequestId);
+        }
+        catch (ArgumentException ex)
+        {
+            teacherFallbackError = ex.Message;
+            Logger.LogWarning(ex,
+                "AssignTeacherFallbackAsync argument error for request {Id}", Request?.SubRequestId);
+        }
+        catch (Exception ex)
+        {
+            teacherFallbackError = "Couldn't send. Please try again or contact admin.";
+            Logger.LogError(ex,
+                "AssignTeacherFallbackAsync unexpected error for request {Id}", Request?.SubRequestId);
+        }
+        finally
+        {
+            teacherFallbackIsSending = false;
+        }
     }
 
     private async Task SendOutreachAsync()

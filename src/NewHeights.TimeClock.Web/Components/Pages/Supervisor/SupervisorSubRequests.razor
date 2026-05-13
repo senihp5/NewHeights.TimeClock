@@ -644,7 +644,8 @@
                                         || r.Status == SubRequestStatus.AwaitingSub
                                         || r.Status == SubRequestStatus.SubAssigned
                                         || r.Status == SubRequestStatus.PartiallyAssigned
-                                        || r.Status == SubRequestStatus.SubConfirmed),
+                                        || r.Status == SubRequestStatus.SubConfirmed
+                                        || r.Status == SubRequestStatus.AllSubsExhausted),
                 "all" => query,
                 "awaitingsub" => query.Where(r => r.Status == SubRequestStatus.AwaitingSub),
                 "submitted" => query.Where(r => r.Status == SubRequestStatus.Submitted),
@@ -976,6 +977,8 @@
         SubRequestStatus.AbsenceApproved => "Approved (Final)",
         SubRequestStatus.SubAssigned => "Outreach in Flight",
         SubRequestStatus.SubConfirmed => "Sub Confirmed",
+        SubRequestStatus.PartiallyAssigned => "Partially Assigned",
+        SubRequestStatus.AllSubsExhausted => "All Subs Declined — Pick a Teacher",
         SubRequestStatus.Denied => "Denied",
         SubRequestStatus.Cancelled => "Cancelled",
         _ => s.ToString()

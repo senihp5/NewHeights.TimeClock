@@ -159,6 +159,11 @@ public class SubRequestDailyResolutionService : BackgroundService
                     case SubRequestStatus.AwaitingSub:
                     case SubRequestStatus.Submitted:
                     case SubRequestStatus.SubAssigned:
+                    // 2026-04-28: AllSubsExhausted means the queue burnt out
+                    // and the teacher never picked a fallback teacher in
+                    // time. Treat like AwaitingSub from the sweep's POV —
+                    // auto-cancel on day-of so it doesn't sit forever.
+                    case SubRequestStatus.AllSubsExhausted:
                         await AutoCancelAsync(req, ctx, emailService, smsService, audit, ct);
                         autoCancelled++;
                         break;

@@ -243,12 +243,19 @@ public class SubOutreachService : ISubOutreachService
         // Lifecycle: AwaitingSub -> SubAssigned (outreach in flight) -> SubConfirmed (sub accepted)
         //         -> AbsenceApproved (admin final approval). Legacy "AbsenceApproved-as-intermediate"
         //         is still accepted so any in-flight pre-9a requests continue working.
+        //
+        // 2026-04-28: AllSubsExhausted is also valid — that's the entry point
+        // for the teacher-as-sub fallback flow. The caller passes a single
+        // teacher's EmployeeId in subEmployeeIds with OutreachMode.Manual; the
+        // existing accept/decline machinery handles it the same way as a
+        // single-sub assignment.
         if (request.Status != SubRequestStatus.AwaitingSub
             && request.Status != SubRequestStatus.AbsenceApproved
-            && request.Status != SubRequestStatus.SubAssigned)
+            && request.Status != SubRequestStatus.SubAssigned
+            && request.Status != SubRequestStatus.AllSubsExhausted)
         {
             throw new InvalidOperationException(
-                $"Cannot send outreach — request is {request.Status}. Must be AwaitingSub, AbsenceApproved, or SubAssigned.");
+                $"Cannot send outreach — request is {request.Status}. Must be AwaitingSub, AbsenceApproved, SubAssigned, or AllSubsExhausted.");
         }
 
         // Load the candidate subs; keep caller's ordering to preserve the queue.
@@ -325,9 +332,12 @@ public class SubOutreachService : ISubOutreachService
         }
 
         // First outreach for this request bumps status to SubAssigned.
-        // From either AwaitingSub (Phase 9a teacher-driven) or AbsenceApproved (legacy supervisor-driven).
+        // From either AwaitingSub (Phase 9a teacher-driven), AbsenceApproved
+        // (legacy supervisor-driven), or AllSubsExhausted (2026-04-28 teacher-
+        // as-sub fallback after the regular sub queue declined every option).
         if (request.Status == SubRequestStatus.AwaitingSub
-            || request.Status == SubRequestStatus.AbsenceApproved)
+            || request.Status == SubRequestStatus.AbsenceApproved
+            || request.Status == SubRequestStatus.AllSubsExhausted)
         {
             request.Status = SubRequestStatus.SubAssigned;
             request.ModifiedDate = DateTime.Now;
@@ -1033,13 +1043,19 @@ public class SubOutreachService : ISubOutreachService
 
         if (nextQueued == null)
         {
-            // Phase 9a: revert to AwaitingSub so the teacher (or admin via override)
-            // can dispatch another round of outreach. Was AbsenceApproved pre-9a;
-            // changed because in the new flow AbsenceApproved is the terminal/final
-            // admin-approved state and shouldn't be reused as an intermediate.
+            // 2026-04-28: queue is fully worked. Move to AllSubsExhausted so
+            // the SubOutreachPanel renders the teacher-as-sub fallback picker.
+            // Previously this reverted to AwaitingSub (Phase 9a behavior),
+            // which made the request indistinguishable from a fresh request
+            // waiting on its first dispatch — the teacher had no signal that
+            // the queue had been exhausted and a fallback was now appropriate.
+            // PartiallyAssigned stays untouched: there are still subs who
+            // accepted partial coverage and the remaining periods still need
+            // outreach (or a teacher-sub) — but we leave the status alone
+            // because the partial-acceptance UI handles that case.
             if (request.Status == SubRequestStatus.SubAssigned)
             {
-                request.Status = SubRequestStatus.AwaitingSub;
+                request.Status = SubRequestStatus.AllSubsExhausted;
                 request.ModifiedDate = DateTime.Now;
                 await context.SaveChangesAsync();
             }

@@ -23,5 +23,13 @@ public enum SubRequestStatus
     // requested periods but not all. Outreach cascade continues for the
     // remaining uncovered periods. Transitions to SubConfirmed when the final
     // period gets claimed.
-    PartiallyAssigned
+    PartiallyAssigned,
+
+    // 2026-04-28: every queued sub has declined / expired without an accept.
+    // Teacher (or supervisor) can now pick a fellow teacher as a one-off
+    // sub via SubOutreachPanel's teacher-fallback picker, which creates a
+    // single TcSubOutreach row with the teacher's EmployeeId and reuses the
+    // existing accept/decline email flow. If the teacher-sub declines, the
+    // request returns to AllSubsExhausted so another teacher can be picked.
+    AllSubsExhausted
 }
