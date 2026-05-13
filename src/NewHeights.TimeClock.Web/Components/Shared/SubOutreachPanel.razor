@@ -348,7 +348,11 @@
     // Phase A: partial-acceptance assignments for this request.
     private List<TcSubRequestAssignment> assignments = new();
     private string assignmentsCoverageSummary = "";
-    private OutreachMode mode = OutreachMode.Manual;
+    // 2026-04-28: Default to AutoCascade — Patrick wants cascade to be the
+    // common path so the system walks an ordered queue automatically and
+    // teachers / supervisors only fall back to manual selection for special
+    // cases. Was Manual previously.
+    private OutreachMode mode = OutreachMode.AutoCascade;
     private int? manualSelectedId = null;
     private List<int> cascadeOrderedIds = new();
 
@@ -364,7 +368,7 @@
         if (Request == null) return;
         if (_lastRequestId == Request.SubRequestId && !isLoading) return;
         _lastRequestId = Request.SubRequestId;
-        mode = OutreachMode.Manual;
+        mode = OutreachMode.AutoCascade;
         manualSelectedId = null;
         cascadeOrderedIds = new();
         sendError = "";
