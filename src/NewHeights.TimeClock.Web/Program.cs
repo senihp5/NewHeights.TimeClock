@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Identity.Web;
@@ -18,15 +19,66 @@ Log.Logger = new LoggerConfiguration()
 
 builder.Host.UseSerilog();
 
-// Add Microsoft Identity authentication with MFA enforced by Entra ID
-builder.Services.AddAuthentication(OpenIdConnectDefaults.AuthenticationScheme)
+// 2026-04-28 auth restructure — three concerns:
+//   1. Staff sign in via Entra OpenIdConnect → "Cookies" cookie scheme
+//      (registered by AddMicrosoftIdentityWebApp).
+//   2. Students sign in via Google OAuth → DEDICATED "StudentCookie" scheme.
+//      Previously Google inherited "Cookies" as its SignInScheme, but
+//      Microsoft.Identity.Web wires that scheme with claim validators tuned
+//      for Entra principals, which silently rejected the Google-issued
+//      principal — the OAuth callback at /signin-google rendered blank
+//      instead of redirecting to /student/checkin.
+//   3. AppDefault is a PolicyScheme that forwards authentication to either
+//      "Cookies" or "StudentCookie" based on which cookie the request
+//      carries, so HttpContext.User is populated correctly for both
+//      audiences without one stepping on the other. Default challenge
+//      stays Entra (staff [Authorize] still triggers the Entra login).
+const string StudentCookieScheme = "StudentCookie";
+const string AppDefaultScheme = "AppDefault";
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultScheme = AppDefaultScheme;
+    options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
+})
+.AddPolicyScheme(AppDefaultScheme, "Entra-or-Student", options =>
+{
+    options.ForwardDefaultSelector = ctx =>
+    {
+        // Student cookie present → authenticate via the student scheme.
+        // Otherwise fall through to the staff cookie scheme.
+        if (ctx.Request.Cookies.ContainsKey("NHTC.Student"))
+            return StudentCookieScheme;
+        return CookieAuthenticationDefaults.AuthenticationScheme;
+    };
+});
+
+// Staff Entra: registers OpenIdConnect (challenge) + "Cookies" (sign-in).
+builder.Services.AddAuthentication()
     .AddMicrosoftIdentityWebApp(builder.Configuration.GetSection("AzureAd"));
 
-// Phase 8: Google Workspace auth for student self check-in. Registered as a
-// separate AddAuthentication() call because AddMicrosoftIdentityWebApp returns
-// a specialized builder that doesn't expose AddGoogle. Only registers when
-// Google:Enabled + ClientId + ClientSecret are all present — lets the app ship
-// safely before/without the Google Cloud OAuth client being provisioned.
+// Student-specific cookie scheme. Google handler signs into THIS scheme,
+// so the staff Cookies scheme's Entra-tuned validators don't see Google
+// principals. Cookie name is distinct (NHTC.Student) so the PolicyScheme
+// above can route on its presence.
+builder.Services.AddAuthentication()
+    .AddCookie(StudentCookieScheme, options =>
+    {
+        options.Cookie.Name = "NHTC.Student";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.LoginPath = "/student/sign-in";
+        options.LogoutPath = "/student/sign-out";
+        options.AccessDeniedPath = "/student/sign-in";
+        options.ExpireTimeSpan = TimeSpan.FromHours(8);
+        options.SlidingExpiration = true;
+    });
+
+// Phase 8: Google Workspace auth for student self check-in. Only registers
+// when Google:Enabled + ClientId + ClientSecret are all present — lets the
+// app ship safely before/without the Google Cloud OAuth client being
+// provisioned.
 var googleEnabled = builder.Configuration.GetValue<bool>("Google:Enabled");
 var googleClientId = builder.Configuration["Google:ClientId"];
 var googleClientSecret = builder.Configuration["Google:ClientSecret"];
@@ -36,6 +88,13 @@ if (googleEnabled
 {
     builder.Services.AddAuthentication().AddGoogle(googleOptions =>
     {
+        // Critical: sign into the dedicated student cookie scheme, NOT
+        // the inherited staff "Cookies" scheme. Without this, the OAuth
+        // callback completes on Google's side but the post-callback
+        // SignInAsync silently fails against the Entra-tuned cookie
+        // scheme and the redirect to /student/checkin never happens.
+        googleOptions.SignInScheme = StudentCookieScheme;
+
         googleOptions.ClientId = googleClientId;
         googleOptions.ClientSecret = googleClientSecret;
         // Default callback path is /signin-google — matches what's configured in
@@ -45,6 +104,27 @@ if (googleEnabled
         // an explicit ClaimActions.MapJsonKey call.
         googleOptions.Scope.Add("email");
         googleOptions.Scope.Add("profile");
+
+        // 2026-04-28: Append two Google-specific parameters to the authorize
+        // URL. `hd=newheightshs.com` filters the account picker to that
+        // Workspace domain (personal Gmail and @newheightsed.com staff
+        // accounts are filtered out before sign-in completes). `prompt=
+        // select_account` forces the chooser instead of auto-using the
+        // device's currently-active Google account, which matters when a
+        // student's iPhone is signed into a parent's personal Gmail.
+        //
+        // GoogleOptions in .NET 8 doesn't expose HostedDomain or
+        // AdditionalAuthorizationParameters directly (the latter was added
+        // in .NET 9), so we hook OnRedirectToAuthorizationEndpoint and
+        // mutate the redirect URL ourselves. Belt-and-suspenders with the
+        // RequireStudent policy below — Google enforces at the picker,
+        // our policy enforces on the resulting email claim.
+        googleOptions.Events.OnRedirectToAuthorizationEndpoint = ctx =>
+        {
+            var sep = ctx.RedirectUri.Contains('?') ? "&" : "?";
+            ctx.Response.Redirect(ctx.RedirectUri + sep + "hd=newheightshs.com&prompt=select_account");
+            return Task.CompletedTask;
+        };
     });
 }
 
@@ -201,6 +281,7 @@ builder.Services.AddHttpContextAccessor();
 // Add TimeClock services as Singleton for caching
 builder.Services.AddSingleton<IGeofenceService, GeofenceService>();
 builder.Services.AddScoped<ITimePunchService, TimePunchService>();
+builder.Services.AddScoped<IKioskScanService, KioskScanService>();
 builder.Services.AddScoped<ITimesheetService, TimesheetService>();
 builder.Services.AddScoped<IPayPeriodService, PayPeriodService>();
 
@@ -327,6 +408,45 @@ app.MapRazorComponents<NewHeights.TimeClock.Web.Components.App>()
     .AddInteractiveServerRenderMode();
 
 app.MapControllers();
+
+app.MapPost("/api/v1/punch", async (
+    NewHeights.TimeClock.Shared.DTOs.EspScanRequest req,
+    NewHeights.TimeClock.Web.Services.IKioskScanService scanService,
+    Microsoft.EntityFrameworkCore.IDbContextFactory<NewHeights.TimeClock.Data.TimeClockDbContext> dbFactory,
+    Microsoft.Extensions.Configuration.IConfiguration config,
+    Microsoft.AspNetCore.Http.HttpContext httpCtx,
+    Microsoft.Extensions.Logging.ILogger<Program> logger) =>
+{
+    var configuredSecret = config["EspScanner:DeviceSecret"];
+    var headerSecret = httpCtx.Request.Headers["X-Device-Secret"].ToString();
+    if (string.IsNullOrEmpty(configuredSecret) || headerSecret != configuredSecret)
+    {
+        logger.LogWarning("ESP scan rejected — missing or invalid X-Device-Secret. TerminalId={TerminalId}", req?.TerminalId);
+        return Microsoft.AspNetCore.Http.Results.Unauthorized();
+    }
+
+    if (req == null || string.IsNullOrWhiteSpace(req.RawScan))
+    {
+        return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = "RawScan required" });
+    }
+
+    int campusId = req.CampusId ?? 0;
+    if (campusId <= 0 && !string.IsNullOrWhiteSpace(req.CampusCode))
+    {
+        using var ctx = await dbFactory.CreateDbContextAsync();
+        var campus = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
+            .FirstOrDefaultAsync(ctx.Campuses, c => c.CampusCode == req.CampusCode!.ToUpper());
+        campusId = campus?.CampusId ?? 0;
+    }
+
+    var scanMethod = string.IsNullOrWhiteSpace(req.ScanMethod) ? "ESP32" : req.ScanMethod!;
+    logger.LogInformation("ESP scan accepted — TerminalId={TerminalId} CampusId={CampusId} Method={Method}",
+        req.TerminalId, campusId, scanMethod);
+
+    var result = await scanService.ProcessRawScanAsync(req.RawScan, campusId, scanMethod);
+    return Microsoft.AspNetCore.Http.Results.Ok(result);
+})
+.AllowAnonymous();
 
 // Temporary diagnostic endpoint - REMOVE after testing
 app.MapGet("/api/test-graph", async (IGraphService graph, IConfiguration config) =>
