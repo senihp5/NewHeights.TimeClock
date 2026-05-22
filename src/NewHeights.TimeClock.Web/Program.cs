@@ -282,6 +282,8 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddSingleton<IGeofenceService, GeofenceService>();
 builder.Services.AddScoped<ITimePunchService, TimePunchService>();
 builder.Services.AddScoped<IKioskScanService, KioskScanService>();
+builder.Services.AddSingleton<NewHeights.TimeClock.Web.Services.IPhotoThumbnailService,
+                              NewHeights.TimeClock.Web.Services.PhotoThumbnailService>();
 builder.Services.AddScoped<ITimesheetService, TimesheetService>();
 builder.Services.AddScoped<IPayPeriodService, PayPeriodService>();
 
@@ -412,6 +414,7 @@ app.MapControllers();
 app.MapPost("/api/v1/punch", async (
     NewHeights.TimeClock.Shared.DTOs.EspScanRequest req,
     NewHeights.TimeClock.Web.Services.IKioskScanService scanService,
+    NewHeights.TimeClock.Web.Services.IPhotoThumbnailService thumbnailService,
     Microsoft.EntityFrameworkCore.IDbContextFactory<NewHeights.TimeClock.Data.TimeClockDbContext> dbFactory,
     Microsoft.Extensions.Configuration.IConfiguration config,
     Microsoft.AspNetCore.Http.HttpContext httpCtx,
@@ -430,20 +433,61 @@ app.MapPost("/api/v1/punch", async (
         return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = "RawScan required" });
     }
 
-    int campusId = req.CampusId ?? 0;
-    if (campusId <= 0 && !string.IsNullOrWhiteSpace(req.CampusCode))
+    if (!req.TerminalId.HasValue || req.TerminalId.Value <= 0)
     {
-        using var ctx = await dbFactory.CreateDbContextAsync();
-        var campus = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
-            .FirstOrDefaultAsync(ctx.Campuses, c => c.CampusCode == req.CampusCode!.ToUpper());
-        campusId = campus?.CampusId ?? 0;
+        return Microsoft.AspNetCore.Http.Results.BadRequest(new { error = "TerminalId required" });
+    }
+
+    int terminalId = req.TerminalId.Value;
+    int campusId;
+    int locationId;
+    string terminalPurpose;
+
+    using (var ctx = await dbFactory.CreateDbContextAsync())
+    {
+        var terminal = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
+            .FirstOrDefaultAsync(ctx.TcTerminals, t => t.TerminalId == terminalId);
+
+        if (terminal == null)
+        {
+            logger.LogWarning("ESP scan rejected — TerminalId {TerminalId} not registered", terminalId);
+            return Microsoft.AspNetCore.Http.Results.NotFound(new { error = "Terminal not registered" });
+        }
+        if (!terminal.IsActive)
+        {
+            logger.LogWarning("ESP scan rejected — TerminalId {TerminalId} ({Code}) is inactive", terminalId, terminal.TerminalCode);
+            return Microsoft.AspNetCore.Http.Results.StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        campusId        = terminal.CampusId;
+        locationId      = terminal.LocationId;
+        terminalPurpose = terminal.TerminalPurpose;
+
+        terminal.LastSeenAt = DateTime.Now;
+        try { await ctx.SaveChangesAsync(); }
+        catch (Exception ex) { logger.LogWarning(ex, "Failed to update LastSeenAt for terminal {TerminalId}", terminalId); }
     }
 
     var scanMethod = string.IsNullOrWhiteSpace(req.ScanMethod) ? "ESP32" : req.ScanMethod!;
-    logger.LogInformation("ESP scan accepted — TerminalId={TerminalId} CampusId={CampusId} Method={Method}",
-        req.TerminalId, campusId, scanMethod);
+    logger.LogInformation("ESP scan accepted — TerminalId={TerminalId} Purpose={Purpose} CampusId={CampusId} LocationId={LocationId} Method={Method}",
+        terminalId, terminalPurpose, campusId, locationId, scanMethod);
 
-    var result = await scanService.ProcessRawScanAsync(req.RawScan, campusId, scanMethod);
+    var result = await scanService.ProcessRawScanAsync(req.RawScan, campusId, scanMethod, terminalId, locationId);
+
+    // ESP32 kiosks cannot parse the ~770KB JSON the full PhotoBase64 produces
+    // (heap exhaustion -> JSON parse FAILED: NoMemory). The wired Blazor kiosk
+    // consumes KioskScanService in-process and is unaffected; only HTTP callers
+    // reach this lambda. Shrink the photo to a 200x200 q75 JPEG (~15-20 KB base64)
+    // so the ESP32 Phase 6 LCD photo display continues to work.
+    if (result != null && !string.IsNullOrEmpty(result.PhotoBase64))
+    {
+        int originalLen = result.PhotoBase64.Length;
+        var thumb = thumbnailService.CreateJpegThumbnailBase64(result.PhotoBase64, maxDimensionPx: 200, qualityPercent: 75);
+        result.PhotoBase64 = thumb;
+        logger.LogInformation("ESP32 punch photo: shrunk {OriginalLen} -> {ThumbLen} base64 chars for TerminalId={TerminalId}",
+            originalLen, thumb?.Length ?? 0, terminalId);
+    }
+
     return Microsoft.AspNetCore.Http.Results.Ok(result);
 })
 .AllowAnonymous();
