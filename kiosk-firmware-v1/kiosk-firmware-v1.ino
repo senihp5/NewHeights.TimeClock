@@ -885,23 +885,22 @@ void lcdShowScanning(const String &payload) {
 // (constants moved to LCD section near top of file for early visibility)
 // =====================================================================
 
-// Push a grayscale 320x240 camera frame onto the top of the LCD, converting
-// each pixel to RGB565 line-by-line. Called from loop() while on the idle
-// screen so users see what the camera sees and can center their QR code.
+// Push a 320x240 RGB565 camera frame onto the top of the LCD. The camera
+// driver writes pixel bytes in the order the panel expects, so we send the
+// buffer through pushImage with setSwapBytes(false) - empirically confirmed
+// 2026-05-22 that setSwapBytes(true) produced a solarized image (the byte
+// swap was unwanted, channel bits got scrambled).
+// Called from loop() while on the idle screen so users see what the camera
+// sees and can center their QR code over the lens.
 void lcdDrawViewfinder(camera_fb_t *fb) {
     if (!lcdReady || !fb || !fb->buf) return;
     if (fb->format != PIXFORMAT_RGB565) return;
     if (fb->width != VIEWFINDER_W || fb->height != VIEWFINDER_H) return;
 
-    // Camera writes RGB565 in big-endian (high byte first in memory). The
-    // LovyanGFX pushImage path with setSwapBytes(true) tells the library to
-    // swap to match the panel's MSB-first SPI. Reading as uint16_t* is OK
-    // because the library handles the swap; we don't dereference on the CPU.
     gfx.startWrite();
-    gfx.setSwapBytes(true);
+    gfx.setSwapBytes(false);
     gfx.pushImage(VIEWFINDER_X, VIEWFINDER_Y, VIEWFINDER_W, VIEWFINDER_H,
                   (const uint16_t *)fb->buf);
-    gfx.setSwapBytes(false);
     gfx.endWrite();
 }
 
