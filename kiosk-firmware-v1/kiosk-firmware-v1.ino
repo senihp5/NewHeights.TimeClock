@@ -341,8 +341,8 @@ bool tryDecodeQr(camera_fb_t *fb, String &outPayload) {
 void postPunch(const String &rawScan) {
     if (!ensureWifi(5000)) {
         Serial.println("POST skipped — WiFi offline after retry");
-        lcdShowError("WiFi offline");
         soundBadScan();
+        lcdShowError("WiFi offline", "Please try again");
         return;
     }
 
@@ -400,38 +400,45 @@ void postPunch(const String &rawScan) {
                               : "PUNCH FAIL: %s\n",
                           name, type, msg, (unsigned)photoLen);
             if (ok) {
-                lcdShowSuccess(name, display, ptype, photo);
                 soundGoodScan();
+                lcdShowSuccess(name, display, ptype, photo);
             } else {
-                Serial.printf("Server returned success=false: %s\n", msg);
-                lcdShowError(msg && *msg ? msg : "Server rejected");
+                const char *errorCode = respDoc["errorCode"] | "";
+                Serial.printf("Server returned success=false (code=%s): %s\n", errorCode, msg);
                 soundBadScan();
+                if (strcmp(errorCode, "NOT_FOUND") == 0) {
+                    lcdShowError("Card not recognized", "Please see reception");
+                } else if (strcmp(errorCode, "INVALID_FORMAT") == 0) {
+                    lcdShowError("Invalid card", "Try again");
+                } else {
+                    lcdShowError(msg && *msg ? msg : "Server rejected", "");
+                }
             }
         } else {
             Serial.printf("JSON parse FAILED: %s\n", jerr.c_str());
             Serial.print("  full body: ");
             Serial.println(resp);
-            lcdShowError("Bad server response");
             soundBadScan();
+            lcdShowError("Server error", "Please try again");
         }
     } else if (code == 401) {
         Serial.println("Unauthorized — check DEVICE_SECRET matches App Service config");
-        lcdShowError("Device unauthorized");
         soundBadScan();
+        lcdShowError("Device error", "Contact admin");
     } else if (code == 404) {
         Serial.println("Terminal not registered — check TERMINAL_ID matches TC_Terminals");
-        lcdShowError("Terminal not found");
         soundBadScan();
+        lcdShowError("Setup error", "Contact admin");
     } else if (code == 403) {
         Serial.println("Terminal inactive — check TC_Terminals.IsActive");
-        lcdShowError("Terminal inactive");
         soundBadScan();
+        lcdShowError("Kiosk offline", "Contact admin");
     } else {
         Serial.printf("Unexpected HTTP %d\n", code);
         char buf[40];
         snprintf(buf, sizeof(buf), "Network error %d", code);
-        lcdShowError(buf);
         soundBadScan();
+        lcdShowError("Network error", buf);
     }
 }
 
@@ -563,6 +570,56 @@ void lcdResetPulse() {
 // =====================================================================
 // Audio (ES8311 codec + NS4150 PA + speaker via I2S)
 // =====================================================================
+// Status LED (2-pin anti-parallel bicolor: red one direction, green the other)
+// =====================================================================
+// Wiring: one LED leg through a 220-330 ohm resistor to LED_PIN_A,
+// the other leg directly to LED_PIN_B. No ground wire needed - the two
+// GPIOs alternate between HIGH and LOW to source/sink current through
+// the LED. If colors come out swapped (red on success, green on failure),
+// physically swap the two leads OR swap LED_PIN_A and LED_PIN_B below.
+//
+// Pin choice history:
+//   - First tried GPIO 9 + 11. Board hung at "Connecting WiFi" with LED
+//     installed. Cause: the 10K pull-up on GPIO 11 (R21, SD card socket)
+//     leaks ~3.3V through the LED into GPIO 9, which floats to ~1.3V at
+//     boot. GPIO 9 has alt functions tied to internal SPI peripherals and
+//     the indeterminate level confused the bootloader/WiFi PHY init.
+//   - Moved to GPIO 43 + 44 (U0TXD/U0RXD). With USBMode=hwcdc the chip
+//     uses USB-CDC for Serial, so the UART0 pins are completely unused.
+//     Neither pin has any onboard pull-up or peripheral connection. Both
+//     are broken out on J8:
+//       LED_PIN_A = GPIO 43 -> J8 pin 25
+//       LED_PIN_B = GPIO 44 -> J8 pin 27
+#define LED_PIN_A  43
+#define LED_PIN_B  44
+
+void ledInit() {
+    pinMode(LED_PIN_A, OUTPUT);
+    pinMode(LED_PIN_B, OUTPUT);
+    digitalWrite(LED_PIN_A, LOW);
+    digitalWrite(LED_PIN_B, LOW);
+    Serial.printf("LED: bicolor on GPIO %d (via resistor) + GPIO %d\n",
+                  LED_PIN_A, LED_PIN_B);
+}
+
+// Current flows LED_PIN_A -> LED -> LED_PIN_B (sunk to ground)
+void ledGreen() {
+    digitalWrite(LED_PIN_A, HIGH);
+    digitalWrite(LED_PIN_B, LOW);
+}
+
+// Current flows LED_PIN_B -> LED -> LED_PIN_A (reverse direction)
+void ledRed() {
+    digitalWrite(LED_PIN_A, LOW);
+    digitalWrite(LED_PIN_B, HIGH);
+}
+
+void ledOff() {
+    digitalWrite(LED_PIN_A, LOW);
+    digitalWrite(LED_PIN_B, LOW);
+}
+
+// =====================================================================
 #define I2S_MCK_PIN        12
 #define I2S_BCK_PIN        13
 #define I2S_LRCK_PIN       15
@@ -627,12 +684,15 @@ void playTone(uint32_t frequency, uint32_t durationMs) {
     const size_t chunkSamples = 256;
     int16_t      buf[chunkSamples * 2];   // stereo interleaved
 
-    // PRIME the DMA with a short silence buffer first. After 10+ seconds
-    // of camera/WiFi activity the I2S DMA can have stale state; pushing
-    // silence first ensures the next real samples actually reach the codec.
+    // PRIME the DMA with silence before the tone. After heavy camera/WiFi/
+    // HTTP/LCD work the I2S DMA can be in a stale state; pushing 4 silence
+    // buffers (~23 ms) ensures the codec has fresh samples flowing before
+    // the first real audio byte arrives. 2 buffers used to be enough but
+    // wasn't reliable post-scan.
     memset(buf, 0, sizeof(buf));
-    i2s.write((uint8_t *)buf, sizeof(buf));
-    i2s.write((uint8_t *)buf, sizeof(buf));
+    for (int i = 0; i < 4; i++) {
+        i2s.write((uint8_t *)buf, sizeof(buf));
+    }
 
     uint32_t     totalSamples = (AUDIO_SAMPLE_RATE * durationMs) / 1000;
     float        angleStep    = (2.0f * (float)M_PI * frequency) / AUDIO_SAMPLE_RATE;
@@ -654,24 +714,42 @@ void playTone(uint32_t frequency, uint32_t durationMs) {
         totalSamples -= chunk;
     }
 
-    // Flush trailing silence so the last tone sample isn't cut short
+    // Flush trailing silence so the last tone sample isn't cut short and
+    // so the NS4150 PA settles cleanly before the DMA goes idle. 3 buffers
+    // (~17 ms) instead of 1 - prevents the descending double-tone gap
+    // click we saw with the old 220 Hz / 180 Hz pattern.
     memset(buf, 0, sizeof(buf));
-    i2s.write((uint8_t *)buf, sizeof(buf));
+    for (int i = 0; i < 3; i++) {
+        i2s.write((uint8_t *)buf, sizeof(buf));
+    }
 
     Serial.printf("playTone: wrote %u bytes\n", (unsigned)totalWritten);
 }
 
 void soundGoodScan() {
+    // Green LED on for the duration of the result display; cleared by the
+    // idle-return path in loop().
+    ledGreen();
     // Rising two-note chime: A5 -> E6
     playTone(880, 80);
     playTone(1320, 120);
 }
 
 void soundBadScan() {
-    // Low double buzz
-    playTone(220, 180);
-    delay(40);
-    playTone(180, 220);
+    // Red LED on for the duration of the result display; cleared by the
+    // idle-return path in loop().
+    ledRed();
+    // Descending double-tone, both frequencies proven loud on the Waveshare
+    // speaker. History:
+    //   - Original: 220 -> 180 Hz (silent: below speaker's reproduction range)
+    //   - Attempt 2: 660 -> 440 Hz (very quiet: speaker's low end rolls off
+    //     sharply below ~700 Hz)
+    //   - This version: 1320 -> 880 Hz, mirroring the good-scan rising
+    //     pattern in reverse. Both notes are within the speaker's good
+    //     response range; the descending direction makes it instantly
+    //     distinguishable from the success chime.
+    playTone(1320, 100);
+    playTone(880, 200);
 }
 
 // Configure the AXP2101 PMIC. The Waveshare 3.5 board's LCD, touch,
@@ -824,20 +902,31 @@ void lcdShowIdle() {
     // Outline the active region so it is visible before the first frame.
     gfx.drawRect(0, 0, VIEWFINDER_W, VIEWFINDER_H, COL_GRAY);
 
-    // Text below the viewfinder
+    // Blue instruction bar below the viewfinder.
+    // "Scan ID QRcode" at text size 3 is 14 chars * 18 px = 252 px wide,
+    // so we left-pad by ~34 px to center it in the 320 px screen width.
+    const int barY = 250;
+    const int barH = 40;
+    gfx.fillRect(0, barY, LCD_HOR_RES, barH, COL_BLUE);
     gfx.setTextColor(COL_WHITE);
     gfx.setTextSize(3);
-    gfx.setCursor(20, 260);
-    gfx.println("POINT QR AT");
-    gfx.setCursor(20, 300);
-    gfx.println("CAMERA");
+    gfx.setCursor(34, barY + 8);
+    gfx.print("Scan ID QRcode");
 
-    gfx.setTextColor(COL_GRAY);
-    gfx.setTextSize(2);
-    gfx.setCursor(20, 360);
-    gfx.println("Hold card to bottom");
-    gfx.setCursor(20, 390);
-    gfx.println("camera lens");
+    // Filled downward arrow pointing to the camera (camera lives at the
+    // bottom of the case; after the 180-deg LCD rotation, "down" on the
+    // visible screen corresponds to the camera's physical position).
+    const int arrowCenterX     = LCD_HOR_RES / 2;
+    const int arrowShaftTop    = 310;
+    const int arrowShaftBottom = 380;
+    const int arrowShaftHalf   = 15;   // 30 px wide shaft
+    const int arrowHeadHalf    = 50;   // 100 px wide head
+    const int arrowHeadTipY    = 440;
+    gfx.fillRect(arrowCenterX - arrowShaftHalf, arrowShaftTop,
+                 arrowShaftHalf * 2, arrowShaftBottom - arrowShaftTop, COL_BLUE);
+    gfx.fillTriangle(arrowCenterX - arrowHeadHalf, arrowShaftBottom,
+                     arrowCenterX + arrowHeadHalf, arrowShaftBottom,
+                     arrowCenterX, arrowHeadTipY, COL_BLUE);
 
     lcdDrawWifiStatus();
 }
@@ -963,19 +1052,62 @@ void lcdShowSuccess(const char *name, const char *scanDisplay, const char *perso
     lcdResetMs = millis() + LCD_IDLE_TIMEOUT_MS;
 }
 
-void lcdShowError(const char *msg) {
+// Draw a yellow filled warning triangle with a black "!" inside.
+// Centered horizontally; vertical position controlled by caller.
+static void drawWarningIcon(int centerX, int topY, int height) {
+    // Triangle: apex on top, base 1.0x the height wide
+    int half = height / 2;
+    gfx.fillTriangle(centerX,        topY,
+                     centerX - half, topY + height,
+                     centerX + half, topY + height,
+                     COL_YELLOW);
+    // Black "!" inside: bar + dot. Sized as fractions of triangle height.
+    int barW = height / 10;             // ~12 px wide for height=120
+    int barH = (height * 45) / 100;     // ~54 px tall
+    int barTopY = topY + (height * 25) / 100;
+    gfx.fillRect(centerX - barW / 2, barTopY, barW, barH, COL_BLACK);
+    // Dot below the bar
+    int dotTopY = barTopY + barH + (height / 12);
+    gfx.fillRect(centerX - barW / 2, dotTopY, barW, barW, COL_BLACK);
+}
+
+void lcdShowError(const char *title, const char *subtitle) {
     if (!lcdReady) return;
     gfx.fillScreen(COL_BLACK);
+
+    // -------- Red header bar with friendly "TRY AGAIN" --------
     gfx.fillRect(0, 0, LCD_HOR_RES, 70, COL_RED);
     gfx.setTextColor(COL_WHITE);
-    gfx.setTextSize(3);
-    gfx.setCursor(20, 20);
-    gfx.println("ERROR");
+    gfx.setTextSize(4);
+    // "TRY AGAIN" = 9 chars * 24 px = 216 px wide; center at x=52
+    gfx.setCursor(52, 18);
+    gfx.println("TRY AGAIN");
 
+    // -------- Yellow warning triangle with black "!" --------
+    drawWarningIcon(LCD_HOR_RES / 2, 90, 130);
+
+    // -------- Title (white, size 2 so longer text fits in 320 px) --------
     gfx.setTextColor(COL_WHITE);
     gfx.setTextSize(2);
-    gfx.setCursor(20, 130);
-    gfx.println(msg ? msg : "Unknown");
+    if (title && *title) {
+        // Center horizontally based on character count (size 2 = 12 px/char)
+        int titleLen = (int)strlen(title);
+        int titleX = (LCD_HOR_RES - titleLen * 12) / 2;
+        if (titleX < 4) titleX = 4;
+        gfx.setCursor(titleX, 250);
+        gfx.println(title);
+    }
+
+    // -------- Subtitle (gray, size 2) --------
+    if (subtitle && *subtitle) {
+        gfx.setTextColor(COL_GRAY);
+        gfx.setTextSize(2);
+        int subLen = (int)strlen(subtitle);
+        int subX = (LCD_HOR_RES - subLen * 12) / 2;
+        if (subX < 4) subX = 4;
+        gfx.setCursor(subX, 295);
+        gfx.println(subtitle);
+    }
 
     lcdResetMs = millis() + LCD_IDLE_TIMEOUT_MS;
 }
@@ -1005,6 +1137,9 @@ void setup() {
     lcdInit();
     lcdShowBoot("Booting...");
 
+    // Status LED (independent of any peripheral, just two GPIOs)
+    ledInit();
+
     // Audio (ES8311 codec + I2S). After TCA9554 is up so PA enable works.
     audioReady = audioInit();
     if (audioReady) {
@@ -1027,14 +1162,14 @@ void setup() {
         if (!initQuirc()) {
             Serial.println("Quirc init failed — disabling scan");
             cameraReady = false;
-            lcdShowError("Quirc init failed");
+            lcdShowError("QR init failed", "Power-cycle kiosk");
         } else {
             Serial.println("Ready. Present a badge to the camera.");
             lcdShowIdle();
         }
     } else {
         Serial.println("Camera failed — fix pin mapping and reflash.");
-        lcdShowError("Camera init failed");
+        lcdShowError("Camera init failed", "Check connection");
     }
 }
 
@@ -1049,6 +1184,7 @@ void loop() {
     // Auto-return-to-idle after a successful or failed result has been shown
     if (lcdResetMs > 0 && now >= lcdResetMs) {
         lcdResetMs = 0;
+        ledOff();
         lcdShowIdle();
     }
 
