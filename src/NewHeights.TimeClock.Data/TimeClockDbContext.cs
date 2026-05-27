@@ -62,12 +62,16 @@ public class TimeClockDbContext : DbContext
     // Added in migration 054 (in-portal help system, 2026-04-27).
     public DbSet<TcHelpArticle> TcHelpArticles { get; set; } = null!;
 
+    // Added in migration 063 (Class Attendance Phase A).
+    public DbSet<TcClassSection> TcClassSections { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
 
         ConfigureExistingTables(modelBuilder);
         ConfigureTimeclockTables(modelBuilder);
+        ConfigureClassAttendanceTables(modelBuilder);
     }
 
     private static void ConfigureExistingTables(ModelBuilder modelBuilder)
@@ -825,6 +829,50 @@ public class TimeClockDbContext : DbContext
             entity.HasIndex(e => e.TeacherReplacedEmployeeId)
                 .HasFilter("[TeacherReplacedEmployeeId] IS NOT NULL");
             entity.HasIndex(e => new { e.SubTimecardId, e.PeriodNumber }).IsUnique();
+        });
+    }
+
+    private static void ConfigureClassAttendanceTables(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<TcClassSection>(entity =>
+        {
+            entity.ToTable("TC_ClassSection");
+            entity.HasKey(e => e.ClassSectionId);
+
+            entity.Property(e => e.CourseNumber).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.CourseName).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.SectionNumber).HasMaxLength(20);
+            entity.Property(e => e.Expression).HasMaxLength(20);
+            entity.Property(e => e.Room).HasMaxLength(50);
+            entity.Property(e => e.TermName).HasMaxLength(20);
+            entity.Property(e => e.SchoolYear).HasMaxLength(9);
+
+            entity.HasIndex(e => e.PsSectionId).IsUnique();
+            entity.HasIndex(e => new { e.CampusId, e.TermName, e.SchoolYear });
+            entity.HasIndex(e => e.TeacherDcid)
+                  .HasFilter("[TeacherDcid] IS NOT NULL AND [IsActive] = 1");
+            entity.HasIndex(e => new { e.DistrictId, e.IsActive });
+
+            entity.HasOne(e => e.District)
+                  .WithMany()
+                  .HasForeignKey(e => e.DistrictId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Campus)
+                  .WithMany()
+                  .HasForeignKey(e => e.CampusId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.MasterSchedule)
+                  .WithMany()
+                  .HasForeignKey(e => e.MasterScheduleId)
+                  .OnDelete(DeleteBehavior.SetNull);
+
+            entity.HasOne(e => e.Teacher)
+                  .WithMany()
+                  .HasForeignKey(e => e.TeacherDcid)
+                  .OnDelete(DeleteBehavior.NoAction)
+                  .IsRequired(false);
         });
     }
 }
