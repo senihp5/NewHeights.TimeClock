@@ -65,6 +65,12 @@ public class TimeClockDbContext : DbContext
     // Added in migration 063 (Class Attendance Phase A).
     public DbSet<TcClassSection> TcClassSections { get; set; } = null!;
 
+    // Added in migration 064 (Class Attendance Phase A).
+    public DbSet<TcSectionEnrollment> TcSectionEnrollments { get; set; } = null!;
+
+    // Added in migration 065 (Class Attendance Phase A).
+    public DbSet<TcClassAttendance> TcClassAttendances { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -871,6 +877,119 @@ public class TimeClockDbContext : DbContext
             entity.HasOne(e => e.Teacher)
                   .WithMany()
                   .HasForeignKey(e => e.TeacherDcid)
+                  .OnDelete(DeleteBehavior.NoAction)
+                  .IsRequired(false);
+        });
+
+        modelBuilder.Entity<TcSectionEnrollment>(entity =>
+        {
+            entity.ToTable("TC_SectionEnrollment");
+            entity.HasKey(e => e.EnrollmentId);
+
+            entity.Property(e => e.StudentNumber).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.StudentLastName).HasMaxLength(100);
+            entity.Property(e => e.StudentFirstName).HasMaxLength(100);
+
+            entity.HasIndex(e => new { e.ClassSectionId, e.StudentDcid })
+                  .IsUnique()
+                  .HasFilter("[DateLeft] IS NULL AND [IsActive] = 1")
+                  .HasDatabaseName("UQ_TC_SectionEnrollment_ActiveSpan");
+
+            entity.HasIndex(e => e.StudentDcid)
+                  .HasFilter("[IsActive] = 1");
+
+            entity.HasIndex(e => e.StudentNumber)
+                  .HasFilter("[IsActive] = 1");
+
+            entity.HasIndex(e => e.ClassSectionId)
+                  .HasFilter("[DateLeft] IS NULL AND [IsActive] = 1")
+                  .HasDatabaseName("IX_TC_SectionEnrollment_ClassSection_Active");
+
+            entity.HasIndex(e => new { e.CampusId, e.IsActive });
+            entity.HasIndex(e => new { e.DistrictId, e.IsActive });
+
+            entity.HasOne(e => e.ClassSection)
+                  .WithMany()
+                  .HasForeignKey(e => e.ClassSectionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.District)
+                  .WithMany()
+                  .HasForeignKey(e => e.DistrictId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Campus)
+                  .WithMany()
+                  .HasForeignKey(e => e.CampusId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Student)
+                  .WithMany()
+                  .HasForeignKey(e => e.StudentDcid)
+                  .OnDelete(DeleteBehavior.NoAction)
+                  .IsRequired(false);
+        });
+
+        modelBuilder.Entity<TcClassAttendance>(entity =>
+        {
+            entity.ToTable("TC_ClassAttendance");
+            entity.HasKey(e => e.AttendanceId);
+
+            entity.Property(e => e.StudentNumber).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Comment).HasMaxLength(500);
+            entity.Property(e => e.MarkedBy).HasMaxLength(256).IsRequired();
+
+            entity.Property(e => e.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(20)
+                  .IsRequired()
+                  .HasDefaultValue(NewHeights.TimeClock.Shared.Enums.ClassAttendanceStatus.Present);
+
+            entity.Property(e => e.Source)
+                  .HasConversion<string>()
+                  .HasMaxLength(20)
+                  .IsRequired();
+
+            entity.Property(e => e.PsAttendanceCode)
+                  .HasComputedColumnSql(
+                      "CASE [Status] WHEN 'Tardy' THEN 'T' WHEN 'Absent' THEN 'UA' WHEN 'Excused' THEN 'UA' ELSE '' END",
+                      stored: true);
+
+            entity.HasIndex(e => new { e.ClassSectionId, e.StudentDcid, e.AttendanceDate })
+                  .IsUnique()
+                  .HasDatabaseName("UQ_TC_ClassAttendance_SectionStudentDate");
+
+            entity.HasIndex(e => new { e.ClassSectionId, e.AttendanceDate });
+            entity.HasIndex(e => new { e.StudentDcid, e.AttendanceDate });
+            entity.HasIndex(e => new { e.CampusId, e.AttendanceDate });
+            entity.HasIndex(e => new { e.DistrictId, e.AttendanceDate });
+
+            entity.HasIndex(e => new { e.AttendanceDate, e.CampusId })
+                  .HasFilter("[Status] <> 'Present'")
+                  .HasDatabaseName("IX_TC_ClassAttendance_NonPresent_Date");
+
+            entity.HasIndex(e => new { e.AttendanceDate, e.PsAttendanceCode })
+                  .HasFilter("[Status] IN ('Tardy', 'Absent', 'Excused')")
+                  .HasDatabaseName("IX_TC_ClassAttendance_PsCode_Date");
+
+            entity.HasOne(e => e.ClassSection)
+                  .WithMany()
+                  .HasForeignKey(e => e.ClassSectionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.District)
+                  .WithMany()
+                  .HasForeignKey(e => e.DistrictId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Campus)
+                  .WithMany()
+                  .HasForeignKey(e => e.CampusId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Student)
+                  .WithMany()
+                  .HasForeignKey(e => e.StudentDcid)
                   .OnDelete(DeleteBehavior.NoAction)
                   .IsRequired(false);
         });
