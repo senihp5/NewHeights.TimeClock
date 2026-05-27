@@ -10,7 +10,13 @@ public class Campus
     public required string CampusName { get; set; }
     public int? PowerSchoolId { get; set; }
     public string? SchoolNameValue { get; set; }
-    
+
+    // Multi-district scaffolding (migration 062). Defaults to NHAHS for any
+    // in-memory construction; actual values come from DB hydration where
+    // the column is NOT NULL with FK to TC_District.
+    public int DistrictId { get; set; } = 1;
+    public District? District { get; set; }
+
     // New geofence columns to be added
     public decimal? Latitude { get; set; }
     public decimal? Longitude { get; set; }

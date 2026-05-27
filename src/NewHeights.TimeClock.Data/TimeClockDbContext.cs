@@ -14,6 +14,7 @@ public class TimeClockDbContext : DbContext
     public DbSet<Student> Students { get; set; } = null!;
     public DbSet<Photo> Photos { get; set; } = null!;
     public DbSet<Campus> Campuses { get; set; } = null!;
+    public DbSet<District> Districts { get; set; } = null!;
 
     public DbSet<TcEmployee> TcEmployees { get; set; } = null!;
     public DbSet<TcPayRule> TcPayRules { get; set; } = null!;
@@ -30,6 +31,7 @@ public class TimeClockDbContext : DbContext
     public DbSet<TcAuditLog> TcAuditLogs { get; set; } = null!;
     public DbSet<TcSystemConfig> TcSystemConfigs { get; set; } = null!;
     public DbSet<AttendanceTransaction> AttendanceTransactions { get; set; } = null!;
+    public DbSet<TcTerminal> TcTerminals { get; set; } = null!;
     public DbSet<GeofenceTestPoint> GeofenceTestPoints { get; set; } = null!;
 
     // Added in migration 002
@@ -104,6 +106,18 @@ public class TimeClockDbContext : DbContext
             entity.HasKey(e => new { e.SubjectDcid, e.SubjectType });
         });
 
+        modelBuilder.Entity<District>(entity =>
+        {
+            entity.ToTable("TC_District");
+            entity.HasKey(e => e.DistrictId);
+            entity.Property(e => e.DistrictCode).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.DistrictName).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.TimeZone).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.CmsConnectionStringName).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.PowerSchoolBaseUrl).HasMaxLength(200);
+            entity.Property(e => e.Notes).HasMaxLength(500);
+        });
+
         modelBuilder.Entity<Campus>(entity =>
         {
             entity.ToTable("Attendance_Campuses");
@@ -114,6 +128,9 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.Latitude).HasColumnType("decimal(9,6)");
             entity.Property(e => e.Longitude).HasColumnType("decimal(9,6)");
             entity.Property(e => e.CampusWifiSSID).HasMaxLength(100);
+            entity.HasOne(e => e.District)
+                  .WithMany(d => d.Campuses)
+                  .HasForeignKey(e => e.DistrictId);
         });
 
         modelBuilder.Entity<GeofenceTestPoint>(entity =>
@@ -622,6 +639,23 @@ public class TimeClockDbContext : DbContext
             entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId);
             entity.HasIndex(e => new { e.IdNumber, e.ScanDateTime });
             entity.HasIndex(e => new { e.CampusId, e.ScanDateTime });
+        });
+
+        modelBuilder.Entity<TcTerminal>(entity =>
+        {
+            entity.ToTable("TC_Terminals");
+            entity.HasKey(e => e.TerminalId);
+            entity.Property(e => e.TerminalCode).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.LocationDescription).HasMaxLength(100);
+            entity.Property(e => e.DeviceType).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.TerminalPurpose).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.DeviceSecretHash).HasMaxLength(200);
+            entity.Property(e => e.Notes).HasMaxLength(500);
+            entity.Property(e => e.LastSeenFirmware).HasMaxLength(30);
+            entity.HasOne(e => e.Campus).WithMany().HasForeignKey(e => e.CampusId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(e => e.TerminalCode).IsUnique();
+            entity.HasIndex(e => new { e.CampusId, e.IsActive });
+            entity.HasIndex(e => new { e.TerminalPurpose, e.IsActive });
         });
 
 
