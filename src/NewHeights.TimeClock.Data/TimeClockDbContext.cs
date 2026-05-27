@@ -71,6 +71,9 @@ public class TimeClockDbContext : DbContext
     // Added in migration 065 (Class Attendance Phase A).
     public DbSet<TcClassAttendance> TcClassAttendances { get; set; } = null!;
 
+    // Added in migration 066 (Class Attendance Phase A).
+    public DbSet<TcClassObservation> TcClassObservations { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -971,6 +974,59 @@ public class TimeClockDbContext : DbContext
             entity.HasIndex(e => new { e.AttendanceDate, e.PsAttendanceCode })
                   .HasFilter("[Status] IN ('Tardy', 'Absent', 'Excused')")
                   .HasDatabaseName("IX_TC_ClassAttendance_PsCode_Date");
+
+            entity.HasOne(e => e.ClassSection)
+                  .WithMany()
+                  .HasForeignKey(e => e.ClassSectionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.District)
+                  .WithMany()
+                  .HasForeignKey(e => e.DistrictId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Campus)
+                  .WithMany()
+                  .HasForeignKey(e => e.CampusId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Student)
+                  .WithMany()
+                  .HasForeignKey(e => e.StudentDcid)
+                  .OnDelete(DeleteBehavior.NoAction)
+                  .IsRequired(false);
+        });
+
+        modelBuilder.Entity<TcClassObservation>(entity =>
+        {
+            entity.ToTable("TC_ClassObservation");
+            entity.HasKey(e => e.ObservationId);
+
+            entity.Property(e => e.StudentNumber).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.StudentLastName).HasMaxLength(100);
+            entity.Property(e => e.StudentFirstName).HasMaxLength(100);
+            entity.Property(e => e.AuthorEmail).HasMaxLength(256).IsRequired();
+            entity.Property(e => e.ObservationText).IsRequired();
+
+            entity.Property(e => e.Category)
+                  .HasConversion<string>()
+                  .HasMaxLength(20)
+                  .IsRequired();
+
+            entity.HasIndex(e => new { e.StudentDcid, e.ObservationDate })
+                  .HasFilter("[IsActive] = 1");
+
+            entity.HasIndex(e => new { e.ClassSectionId, e.ObservationDate })
+                  .HasFilter("[IsActive] = 1");
+
+            entity.HasIndex(e => new { e.CampusId, e.ObservationDate })
+                  .HasFilter("[IsActive] = 1");
+
+            entity.HasIndex(e => new { e.DistrictId, e.ObservationDate })
+                  .HasFilter("[IsActive] = 1");
+
+            entity.HasIndex(e => new { e.Category, e.ObservationDate })
+                  .HasFilter("[IsActive] = 1");
 
             entity.HasOne(e => e.ClassSection)
                   .WithMany()
