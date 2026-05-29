@@ -2,8 +2,8 @@ using Microsoft.EntityFrameworkCore;
 using NewHeights.TimeClock.Data;
 using NewHeights.TimeClock.Data.Entities;
 using NewHeights.TimeClock.Shared.Enums;
-using PdfSharpCore.Drawing;
-using PdfSharpCore.Pdf;
+using PdfSharp.Drawing;
+using PdfSharp.Pdf;
 
 namespace NewHeights.TimeClock.Web.Services;
 
@@ -15,7 +15,7 @@ public class PayrollPdfService : IPayrollPdfService
     private readonly ISubstituteTimesheetService _subTimesheetService;
     private readonly ILogger<PayrollPdfService> _logger;
 
-    // PdfSharpCore uses points (1/72") for layout. Letter portrait = 612 x 792.
+    // PDFsharp uses points (1/72") for layout. Letter portrait = 612 x 792.
     private const double PageMargin = 40;
     private const double LineHeight = 14;
 
@@ -83,7 +83,7 @@ public class PayrollPdfService : IPayrollPdfService
         AddRosterSummaryPage(doc, periodStart, periodEnd, hourlyEmployeeIds, subEmployeeIds);
 
         using var ms = new MemoryStream();
-        doc.Save(ms, false);
+        doc.Save(ms);
         return ms.ToArray();
     }
 
@@ -95,9 +95,9 @@ public class PayrollPdfService : IPayrollPdfService
     {
         var page = doc.AddPage();
         using var gfx = XGraphics.FromPdfPage(page);
-        var titleFont = new XFont("Arial", 22, XFontStyle.Bold);
-        var subFont = new XFont("Arial", 12, XFontStyle.Regular);
-        var smallFont = new XFont("Arial", 10, XFontStyle.Regular);
+        var titleFont = new XFont("Arial", 22, XFontStyleEx.Bold);
+        var subFont = new XFont("Arial", 12, XFontStyleEx.Regular);
+        var smallFont = new XFont("Arial", 10, XFontStyleEx.Regular);
 
         var navy = XBrushes.Navy;
         gfx.DrawString("New Heights — Payroll Export", titleFont, navy, new XRect(PageMargin, 80, page.Width - 2 * PageMargin, 30), XStringFormats.TopLeft);
@@ -133,10 +133,10 @@ public class PayrollPdfService : IPayrollPdfService
 
         var page = doc.AddPage();
         using var gfx = XGraphics.FromPdfPage(page);
-        var headerFont = new XFont("Arial", 14, XFontStyle.Bold);
-        var labelFont = new XFont("Arial", 9, XFontStyle.Bold);
-        var bodyFont = new XFont("Arial", 9, XFontStyle.Regular);
-        var smallFont = new XFont("Arial", 8, XFontStyle.Regular);
+        var headerFont = new XFont("Arial", 14, XFontStyleEx.Bold);
+        var labelFont = new XFont("Arial", 9, XFontStyleEx.Bold);
+        var bodyFont = new XFont("Arial", 9, XFontStyleEx.Regular);
+        var smallFont = new XFont("Arial", 8, XFontStyleEx.Regular);
 
         var width = page.Width - 2 * PageMargin;
         var x = PageMargin;
@@ -256,10 +256,10 @@ public class PayrollPdfService : IPayrollPdfService
 
         var page = doc.AddPage();
         using var gfx = XGraphics.FromPdfPage(page);
-        var headerFont = new XFont("Arial", 14, XFontStyle.Bold);
-        var labelFont = new XFont("Arial", 9, XFontStyle.Bold);
-        var bodyFont = new XFont("Arial", 9, XFontStyle.Regular);
-        var smallFont = new XFont("Arial", 8, XFontStyle.Regular);
+        var headerFont = new XFont("Arial", 14, XFontStyleEx.Bold);
+        var labelFont = new XFont("Arial", 9, XFontStyleEx.Bold);
+        var bodyFont = new XFont("Arial", 9, XFontStyleEx.Regular);
+        var smallFont = new XFont("Arial", 8, XFontStyleEx.Regular);
 
         var width = page.Width - 2 * PageMargin;
         var x = PageMargin;
@@ -323,8 +323,8 @@ public class PayrollPdfService : IPayrollPdfService
     {
         var page = doc.AddPage();
         using var gfx = XGraphics.FromPdfPage(page);
-        var headerFont = new XFont("Arial", 14, XFontStyle.Bold);
-        var bodyFont = new XFont("Arial", 9, XFontStyle.Regular);
+        var headerFont = new XFont("Arial", 14, XFontStyleEx.Bold);
+        var bodyFont = new XFont("Arial", 9, XFontStyleEx.Regular);
 
         var width = page.Width - 2 * PageMargin;
         var x = PageMargin;

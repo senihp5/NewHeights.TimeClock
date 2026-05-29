@@ -298,6 +298,12 @@ builder.Services.AddScoped<IAuditService, AuditService>();
 // Master schedule lookup — powers the substitute period picker
 builder.Services.AddScoped<IMasterScheduleLookupService, MasterScheduleLookupService>();
 
+// Class roster service (Class Attendance Phase B) — cross-DB to CMS for sections + enrollments
+builder.Services.AddScoped<IClassRosterService, ClassRosterService>();
+
+// Class attendance service (Class Attendance Phase C) — cell-level writes + sheet workflow
+builder.Services.AddScoped<IClassAttendanceService, ClassAttendanceService>();
+
 // Substitute timecard service — sub-facing CRUD for period entries (Phase 2)
 builder.Services.AddScoped<ISubstituteTimesheetService, SubstituteTimesheetService>();
 
@@ -316,8 +322,10 @@ builder.Services.AddScoped<ISubOutreachService, SubOutreachService>();
 // In-portal help system — backs /help (migration 054, 2026-04-27).
 builder.Services.AddScoped<IHelpArticleService, HelpArticleService>();
 
-// Combined-PDF payroll export (migration 060, 2026-04-27). Uses PdfSharpCore.
+// Combined-PDF payroll export (migration 060, 2026-04-27). Uses PDFsharp 6.
 builder.Services.AddScoped<IPayrollPdfService, PayrollPdfService>();
+// PDFsharp 6 has no default font resolver on Linux; serve bundled Liberation Sans (Defender for Cloud, 2026-05-29).
+PdfSharp.Fonts.GlobalFontSettings.FontResolver = new NewHeights.TimeClock.Web.Services.TimeClockFontResolver();
 
 // Stale outreach token expiry job — runs every 4 hours (Phase 7a)
 // Phase D2: sub outreach cascade timing (token validity + scan cadence).
@@ -397,6 +405,47 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// Canonical host redirect: if a request lands on the auto-generated
+// Azure App Service host (*.azurewebsites.net), 308-redirect to the
+// custom domain clock.newheightsed.com with the same path + query.
+// Skipped in Development so local dotnet run / Visual Studio still works.
+// Skipped for the ACS webhook + ESP32 /api/v1/punch endpoints because
+// those callers can't follow a 30x cleanly.
+if (!app.Environment.IsDevelopment())
+{
+    app.Use(async (context, next) =>
+    {
+        var host = context.Request.Host.Host;
+        if (host.EndsWith(".azurewebsites.net", StringComparison.OrdinalIgnoreCase))
+        {
+            var path = context.Request.Path.Value ?? "/";
+            // Don't 308 the webhook or punch endpoints - external callers
+            // (ACS Event Grid, ESP32 firmware) won't replay POST bodies on
+            // redirect, so they need to keep working on the Azure host.
+            var preservePaths = new[]
+            {
+                "/api/webhooks/",
+                "/api/v1/punch"
+            };
+            var shouldPreserve = preservePaths.Any(p =>
+                path.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+
+            if (!shouldPreserve)
+            {
+                var query = context.Request.QueryString.HasValue
+                    ? context.Request.QueryString.Value
+                    : string.Empty;
+                var target = $"https://clock.newheightsed.com{path}{query}";
+                context.Response.StatusCode = StatusCodes.Status308PermanentRedirect;
+                context.Response.Headers.Location = target;
+                return;
+            }
+        }
+        await next();
+    });
+}
+
 app.UseStaticFiles();
 
 app.UseRouting();
