@@ -35,10 +35,10 @@
     }
     @if (!string.IsNullOrEmpty(errorMessage))
     {
-        <div class="alert alert-danger">@errorMessage</div>
+        <div class="alert alert-error">@errorMessage</div>
     }
 
-    <div class="filter-bar">
+    <div class="kt-filter-bar">
         <label>
             Campus:
             <select @bind="filterCampusId" @bind:after="ApplyFiltersAsync">
@@ -69,15 +69,15 @@
 
     @if (isLoading)
     {
-        <div class="loading">Loading terminals…</div>
+        <div class="kt-loading">Loading terminals…</div>
     }
     else if (terminals.Count == 0)
     {
-        <div class="empty-state">No terminals match the current filters.</div>
+        <div class="kt-empty-state">No terminals match the current filters.</div>
     }
     else
     {
-        <table class="admin-table">
+        <table class="kt-table">
             <thead>
                 <tr>
                     <th>ID</th>
@@ -95,12 +95,12 @@
             <tbody>
                 @foreach (var t in terminals)
                 {
-                    <tr class="@(t.IsActive ? "" : "row-inactive")">
+                    <tr class="@(t.IsActive ? "" : "kt-row-inactive")">
                         <td>@t.TerminalId</td>
                         <td><code>@t.TerminalCode</code></td>
                         <td>@(t.Campus?.CampusName ?? $"#{t.CampusId}")</td>
                         <td>@t.LocationDescription</td>
-                        <td><span class="device-badge @DeviceBadgeCss(t.DeviceType)">@FormatDeviceType(t.DeviceType)</span></td>
+                        <td><span class="kt-device-badge @DeviceBadgeCssShort(t.DeviceType)">@FormatDeviceType(t.DeviceType)</span></td>
                         <td>@FormatPurpose(t.TerminalPurpose)</td>
                         <td>@(t.PhotoCaptureEnabled ? "✓ On" : "—")</td>
                         <td>@(t.IsActive ? "✓" : "✗")</td>
@@ -113,16 +113,16 @@
                             }
                             else
                             {
-                                <span class="muted">Never</span>
+                                <span class="kt-muted">Never</span>
                             }
                         </td>
-                        <td class="actions-cell">
+                        <td class="kt-actions-cell">
                             <button class="btn-secondary" @onclick="() => OpenEditModal(t)">Edit</button>
                             @if (t.DeviceType == AppConstants.Kiosk.DeviceType.TabletKiosk)
                             {
                                 <button class="btn-secondary" @onclick="() => ShowSetupUrl(t)">Setup URL</button>
                             }
-                            <button class="btn-danger" @onclick="() => ToggleActiveAsync(t)">
+                            <button class="kt-btn-danger" @onclick="() => ToggleActiveAsync(t)">
                                 @(t.IsActive ? "Deactivate" : "Reactivate")
                             </button>
                         </td>
@@ -136,13 +136,13 @@
 @if (showEditModal)
 {
     <div class="modal-overlay" @onclick="CloseEditModal">
-        <div class="modal-panel" @onclick:stopPropagation="true">
+        <div class="modal-content" @onclick:stopPropagation="true">
             <div class="modal-header">
-                <h3>@(editingExistingId.HasValue ? $"Edit terminal #{editingExistingId}" : "New terminal")</h3>
+                <h2>@(editingExistingId.HasValue ? $"Edit terminal #{editingExistingId}" : "New terminal")</h2>
                 <button class="modal-close" @onclick="CloseEditModal">✕</button>
             </div>
             <div class="modal-body">
-                <div class="form-row">
+                <div class="form-group">
                     <label>Device type:</label>
                     <select @bind="editDeviceType" disabled="@editingExistingId.HasValue">
                         <option value="@AppConstants.Kiosk.DeviceType.TabletKiosk">Tablet kiosk (Android + Intune)</option>
@@ -150,17 +150,17 @@
                     </select>
                     @if (editingExistingId.HasValue)
                     {
-                        <p class="help-text">Device type is fixed after creation to preserve TerminalId references.</p>
+                        <p class="kt-help-text">Device type is fixed after creation to preserve TerminalId references.</p>
                     }
                 </div>
-                <div class="form-row">
+                <div class="form-group">
                     <label>Terminal purpose:</label>
                     <select @bind="editPurpose">
                         <option value="@AppConstants.Kiosk.Purpose.CampusCheckin">Campus check-in (reception desk)</option>
                         <option value="@AppConstants.Kiosk.Purpose.Classroom">Classroom kiosk</option>
                     </select>
                 </div>
-                <div class="form-row">
+                <div class="form-group">
                     <label>Campus:</label>
                     <select @bind="editCampusId">
                         <option value="0">— Choose campus —</option>
@@ -170,41 +170,41 @@
                         }
                     </select>
                 </div>
-                <div class="form-row">
+                <div class="form-group">
                     <label>Location description:</label>
                     <input type="text" @bind="editLocationDescription" maxlength="100"
                            placeholder="Reception desk / Room 12 / etc." />
                 </div>
-                <div class="form-row">
+                <div class="form-group">
                     <label>Terminal code:</label>
-                    <div class="input-row">
+                    <div class="kt-input-row">
                         <input type="text" @bind="editTerminalCode" maxlength="30"
                                placeholder="TAB-MCCART-RECEPTION-a3f9d2" />
                         <button class="btn-secondary" @onclick="GenerateTerminalCode" type="button">
                             Auto-generate
                         </button>
                     </div>
-                    <p class="help-text">
+                    <p class="kt-help-text">
                         Auto-generated codes use pattern <code>TAB-{CAMPUS}-{PURPOSE}-{random}</code>.
                         The random suffix is the bearer credential — do not share the URL beyond the kiosk itself.
                     </p>
                 </div>
-                <div class="form-row">
+                <div class="form-group">
                     <label>
                         <input type="checkbox" @bind="editPhotoCaptureEnabled" />
                         Enable front-camera photo capture at scan time
                     </label>
-                    <p class="help-text">
+                    <p class="kt-help-text">
                         Off by default. Only affects TABLET_KIOSK — ESP32 handles photo capture in firmware.
                     </p>
                 </div>
-                <div class="form-row">
+                <div class="form-group">
                     <label>Notes (optional):</label>
                     <textarea @bind="editNotes" maxlength="500" rows="2"></textarea>
                 </div>
                 @if (!string.IsNullOrEmpty(modalError))
                 {
-                    <div class="alert alert-danger">@modalError</div>
+                    <div class="alert alert-error">@modalError</div>
                 }
             </div>
             <div class="modal-footer">
@@ -220,15 +220,15 @@
 @if (showSetupUrlModal && setupUrlTerminal != null)
 {
     <div class="modal-overlay" @onclick="CloseSetupUrlModal">
-        <div class="modal-panel" @onclick:stopPropagation="true">
+        <div class="modal-content" @onclick:stopPropagation="true">
             <div class="modal-header">
-                <h3>Setup URL — @setupUrlTerminal.TerminalCode</h3>
+                <h2>Setup URL — @setupUrlTerminal.TerminalCode</h2>
                 <button class="modal-close" @onclick="CloseSetupUrlModal">✕</button>
             </div>
             <div class="modal-body">
                 <p>Use this URL as the tablet's kiosk homepage in Intune Managed Edge configuration:</p>
-                <pre class="setup-url">@BuildSetupUrl(setupUrlTerminal.TerminalCode)</pre>
-                <p class="help-text">
+                <pre class="kt-setup-url">@BuildSetupUrl(setupUrlTerminal.TerminalCode)</pre>
+                <p class="kt-help-text">
                     Copy this into the Edge app-configuration policy's <code>homepages</code> setting in Intune.
                     Keep it secret — the URL is the bearer credential. Deactivate this terminal from this page
                     to disable it centrally if the tablet is compromised.
@@ -240,6 +240,60 @@
         </div>
     </div>
 }
+
+<style>
+    /* 2026-07-08: page-scoped styles for classes that aren't part of the
+       shared admin CSS bundle. Modal / form-group / btn-* / alert-* / admin-*
+       come from wwwroot/css/app.css. Only classes unique to this page live
+       here so the page doesn't depend on future shared-CSS additions. */
+    .kt-filter-bar { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
+        margin: 1rem 0; padding: 0.75rem 1rem; background: #f9fafb;
+        border: 1px solid #e5e7eb; border-radius: 6px; }
+    .kt-filter-bar label { font-size: 0.85rem; color: #374151; font-weight: 600;
+        display: inline-flex; align-items: center; gap: 0.4rem; }
+    .kt-filter-bar select { padding: 0.35rem 0.5rem; border: 1px solid #d1d5db;
+        border-radius: 4px; font-size: 0.85rem; background: white; }
+
+    .kt-help-text { color: #6b7280; font-size: 0.8rem; margin: 0.25rem 0 0;
+        line-height: 1.35; }
+    .kt-input-row { display: flex; gap: 0.5rem; align-items: center; }
+    .kt-input-row input { flex: 1; }
+
+    .kt-device-badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
+        font-size: 0.75rem; font-weight: 600; }
+    .kt-device-badge.esp { background: #fef3c7; color: #92400e; }
+    .kt-device-badge.tab { background: #dbeafe; color: #1e40af; }
+
+    .kt-actions-cell { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+    .kt-row-inactive { opacity: 0.55; background: #f9fafb; }
+    .kt-muted { color: #9ca3af; font-style: italic; font-size: 0.85rem; }
+
+    .kt-setup-url { background: #f3f4f6; border: 1px solid #d1d5db;
+        border-radius: 6px; padding: 0.75rem 1rem; font-family: monospace;
+        font-size: 0.85rem; word-break: break-all; white-space: pre-wrap;
+        color: #1f2937; margin: 0.5rem 0; }
+
+    .kt-loading, .kt-empty-state { padding: 2rem; text-align: center;
+        color: #6b7280; font-style: italic; }
+
+    /* Simple admin table styling — matches the visual weight of other
+       admin pages that use table + tbody without a dedicated shared class. */
+    .kt-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .kt-table th { text-align: left; padding: 0.5rem 0.75rem;
+        background: #f9fafb; border-bottom: 2px solid #e5e7eb;
+        color: #374151; font-weight: 600; font-size: 0.78rem;
+        text-transform: uppercase; letter-spacing: 0.02em; }
+    .kt-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #f3f4f6;
+        vertical-align: middle; }
+    .kt-table tr:hover td { background: #fafbfc; }
+    .kt-table code { background: #eff6ff; color: #1e40af; padding: 1px 6px;
+        border-radius: 3px; font-size: 0.8rem; }
+
+    .kt-btn-danger { background: #b91c1c; color: white; border: none;
+        padding: 0.35rem 0.75rem; border-radius: 4px; font-size: 0.8rem;
+        cursor: pointer; }
+    .kt-btn-danger:hover { background: #991b1b; }
+</style>
 
 @code {
     // ── Data ──────────────────────────────────────────────────────────────
@@ -558,10 +612,10 @@
         _              => dt
     };
 
-    private static string DeviceBadgeCss(string dt) => dt switch
+    private static string DeviceBadgeCssShort(string dt) => dt switch
     {
-        "ESP32_KIOSK"  => "device-esp",
-        "TABLET_KIOSK" => "device-tab",
+        "ESP32_KIOSK"  => "esp",
+        "TABLET_KIOSK" => "tab",
         _              => ""
     };
 
