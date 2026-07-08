@@ -1,0 +1,574 @@
+@page "/admin/kiosks"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "RequireAdmin")]
+@using System.Security.Cryptography
+@using System.Text
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Audit
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IAuditService Audit
+@inject AuthenticationStateProvider AuthStateProvider
+@inject ILogger<KioskTerminals> Logger
+
+<PageTitle>Kiosk Terminals</PageTitle>
+
+<div class="admin-page">
+    <div class="admin-header">
+        <div>
+            <h1>Kiosk Terminals</h1>
+            <p class="admin-subtitle">
+                Register and manage physical scanning devices — ESP32 hardware kiosks and Android tablet kiosks.
+                Each terminal's <code>TerminalCode</code> is embedded in its URL and stamped on every punch.
+            </p>
+        </div>
+        <button class="btn-primary" @onclick="OpenAddModal">+ Add Terminal</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(successMessage))
+    {
+        <div class="alert alert-success">@successMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger">@errorMessage</div>
+    }
+
+    <div class="filter-bar">
+        <label>
+            Campus:
+            <select @bind="filterCampusId" @bind:after="ApplyFiltersAsync">
+                <option value="0">All campuses</option>
+                @foreach (var c in campuses)
+                {
+                    <option value="@c.CampusId">@c.CampusName</option>
+                }
+            </select>
+        </label>
+        <label>
+            Device type:
+            <select @bind="filterDeviceType" @bind:after="ApplyFiltersAsync">
+                <option value="">All types</option>
+                <option value="@AppConstants.Kiosk.DeviceType.Esp32Kiosk">ESP32 kiosk</option>
+                <option value="@AppConstants.Kiosk.DeviceType.TabletKiosk">Tablet kiosk</option>
+            </select>
+        </label>
+        <label>
+            Status:
+            <select @bind="filterActive" @bind:after="ApplyFiltersAsync">
+                <option value="active">Active only</option>
+                <option value="inactive">Inactive only</option>
+                <option value="all">All</option>
+            </select>
+        </label>
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="loading">Loading terminals…</div>
+    }
+    else if (terminals.Count == 0)
+    {
+        <div class="empty-state">No terminals match the current filters.</div>
+    }
+    else
+    {
+        <table class="admin-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Terminal Code</th>
+                    <th>Campus</th>
+                    <th>Location</th>
+                    <th>Device</th>
+                    <th>Purpose</th>
+                    <th>Photo</th>
+                    <th>Active</th>
+                    <th>Last Seen</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var t in terminals)
+                {
+                    <tr class="@(t.IsActive ? "" : "row-inactive")">
+                        <td>@t.TerminalId</td>
+                        <td><code>@t.TerminalCode</code></td>
+                        <td>@(t.Campus?.CampusName ?? $"#{t.CampusId}")</td>
+                        <td>@t.LocationDescription</td>
+                        <td><span class="device-badge @DeviceBadgeCss(t.DeviceType)">@FormatDeviceType(t.DeviceType)</span></td>
+                        <td>@FormatPurpose(t.TerminalPurpose)</td>
+                        <td>@(t.PhotoCaptureEnabled ? "✓ On" : "—")</td>
+                        <td>@(t.IsActive ? "✓" : "✗")</td>
+                        <td>
+                            @if (t.LastSeenAt.HasValue)
+                            {
+                                <span title="@t.LastSeenAt.Value.ToString("yyyy-MM-dd HH:mm:ss")">
+                                    @t.LastSeenAt.Value.ToString("MMM d, h:mm tt")
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="muted">Never</span>
+                            }
+                        </td>
+                        <td class="actions-cell">
+                            <button class="btn-secondary" @onclick="() => OpenEditModal(t)">Edit</button>
+                            @if (t.DeviceType == AppConstants.Kiosk.DeviceType.TabletKiosk)
+                            {
+                                <button class="btn-secondary" @onclick="() => ShowSetupUrl(t)">Setup URL</button>
+                            }
+                            <button class="btn-danger" @onclick="() => ToggleActiveAsync(t)">
+                                @(t.IsActive ? "Deactivate" : "Reactivate")
+                            </button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@if (showEditModal)
+{
+    <div class="modal-overlay" @onclick="CloseEditModal">
+        <div class="modal-panel" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>@(editingExistingId.HasValue ? $"Edit terminal #{editingExistingId}" : "New terminal")</h3>
+                <button class="modal-close" @onclick="CloseEditModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <label>Device type:</label>
+                    <select @bind="editDeviceType" disabled="@editingExistingId.HasValue">
+                        <option value="@AppConstants.Kiosk.DeviceType.TabletKiosk">Tablet kiosk (Android + Intune)</option>
+                        <option value="@AppConstants.Kiosk.DeviceType.Esp32Kiosk">ESP32 hardware kiosk</option>
+                    </select>
+                    @if (editingExistingId.HasValue)
+                    {
+                        <p class="help-text">Device type is fixed after creation to preserve TerminalId references.</p>
+                    }
+                </div>
+                <div class="form-row">
+                    <label>Terminal purpose:</label>
+                    <select @bind="editPurpose">
+                        <option value="@AppConstants.Kiosk.Purpose.CampusCheckin">Campus check-in (reception desk)</option>
+                        <option value="@AppConstants.Kiosk.Purpose.Classroom">Classroom kiosk</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Campus:</label>
+                    <select @bind="editCampusId">
+                        <option value="0">— Choose campus —</option>
+                        @foreach (var c in campuses)
+                        {
+                            <option value="@c.CampusId">@c.CampusName</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Location description:</label>
+                    <input type="text" @bind="editLocationDescription" maxlength="100"
+                           placeholder="Reception desk / Room 12 / etc." />
+                </div>
+                <div class="form-row">
+                    <label>Terminal code:</label>
+                    <div class="input-row">
+                        <input type="text" @bind="editTerminalCode" maxlength="30"
+                               placeholder="TAB-MCCART-RECEPTION-a3f9d2" />
+                        <button class="btn-secondary" @onclick="GenerateTerminalCode" type="button">
+                            Auto-generate
+                        </button>
+                    </div>
+                    <p class="help-text">
+                        Auto-generated codes use pattern <code>TAB-{CAMPUS}-{PURPOSE}-{random}</code>.
+                        The random suffix is the bearer credential — do not share the URL beyond the kiosk itself.
+                    </p>
+                </div>
+                <div class="form-row">
+                    <label>
+                        <input type="checkbox" @bind="editPhotoCaptureEnabled" />
+                        Enable front-camera photo capture at scan time
+                    </label>
+                    <p class="help-text">
+                        Off by default. Only affects TABLET_KIOSK — ESP32 handles photo capture in firmware.
+                    </p>
+                </div>
+                <div class="form-row">
+                    <label>Notes (optional):</label>
+                    <textarea @bind="editNotes" maxlength="500" rows="2"></textarea>
+                </div>
+                @if (!string.IsNullOrEmpty(modalError))
+                {
+                    <div class="alert alert-danger">@modalError</div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" @onclick="CloseEditModal">Cancel</button>
+                <button class="btn-primary" @onclick="SaveTerminalAsync" disabled="@isSaving">
+                    @(isSaving ? "Saving…" : "Save")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (showSetupUrlModal && setupUrlTerminal != null)
+{
+    <div class="modal-overlay" @onclick="CloseSetupUrlModal">
+        <div class="modal-panel" @onclick:stopPropagation="true">
+            <div class="modal-header">
+                <h3>Setup URL — @setupUrlTerminal.TerminalCode</h3>
+                <button class="modal-close" @onclick="CloseSetupUrlModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Use this URL as the tablet's kiosk homepage in Intune Managed Edge configuration:</p>
+                <pre class="setup-url">@BuildSetupUrl(setupUrlTerminal.TerminalCode)</pre>
+                <p class="help-text">
+                    Copy this into the Edge app-configuration policy's <code>homepages</code> setting in Intune.
+                    Keep it secret — the URL is the bearer credential. Deactivate this terminal from this page
+                    to disable it centrally if the tablet is compromised.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" @onclick="CloseSetupUrlModal">Done</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ── Data ──────────────────────────────────────────────────────────────
+    private List<TcTerminal> terminals = new();
+    private List<Campus> campuses = new();
+    private bool isLoading = true;
+    private string successMessage = "";
+    private string errorMessage = "";
+
+    // ── Filters ───────────────────────────────────────────────────────────
+    private int filterCampusId = 0;
+    private string filterDeviceType = "";
+    private string filterActive = "active";
+
+    // ── Edit modal state ──────────────────────────────────────────────────
+    private bool showEditModal = false;
+    private long? editingExistingId = null;
+    private string editTerminalCode = "";
+    private int editCampusId = 0;
+    private string editLocationDescription = "";
+    private string editDeviceType = AppConstants.Kiosk.DeviceType.TabletKiosk;
+    private string editPurpose = AppConstants.Kiosk.Purpose.CampusCheckin;
+    private bool editPhotoCaptureEnabled = false;
+    private string editNotes = "";
+    private string modalError = "";
+    private bool isSaving = false;
+
+    // ── Setup URL modal ───────────────────────────────────────────────────
+    private bool showSetupUrlModal = false;
+    private TcTerminal? setupUrlTerminal = null;
+
+    // ── Current user (for audit) ──────────────────────────────────────────
+    private string currentUserEmail = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        currentUserEmail = authState.User.FindFirst("preferred_username")?.Value
+                        ?? authState.User.Identity?.Name ?? "unknown";
+
+        using var context = await DbFactory.CreateDbContextAsync();
+        campuses = await context.Campuses.AsNoTracking().OrderBy(c => c.CampusName).ToListAsync();
+
+        await LoadTerminalsAsync();
+    }
+
+    private async Task LoadTerminalsAsync()
+    {
+        isLoading = true;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var query = context.TcTerminals.AsNoTracking().Include(t => t.Campus).AsQueryable();
+
+            if (filterCampusId > 0)
+                query = query.Where(t => t.CampusId == filterCampusId);
+            if (!string.IsNullOrEmpty(filterDeviceType))
+                query = query.Where(t => t.DeviceType == filterDeviceType);
+            query = filterActive switch
+            {
+                "active"   => query.Where(t => t.IsActive),
+                "inactive" => query.Where(t => !t.IsActive),
+                _          => query
+            };
+
+            terminals = await query.OrderByDescending(t => t.IsActive).ThenBy(t => t.TerminalId).ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load kiosk terminals");
+            errorMessage = "Could not load terminals. Refresh and try again.";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task ApplyFiltersAsync() => await LoadTerminalsAsync();
+
+    // ── Add / Edit modal handlers ─────────────────────────────────────────
+    private void OpenAddModal()
+    {
+        editingExistingId = null;
+        editTerminalCode = "";
+        editCampusId = 0;
+        editLocationDescription = "";
+        editDeviceType = AppConstants.Kiosk.DeviceType.TabletKiosk;
+        editPurpose = AppConstants.Kiosk.Purpose.CampusCheckin;
+        editPhotoCaptureEnabled = false;
+        editNotes = "";
+        modalError = "";
+        showEditModal = true;
+    }
+
+    private void OpenEditModal(TcTerminal t)
+    {
+        editingExistingId = t.TerminalId;
+        editTerminalCode = t.TerminalCode;
+        editCampusId = t.CampusId;
+        editLocationDescription = t.LocationDescription;
+        editDeviceType = t.DeviceType;
+        editPurpose = t.TerminalPurpose;
+        editPhotoCaptureEnabled = t.PhotoCaptureEnabled;
+        editNotes = t.Notes ?? "";
+        modalError = "";
+        showEditModal = true;
+    }
+
+    private void CloseEditModal()
+    {
+        showEditModal = false;
+    }
+
+    private async Task SaveTerminalAsync()
+    {
+        modalError = "";
+        if (string.IsNullOrWhiteSpace(editTerminalCode))
+        {
+            modalError = "Terminal code is required.";
+            return;
+        }
+        if (editCampusId <= 0)
+        {
+            modalError = "Choose a campus.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(editLocationDescription))
+        {
+            modalError = "Location description is required.";
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+
+            var codeTrimmed = editTerminalCode.Trim();
+            var codeUpper = codeTrimmed.ToUpper();
+
+            // Unique-code check (case-insensitive) — Skip self when editing.
+            var codeConflict = await context.TcTerminals
+                .Where(t => t.TerminalCode.ToUpper() == codeUpper
+                         && (!editingExistingId.HasValue || t.TerminalId != editingExistingId.Value))
+                .AnyAsync();
+            if (codeConflict)
+            {
+                modalError = "Another terminal already uses that code.";
+                isSaving = false;
+                return;
+            }
+
+            TcTerminal terminal;
+            bool isNew = !editingExistingId.HasValue;
+            if (isNew)
+            {
+                terminal = new TcTerminal
+                {
+                    TerminalCode = codeTrimmed,
+                    CampusId = editCampusId,
+                    LocationId = 1,
+                    LocationDescription = editLocationDescription.Trim(),
+                    DeviceType = editDeviceType,
+                    TerminalPurpose = editPurpose,
+                    PhotoCaptureEnabled = editPhotoCaptureEnabled,
+                    IsActive = true,
+                    Notes = string.IsNullOrWhiteSpace(editNotes) ? null : editNotes.Trim(),
+                    CreatedDate = DateTime.Now
+                };
+                context.TcTerminals.Add(terminal);
+            }
+            else
+            {
+                terminal = await context.TcTerminals.FirstAsync(t => t.TerminalId == editingExistingId.Value);
+                terminal.TerminalCode = codeTrimmed;
+                terminal.CampusId = editCampusId;
+                terminal.LocationDescription = editLocationDescription.Trim();
+                terminal.TerminalPurpose = editPurpose;
+                terminal.PhotoCaptureEnabled = editPhotoCaptureEnabled;
+                terminal.Notes = string.IsNullOrWhiteSpace(editNotes) ? null : editNotes.Trim();
+                terminal.ModifiedDate = DateTime.Now;
+                // DeviceType intentionally NOT modified on edit — TerminalId
+                // is FK'd to punches, so switching device types on an
+                // existing terminal would rewrite history.
+            }
+
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: isNew ? "TERMINAL_CREATED" : "TERMINAL_UPDATED",
+                entityType: "TERMINAL",
+                entityId: terminal.TerminalId.ToString(),
+                newValues: new
+                {
+                    terminal.TerminalCode,
+                    terminal.CampusId,
+                    terminal.LocationDescription,
+                    terminal.DeviceType,
+                    terminal.TerminalPurpose,
+                    terminal.PhotoCaptureEnabled,
+                    terminal.IsActive
+                },
+                deltaSummary: isNew
+                    ? $"Terminal {terminal.TerminalCode} ({terminal.DeviceType}) created for campus {terminal.CampusId}"
+                    : $"Terminal {terminal.TerminalId} updated",
+                source: AuditSource.AdminUi);
+
+            successMessage = isNew
+                ? $"Created terminal {terminal.TerminalCode} (ID #{terminal.TerminalId})."
+                : $"Updated terminal #{terminal.TerminalId}.";
+            errorMessage = "";
+            showEditModal = false;
+
+            await LoadTerminalsAsync();
+
+            // For a newly-created tablet, immediately show the setup URL so
+            // the admin can copy it to Intune without re-clicking.
+            if (isNew && terminal.DeviceType == AppConstants.Kiosk.DeviceType.TabletKiosk)
+            {
+                setupUrlTerminal = terminal;
+                showSetupUrlModal = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SaveTerminalAsync failed");
+            modalError = "Save failed. Try again or contact IT.";
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    // ── Deactivate / Reactivate ───────────────────────────────────────────
+    private async Task ToggleActiveAsync(TcTerminal t)
+    {
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var tracked = await context.TcTerminals.FirstAsync(x => x.TerminalId == t.TerminalId);
+            var oldActive = tracked.IsActive;
+            tracked.IsActive = !oldActive;
+            tracked.ModifiedDate = DateTime.Now;
+            await context.SaveChangesAsync();
+
+            await Audit.LogActionAsync(
+                actionCode: tracked.IsActive ? "TERMINAL_REACTIVATED" : "TERMINAL_DEACTIVATED",
+                entityType: "TERMINAL",
+                entityId: tracked.TerminalId.ToString(),
+                oldValues: new { IsActive = oldActive },
+                newValues: new { IsActive = tracked.IsActive },
+                deltaSummary: $"Terminal {tracked.TerminalCode} {(tracked.IsActive ? "reactivated" : "deactivated")} by {currentUserEmail}",
+                source: AuditSource.AdminUi);
+
+            successMessage = $"Terminal {tracked.TerminalCode} {(tracked.IsActive ? "reactivated" : "deactivated")}.";
+            errorMessage = "";
+            await LoadTerminalsAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ToggleActiveAsync failed for terminal {Id}", t.TerminalId);
+            errorMessage = "Toggle failed. Try again.";
+        }
+    }
+
+    // ── Setup-URL modal ───────────────────────────────────────────────────
+    private void ShowSetupUrl(TcTerminal t)
+    {
+        setupUrlTerminal = t;
+        showSetupUrlModal = true;
+    }
+
+    private void CloseSetupUrlModal()
+    {
+        showSetupUrlModal = false;
+        setupUrlTerminal = null;
+    }
+
+    private string BuildSetupUrl(string terminalCode)
+    {
+        return $"https://clock.newheightsed.com/kiosk/tablet/{terminalCode}";
+    }
+
+    // ── Terminal-code generator ───────────────────────────────────────────
+    private void GenerateTerminalCode()
+    {
+        // Pattern: TAB-{CAMPUS}-{PURPOSE}-{6char random} for tablet,
+        // ESP-{CAMPUS}-{PURPOSE}-{6char random} for ESP32.
+        var prefix = editDeviceType == AppConstants.Kiosk.DeviceType.TabletKiosk ? "TAB" : "ESP";
+        var campusCode = campuses.FirstOrDefault(c => c.CampusId == editCampusId)?.CampusCode
+                       ?? "UNK";
+        var purposeShort = editPurpose == AppConstants.Kiosk.Purpose.Classroom ? "CLS" : "RCP";
+        var random = RandomSuffix(6);
+        editTerminalCode = $"{prefix}-{campusCode}-{purposeShort}-{random}";
+    }
+
+    private static string RandomSuffix(int length)
+    {
+        // Lowercase alphanumeric, cryptographically random.
+        const string alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+        var buffer = new byte[length];
+        RandomNumberGenerator.Fill(buffer);
+        var sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++)
+            sb.Append(alphabet[buffer[i] % alphabet.Length]);
+        return sb.ToString();
+    }
+
+    // ── Display helpers ───────────────────────────────────────────────────
+    private static string FormatDeviceType(string dt) => dt switch
+    {
+        "ESP32_KIOSK"  => "ESP32",
+        "TABLET_KIOSK" => "Tablet",
+        _              => dt
+    };
+
+    private static string DeviceBadgeCss(string dt) => dt switch
+    {
+        "ESP32_KIOSK"  => "device-esp",
+        "TABLET_KIOSK" => "device-tab",
+        _              => ""
+    };
+
+    private static string FormatPurpose(string p) => p switch
+    {
+        "CAMPUS_CHECKIN" => "Check-in",
+        "CLASSROOM"      => "Classroom",
+        _                => p
+    };
+}

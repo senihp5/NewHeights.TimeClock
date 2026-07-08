@@ -92,4 +92,34 @@ public static class AppConstants
         public const string Mascot     = "Phoenix";
         public const string Website    = "https://newheightseducation.com";
     }
+
+    // 2026-07-08: Kiosk device type and terminal purpose constants —
+    // canonical string values written to TC_Terminals.DeviceType and
+    // TC_Terminals.TerminalPurpose. Use these instead of scattered
+    // string literals in Razor / service code.
+    public static class Kiosk
+    {
+        public static class DeviceType
+        {
+            // Waveshare ESP32-S3 + OV2640 hardware kiosk running our
+            // custom firmware. Posts scans to /api/v1/punch.
+            public const string Esp32Kiosk = "ESP32_KIOSK";
+
+            // Android tablet running the Blazor /kiosk/tablet/{code} route.
+            // Camera + QR handled browser-side; scans go through the same
+            // in-process Blazor scan dispatcher as ClockInOut.razor.
+            public const string TabletKiosk = "TABLET_KIOSK";
+        }
+
+        public static class Purpose
+        {
+            // Reception-desk campus safety check-in — the default.
+            public const string CampusCheckin = "CAMPUS_CHECKIN";
+
+            // Teacher-owned classroom kiosk. Reserved for future
+            // classroom-specific dispatch behavior; scan flow is
+            // identical to CAMPUS_CHECKIN today.
+            public const string Classroom = "CLASSROOM";
+        }
+    }
 }

@@ -1,3 +1,4 @@
+using NewHeights.TimeClock.Data.Entities;
 using NewHeights.TimeClock.Shared.DTOs;
 
 namespace NewHeights.TimeClock.Web.Services;
@@ -17,5 +18,24 @@ public interface IKioskScanService
     Task<KioskScanResult> ProcessRawScanAsync(
         string rawScan,
         int campusId,
-        string scanMethod);
+        string scanMethod,
+        int terminalId = 0,
+        int locationId = 1);
+
+    /// <summary>
+    /// 2026-07-08: Look up an active TC_Terminals row by its TerminalCode.
+    /// Used by the tablet kiosk page's route-parameter resolution
+    /// (/kiosk/tablet/{terminalCode}) to validate the URL segment on every
+    /// render — a null return means the terminal doesn't exist, is
+    /// deactivated (IsActive=0), or its DeviceType doesn't match the
+    /// caller's expected type (see optional <paramref name="expectedDeviceType"/>).
+    /// Case-insensitive match. Read-only, no side effects.
+    /// </summary>
+    /// <param name="terminalCode">The unique code embedded in the URL.</param>
+    /// <param name="expectedDeviceType">
+    /// Optional device-type filter (e.g. AppConstants.Kiosk.DeviceType.TabletKiosk).
+    /// When set, a terminal whose DeviceType doesn't match returns null even
+    /// if it exists and is active.
+    /// </param>
+    Task<TcTerminal?> ResolveActiveTerminalAsync(string terminalCode, string? expectedDeviceType = null);
 }

@@ -40,37 +40,19 @@
     <div class="scan-area">
         @if (showResult)
         {
-            <div class="result-display @resultClass">
-                @if (!string.IsNullOrEmpty(photoBase64))
-                {
-                    <img src="data:image/jpeg;base64,@photoBase64" alt="Photo" class="employee-photo" />
-                }
-                else
-                {
-                    <div class="employee-photo placeholder">
-                        @GetInitial()
-                    </div>
-                }
-                <div class="result-message">
-                    <h3>@resultMessage</h3>
-                    @if (!string.IsNullOrEmpty(personName))
-                    {
-                        <p class="employee-name">@personName</p>
-                    }
-                    @if (!string.IsNullOrEmpty(scanTypeDisplay))
-                    {
-                        <span class="punch-type-badge @scanTypeBadgeClass">@scanTypeDisplay</span>
-                    }
-                    @if (!string.IsNullOrEmpty(personTypeDisplay))
-                    {
-                        <p class="person-type">@personTypeDisplay</p>
-                    }
-                    @if (totalHoursToday.HasValue && totalHoursToday.Value > 0)
-                    {
-                        <p class="hours-today">Today: @totalHoursToday.Value.ToString("F2") hours</p>
-                    }
-                </div>
-            </div>
+            @* 2026-07-08: markup extracted to <KioskScanCard> so the tablet
+               kiosk route (Phase 2) can reuse the same photo + greeting +
+               badge layout without duplication. Zero rendering change. *@
+            <KioskScanCard
+                PhotoBase64="@photoBase64"
+                Initial="@GetInitial()"
+                ResultMessage="@resultMessage"
+                ResultClass="@resultClass"
+                PersonName="@personName"
+                ScanTypeDisplay="@scanTypeDisplay"
+                ScanTypeBadgeClass="@scanTypeBadgeClass"
+                PersonTypeDisplay="@personTypeDisplay"
+                TotalHoursToday="@totalHoursToday" />
         }
         else
         {
@@ -313,6 +295,29 @@
                 await JS.InvokeVoidAsync("kioskInterop.installScannerFocusGuard", scanInputRef, _dotNetRef);
             }
             catch (Exception ex) { Logger.LogWarning(ex, "Could not install scanner focus guard"); }
+
+            // Wire up the Blazor circuit reconnection handler defined in
+            // js/kiosk.js. Without this, if the SignalR circuit dies (App
+            // Service warm-instance recycle, idle timeout, network blip)
+            // the kiosk page looks intact but @onclick / @bind handlers
+            // never reach the server - scans stop landing in the DB until
+            // someone manually restarts the browser. The JS handler keeps
+            // retrying Blazor.reconnect() and finally location.reload()s
+            // so the kiosk self-heals.
+            try
+            {
+                await JS.InvokeVoidAsync("blazorReconnection.init", _dotNetRef);
+            }
+            catch (Exception ex) { Logger.LogWarning(ex, "Could not init Blazor reconnection handler"); }
+
+            // Page Visibility API hookup - restart the QR scanner when the
+            // tab regains focus (some browsers pause scanner timers when
+            // the tab is backgrounded).
+            try
+            {
+                await JS.InvokeVoidAsync("kioskPageVisibility.init", _dotNetRef);
+            }
+            catch (Exception ex) { Logger.LogWarning(ex, "Could not init page visibility handler"); }
 
             try
             {

@@ -1,0 +1,76 @@
+@*
+    2026-07-08 (build pack Phase 1): Shared kiosk-result card. Extracted from
+    ClockInOut.razor so the forthcoming tablet route (/kiosk/tablet/{code})
+    can render the identical greeting + photo + person-info layout without
+    duplicating markup.
+
+    Renders the "we just scanned someone" state — photo (or initial-letter
+    placeholder), greeting, person name, punch-type badge, person-type
+    label, and today's hours. Does NOT render the pre-scan prompt (that
+    varies between kiosk types — full-screen prompt on the reception kiosk,
+    live camera viewfinder on the tablet).
+
+    Caller controls when this appears via its own `@if (showResult)` gate
+    around this component invocation.
+*@
+
+<div class="result-display @ResultClass">
+    @if (!string.IsNullOrEmpty(PhotoBase64))
+    {
+        <img src="data:image/jpeg;base64,@PhotoBase64" alt="Photo" class="employee-photo" />
+    }
+    else
+    {
+        <div class="employee-photo placeholder">
+            @Initial
+        </div>
+    }
+    <div class="result-message">
+        <h3>@ResultMessage</h3>
+        @if (!string.IsNullOrEmpty(PersonName))
+        {
+            <p class="employee-name">@PersonName</p>
+        }
+        @if (!string.IsNullOrEmpty(ScanTypeDisplay))
+        {
+            <span class="punch-type-badge @ScanTypeBadgeClass">@ScanTypeDisplay</span>
+        }
+        @if (!string.IsNullOrEmpty(PersonTypeDisplay))
+        {
+            <p class="person-type">@PersonTypeDisplay</p>
+        }
+        @if (TotalHoursToday.HasValue && TotalHoursToday.Value > 0)
+        {
+            <p class="hours-today">Today: @TotalHoursToday.Value.ToString("F2") hours</p>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>Base64-encoded JPEG. Empty / null → initial-letter placeholder is shown instead.</summary>
+    [Parameter] public string? PhotoBase64 { get; set; }
+
+    /// <summary>Fallback initial letter (e.g. "J" for Jasmine) when no photo is available.</summary>
+    [Parameter] public string Initial { get; set; } = "?";
+
+    /// <summary>Primary headline — e.g. "Good morning, Jasmine!" or "Goodbye, Karina!"</summary>
+    [Parameter] public string ResultMessage { get; set; } = "";
+
+    /// <summary>CSS class applied to the outer .result-display div (e.g. "success", "error", "warning").</summary>
+    [Parameter] public string ResultClass { get; set; } = "";
+
+    /// <summary>Full name displayed under the greeting.</summary>
+    [Parameter] public string? PersonName { get; set; }
+
+    /// <summary>Human-readable punch type (e.g. "Check-In", "Check-Out", "Lunch In").</summary>
+    [Parameter] public string? ScanTypeDisplay { get; set; }
+
+    /// <summary>CSS class for the punch-type pill (colored differently for IN vs OUT).</summary>
+    [Parameter] public string? ScanTypeBadgeClass { get; set; }
+
+    /// <summary>Category label (e.g. "Staff", "Hourly Employee", "Student", "Substitute").</summary>
+    [Parameter] public string? PersonTypeDisplay { get; set; }
+
+    /// <summary>Hours accumulated today. Renders "Today: X.XX hours" only when > 0.</summary>
+    [Parameter] public decimal? TotalHoursToday { get; set; }
+}

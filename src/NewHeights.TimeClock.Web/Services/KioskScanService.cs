@@ -29,7 +29,8 @@ public class KioskScanService : IKioskScanService
         _hubContext = hubContext;
     }
 
-    public async Task<KioskScanResult> ProcessRawScanAsync(string rawScan, int campusId, string scanMethod)
+    public async Task<KioskScanResult> ProcessRawScanAsync(string rawScan, int campusId, string scanMethod,
+        int terminalId = 0, int locationId = 1)
     {
         if (string.IsNullOrWhiteSpace(rawScan))
         {
@@ -37,8 +38,8 @@ public class KioskScanService : IKioskScanService
         }
 
         var (firstName, lastName, idNumber) = ParseScanData(rawScan);
-        _logger.LogInformation("KioskScan - Raw: {Raw} Parsed: {First} {Last} ID:{Id} Source:{Source}",
-            rawScan, firstName, lastName, idNumber, scanMethod);
+        _logger.LogInformation("KioskScan - Raw: {Raw} Parsed: {First} {Last} ID:{Id} Source:{Source} Terminal:{Terminal} Location:{Location}",
+            rawScan, firstName, lastName, idNumber, scanMethod, terminalId, locationId);
 
         if (string.IsNullOrWhiteSpace(idNumber))
         {
@@ -80,8 +81,8 @@ public class KioskScanService : IKioskScanService
                      || e.EmployeeType == EmployeeType.Substitute));
 
             KioskScanResult result = hourlyEmployee != null
-                ? await ProcessHourlyAsync(staff, hourlyEmployee, campusId, scanMethod, context)
-                : await ProcessStaffAsync(staff, campusId, scanMethod, context);
+                ? await ProcessHourlyAsync(staff, hourlyEmployee, campusId, scanMethod, terminalId, locationId, context)
+                : await ProcessStaffAsync(staff, campusId, scanMethod, terminalId, locationId, context);
 
             if (result.Success) await NotifyDashboardAsync(campusId);
             return result;
@@ -98,7 +99,7 @@ public class KioskScanService : IKioskScanService
 
         if (student != null)
         {
-            var result = await ProcessStudentAsync(student, campusId, scanMethod, context);
+            var result = await ProcessStudentAsync(student, campusId, scanMethod, terminalId, locationId, context);
             if (result.Success) await NotifyDashboardAsync(campusId);
             return result;
         }
@@ -152,7 +153,7 @@ public class KioskScanService : IKioskScanService
     // =================================================================
 
     private async Task<KioskScanResult> ProcessHourlyAsync(Staff staff, TcEmployee employee,
-        int campusId, string scanMethod, TimeClockDbContext context)
+        int campusId, string scanMethod, int terminalId, int locationId, TimeClockDbContext context)
     {
         try
         {
@@ -174,7 +175,7 @@ public class KioskScanService : IKioskScanService
 
             var scanType = DetermineScanTypeFromPunch(punchResult.PunchType);
             await RecordAttendanceTransaction(context, "STAFF", staff.IdNumber ?? employee.IdNumber,
-                staff.FirstName ?? "", staff.LastName ?? "", effectiveCampusId, scanType, scanMethod, null);
+                staff.FirstName ?? "", staff.LastName ?? "", effectiveCampusId, locationId, terminalId, scanType, scanMethod, null);
 
             var photo = punchResult.EmployeePhotoBase64;
             if (string.IsNullOrEmpty(photo))
@@ -214,7 +215,7 @@ public class KioskScanService : IKioskScanService
     // =================================================================
 
     private async Task<KioskScanResult> ProcessStaffAsync(Staff staff, int campusId,
-        string scanMethod, TimeClockDbContext context)
+        string scanMethod, int terminalId, int locationId, TimeClockDbContext context)
     {
         try
         {
@@ -222,7 +223,7 @@ public class KioskScanService : IKioskScanService
             var scanType = await DetermineAttendanceScanType(context, staff.IdNumber ?? "", effectiveCampusId);
 
             await RecordAttendanceTransaction(context, "STAFF", staff.IdNumber ?? "",
-                staff.FirstName ?? "", staff.LastName ?? "", effectiveCampusId, scanType, scanMethod, null);
+                staff.FirstName ?? "", staff.LastName ?? "", effectiveCampusId, locationId, terminalId, scanType, scanMethod, null);
 
             if (scanType == "CAMPUS_IN")
                 await CheckAndMarkReturn(context, staff.IdNumber ?? "", effectiveCampusId);
@@ -260,7 +261,7 @@ public class KioskScanService : IKioskScanService
     // =================================================================
 
     private async Task<KioskScanResult> ProcessStudentAsync(Student student, int campusId,
-        string scanMethod, TimeClockDbContext context)
+        string scanMethod, int terminalId, int locationId, TimeClockDbContext context)
     {
         try
         {
@@ -268,7 +269,7 @@ public class KioskScanService : IKioskScanService
             var scanType = await DetermineAttendanceScanType(context, student.StudentNumber ?? "", effectiveCampusId);
 
             await RecordAttendanceTransaction(context, "STUDENT", student.StudentNumber ?? "",
-                student.FirstName ?? "", student.LastName ?? "", effectiveCampusId, scanType, scanMethod, null);
+                student.FirstName ?? "", student.LastName ?? "", effectiveCampusId, locationId, terminalId, scanType, scanMethod, null);
 
             var photo = await context.Photos.AsNoTracking()
                 .FirstOrDefaultAsync(p => p.SubjectDcid == student.Dcid && p.SubjectType == 0);
@@ -320,8 +321,8 @@ public class KioskScanService : IKioskScanService
     }
 
     private async Task RecordAttendanceTransaction(TimeClockDbContext context, string transactionType,
-        string idNumber, string firstName, string lastName, int campusId, string scanType,
-        string scanMethod, string? punchSubType)
+        string idNumber, string firstName, string lastName, int campusId, int locationId, int terminalId,
+        string scanType, string scanMethod, string? punchSubType)
     {
         var transaction = new AttendanceTransaction
         {
@@ -330,11 +331,11 @@ public class KioskScanService : IKioskScanService
             FirstName = firstName,
             LastName = lastName,
             CampusId = campusId,
-            LocationId = 1,
+            LocationId = locationId,
             ScanDateTime = DateTime.Now,
             ScanType = scanType,
             ScanMethod = scanMethod,
-            TerminalId = 0,
+            TerminalId = terminalId,
             DataSource = "LOCAL",
             ValidationStatus = "VALID",
             PunchSubType = punchSubType,
@@ -390,9 +391,9 @@ public class KioskScanService : IKioskScanService
 
             var campusCode = campus?.CampusCode?.ToUpper() switch
             {
-                "STOP6" or "STOPSIX" => AppConstants.Campus.StopSixCode,
-                "MCCART"              => AppConstants.Campus.McCartCode,
-                _                     => AppConstants.Campus.DistrictCode
+                "STOPSIX" => AppConstants.Campus.StopSixCode,
+                "MCCART"  => AppConstants.Campus.McCartCode,
+                _         => AppConstants.Campus.DistrictCode
             };
 
             await _hubContext.Clients.Group($"Dashboard_{campusCode}").SendAsync("ScanCompleted");
@@ -446,4 +447,36 @@ public class KioskScanService : IKioskScanService
         Message = message,
         ErrorCode = code
     };
+
+    // 2026-07-08: Terminal resolution for the tablet kiosk route. The URL
+    // /kiosk/tablet/{terminalCode} carries the bearer credential; every
+    // render calls this to validate. Null return → the page renders the
+    // "This terminal is offline" panel with no scan UI.
+    public async Task<TcTerminal?> ResolveActiveTerminalAsync(
+        string terminalCode, string? expectedDeviceType = null)
+    {
+        if (string.IsNullOrWhiteSpace(terminalCode)) return null;
+
+        var codeLower = terminalCode.Trim().ToLower();
+        using var context = await _dbFactory.CreateDbContextAsync();
+
+        var terminal = await context.TcTerminals
+            .AsNoTracking()
+            .Include(t => t.Campus)
+            .Where(t => t.IsActive
+                     && t.TerminalCode.ToLower() == codeLower)
+            .FirstOrDefaultAsync();
+
+        if (terminal == null) return null;
+
+        if (!string.IsNullOrWhiteSpace(expectedDeviceType)
+            && !string.Equals(terminal.DeviceType, expectedDeviceType, StringComparison.OrdinalIgnoreCase))
+        {
+            // Right code, wrong hardware type. Treat as unknown to avoid
+            // accidentally exposing an ESP32 to a tablet URL or vice versa.
+            return null;
+        }
+
+        return terminal;
+    }
 }
