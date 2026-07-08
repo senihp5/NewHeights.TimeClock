@@ -27,7 +27,7 @@
         <p class="current-date">@currentTime.ToString("dddd, MMMM d, yyyy")</p>
     </header>
 
-    <div class="scan-area">
+    <div class="scan-area tk-landscape">
         @if (!terminalResolved)
         {
             @* Terminal wasn't resolvable — invalid code, deactivated,
@@ -40,34 +40,48 @@
                 <p class="tk-offline-code">Terminal code: <code>@TerminalCode</code></p>
             </div>
         }
-        else if (showResult)
-        {
-            <KioskScanCard
-                PhotoBase64="@photoBase64"
-                Initial="@GetInitial()"
-                ResultMessage="@resultMessage"
-                ResultClass="@(isSuccess ? "success" : "error")"
-                PersonName="@personName"
-                ScanTypeDisplay="@scanTypeDisplay"
-                ScanTypeBadgeClass="@scanTypeBadgeClass"
-                PersonTypeDisplay="@personTypeDisplay"
-                TotalHoursToday="@totalHoursToday" />
-        }
         else
         {
-            @* Live camera viewfinder + scan prompt. On successful QR
-               decode, tablet-scanner.js calls OnQrScanned via JSInterop. *@
-            <div class="tk-scanner">
+            @* 2026-07-08 Phase 2c: landscape split layout.
+               Camera viewfinder is ALWAYS visible on the left half —
+               scanning never stops. The right half shows either the
+               "waiting for scan" hint (idle) or the KioskScanCard
+               (post-decode), auto-resetting after 5 seconds so the
+               kiosk keeps flowing without user interaction. *@
+            <div class="tk-cam-panel">
                 <video @ref="videoRef" class="tk-video" autoplay muted playsinline></video>
                 @if (terminal?.PhotoCaptureEnabled == true)
                 {
                     <video @ref="photoVideoRef" class="tk-photo-video" autoplay muted playsinline></video>
                 }
-                <div class="tk-scan-hint">
-                    <img src="/images/phoenix.png" alt="Phoenix" class="tk-hint-icon" />
-                    <h3>Hold your ID badge up to the camera</h3>
-                    <p>@terminal?.LocationDescription</p>
+                <div class="tk-cam-corner-label">
+                    <img src="/images/phoenix.png" alt="Phoenix" class="tk-corner-icon" />
+                    <span>Hold badge up to camera</span>
                 </div>
+            </div>
+            <div class="tk-result-panel">
+                @if (showResult)
+                {
+                    <KioskScanCard
+                        PhotoBase64="@photoBase64"
+                        Initial="@GetInitial()"
+                        ResultMessage="@resultMessage"
+                        ResultClass="@(isSuccess ? "success" : "error")"
+                        PersonName="@personName"
+                        ScanTypeDisplay="@scanTypeDisplay"
+                        ScanTypeBadgeClass="@scanTypeBadgeClass"
+                        PersonTypeDisplay="@personTypeDisplay"
+                        TotalHoursToday="@totalHoursToday" />
+                }
+                else
+                {
+                    <div class="tk-idle-hint">
+                        <img src="/images/phoenix.png" alt="Phoenix" class="tk-idle-icon" />
+                        <h2>Ready to scan</h2>
+                        <p class="tk-idle-location">@terminal?.LocationDescription</p>
+                        <p class="tk-idle-sub">Hold your ID badge in front of the camera on the left.</p>
+                    </div>
+                }
             </div>
         }
     </div>
@@ -93,22 +107,50 @@
        Everything specific to tablet-scanner display and offline
        state uses the tk- prefix. */
 
-    .tk-scanner { position: relative; width: 100%; max-width: 720px;
-        margin: 0 auto; aspect-ratio: 4/3; background: #000;
+    /* 2026-07-08 Phase 2c — landscape split layout.
+       Left half: live camera. Right half: idle prompt or KioskScanCard.
+       Camera never stops decoding, so scans flow continuously. */
+    .tk-landscape { display: flex; flex-direction: row; gap: 1rem;
+        padding: 0.75rem; align-items: stretch; box-sizing: border-box;
+        min-height: calc(100vh - 180px); /* leave room for header/footer */ }
+
+    .tk-cam-panel { flex: 1 1 50%; position: relative; background: #000;
         border-radius: 12px; overflow: hidden;
-        box-shadow: 0 6px 24px rgba(0,0,0,0.25); }
+        box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+        min-height: 60vh; }
     .tk-video { position: absolute; inset: 0; width: 100%; height: 100%;
         object-fit: cover; }
     .tk-photo-video { position: absolute; width: 1px; height: 1px;
         opacity: 0; pointer-events: none; }
 
-    .tk-scan-hint { position: absolute; inset: auto 0 0 0;
-        background: linear-gradient(0deg, rgba(30,58,95,0.92), rgba(30,58,95,0.2));
-        color: white; padding: 1rem 1.5rem 1.25rem; text-align: center; }
-    .tk-scan-hint h3 { margin: 0.5rem 0 0.25rem; font-size: 1.15rem;
-        color: white; }
-    .tk-scan-hint p { margin: 0; color: #f5b81c; font-size: 0.9rem; }
-    .tk-hint-icon { width: 40px; height: 40px; opacity: 0.9; }
+    .tk-cam-corner-label { position: absolute; top: 12px; left: 12px;
+        display: flex; align-items: center; gap: 0.5rem;
+        background: rgba(30,58,95,0.85); color: white;
+        padding: 0.4rem 0.75rem; border-radius: 8px;
+        font-size: 0.85rem; font-weight: 600; letter-spacing: 0.02em;
+        backdrop-filter: blur(4px); }
+    .tk-corner-icon { width: 22px; height: 22px; opacity: 0.95; }
+
+    .tk-result-panel { flex: 1 1 50%; display: flex; align-items: center;
+        justify-content: center; background: #f8fafc;
+        border-radius: 12px; padding: 1rem;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08); min-height: 60vh; }
+
+    .tk-idle-hint { text-align: center; color: #1e3a5f; max-width: 380px; }
+    .tk-idle-icon { width: 96px; height: 96px; opacity: 0.75;
+        margin-bottom: 0.75rem; }
+    .tk-idle-hint h2 { font-size: 2rem; margin: 0.25rem 0;
+        color: #1e3a5f; }
+    .tk-idle-location { font-size: 1.1rem; color: #f5b81c;
+        font-weight: 700; margin: 0.25rem 0 0.75rem; }
+    .tk-idle-sub { font-size: 1rem; color: #475569;
+        line-height: 1.4; margin: 0; }
+
+    /* Fallback: on portrait screens (dev/test on desktop), stack. */
+    @@media (max-width: 768px) {
+        .tk-landscape { flex-direction: column; min-height: 0; }
+        .tk-cam-panel, .tk-result-panel { min-height: 45vh; flex: 1 1 auto; }
+    }
 
     .tk-offline-card { max-width: 480px; margin: 4rem auto;
         background: white; border: 2px solid #b91c1c; border-radius: 12px;
@@ -200,6 +242,15 @@
                 photoEnabled,
                 photoEnabled ? photoVideoRef : (ElementReference?)null);
             scannerStarted = true;
+
+            // 2026-07-08 Phase 2c: request fullscreen, lock orientation
+            // to landscape, and acquire a Wake Lock so the screen doesn't
+            // sleep even if Intune's Power Settings policy isn't honored
+            // by the tablet's OEM (off-brand Pritom P7 aggressively
+            // sleeps on the 1-minute default). All three fail silently
+            // on browsers that don't support them.
+            try { await JS.InvokeVoidAsync("tabletScanner.enterKioskDisplayMode"); }
+            catch (Exception ex) { Logger.LogWarning(ex, "KioskTablet: display-mode helpers failed"); }
 
             // Stamp LastSeenAt + user-agent once at boot so /admin/kiosks
             // shows the tablet is alive even before the first badge scan.

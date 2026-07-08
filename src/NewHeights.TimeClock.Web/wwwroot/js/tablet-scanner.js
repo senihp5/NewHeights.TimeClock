@@ -288,6 +288,72 @@
         return navigator.userAgent || '';
     }
 
+    // ── Kiosk display-mode helpers (2026-07-08 Phase 2c) ──────────────
+    //
+    // enterKioskDisplayMode does three things, each best-effort:
+    //   1. Request fullscreen so browser chrome (if any) hides.
+    //   2. Lock orientation to landscape.
+    //   3. Acquire a screen Wake Lock so the tablet doesn't sleep.
+    //
+    // All three fail silently on browsers that don't support them
+    // (older Android WebView, some Chromium forks). The Wake Lock is
+    // released automatically when the page is hidden and re-acquired
+    // when it comes back — the visibility handler below rearms it.
+
+    let wakeLockSentinel = null;
+
+    async function acquireWakeLock() {
+        try {
+            if ('wakeLock' in navigator && !wakeLockSentinel) {
+                wakeLockSentinel = await navigator.wakeLock.request('screen');
+                wakeLockSentinel.addEventListener('release', () => {
+                    wakeLockSentinel = null;
+                    log('Wake Lock released');
+                });
+                log('Wake Lock acquired');
+            }
+        } catch (e) {
+            log('Wake Lock request failed: ' + e.message);
+        }
+    }
+
+    // Rearm Wake Lock whenever the tab regains visibility (Android often
+    // releases it during backgrounding, screen-off, or lock-screen).
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            acquireWakeLock();
+        }
+    });
+
+    async function enterKioskDisplayMode() {
+        // 1. Request fullscreen. Requires a user gesture in most browsers,
+        //    but in TWA / kiosk-mode contexts this often succeeds silently.
+        try {
+            if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+                await document.documentElement.requestFullscreen();
+                log('Fullscreen requested');
+            }
+        } catch (e) {
+            log('Fullscreen request failed: ' + e.message);
+        }
+
+        // 2. Lock orientation to landscape. Requires fullscreen on most
+        //    Chromium browsers; that's why we do (1) first.
+        try {
+            if (screen.orientation && screen.orientation.lock) {
+                await screen.orientation.lock('landscape');
+                log('Orientation locked to landscape');
+            }
+        } catch (e) {
+            log('Orientation lock failed: ' + e.message);
+        }
+
+        // 3. Acquire Wake Lock (screen keep-alive). This is the practical
+        //    workaround for off-brand tablets whose OEM ignores Intune's
+        //    Power Settings policy.
+        await acquireWakeLock();
+    }
+
     // ── Pairing / localStorage helpers (Phase 2b — 2026-07-08) ────────
     //
     // Single Intune policy points all tablets at /kiosk/tablet (no code).
@@ -387,6 +453,7 @@
         getPairedCode: getPairedCode,
         setPairedCode: setPairedCode,
         clearPairedCode: clearPairedCode,
-        renderPairingQr: renderPairingQr
+        renderPairingQr: renderPairingQr,
+        enterKioskDisplayMode: enterKioskDisplayMode
     };
 })();
