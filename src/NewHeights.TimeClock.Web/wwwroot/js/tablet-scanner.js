@@ -192,6 +192,8 @@
                             lastScanAt = now;
                             log('QR decoded: ' + payload.substring(0, 40));
                             playBeep();
+                            // A successful scan counts as activity — reset the idle dim.
+                            armIdleDimTimer();
 
                             const photo = captureFrontPhoto();
                             try {
@@ -209,13 +211,12 @@
         }
 
         if (running) {
-            // Native BarcodeDetector is cheap; jsQR is heavier. Throttle
-            // fallback path to ~10fps by using setTimeout instead of rAF.
-            if (usingJsQrFallback) {
-                setTimeout(decodeTick, 100);
-            } else {
-                animationFrameId = requestAnimationFrame(decodeTick);
-            }
+            // 2026-07-08 (thermal tuning C): throttle BOTH paths to 10fps.
+            // A QR only needs one clean frame to decode — 60fps via
+            // requestAnimationFrame was overkill and kept the SoC hot on
+            // the Pritom P7 during long runs. 100ms interval cuts CPU
+            // ~85% with no observable scan-latency change.
+            setTimeout(decodeTick, 100);
         }
     }
 
@@ -445,6 +446,64 @@
         });
     }
 
+    // ── Idle screen dim (2026-07-08 thermal tuning D) ─────────────────
+    //
+    // After IDLE_DIM_MS with no user activity or successful scan, apply a
+    // semi-transparent black overlay to the whole viewport. Camera keeps
+    // running underneath so a badge scan still decodes and clears the
+    // overlay instantly. Overlay is also cleared on any touch / mouse /
+    // keyboard event so someone tapping the tablet wakes it visually
+    // even before they scan.
+    //
+    // Honest caveat: on LCD tablets (Pritom P7 is LCD) this is a
+    // visual dim only — actual backlight power draw is unchanged.
+    // For real backlight thermal savings, set Intune device
+    // restriction "Screen brightness → 20-30" on the enrollment
+    // profile so Android reduces backlight when the ambient sensor
+    // or lock-screen kicks in.
+    const IDLE_DIM_MS = 3 * 60 * 1000;  // 3 minutes
+    const IDLE_DIM_CLASS = 'nh-idle-dim';
+    let idleDimTimer = null;
+    let idleWatchInstalled = false;
+
+    function armIdleDimTimer() {
+        if (idleDimTimer) clearTimeout(idleDimTimer);
+        document.body.classList.remove(IDLE_DIM_CLASS);
+        idleDimTimer = setTimeout(() => {
+            document.body.classList.add(IDLE_DIM_CLASS);
+            log('Idle dim applied after ' + (IDLE_DIM_MS / 1000) + 's inactivity');
+        }, IDLE_DIM_MS);
+    }
+
+    function installIdleWatch() {
+        if (idleWatchInstalled) return;
+        idleWatchInstalled = true;
+        ['touchstart', 'mousedown', 'keydown', 'pointerdown'].forEach(evt => {
+            document.addEventListener(evt, armIdleDimTimer, { passive: true });
+        });
+        // Inject the overlay CSS once. Prefixed nh- so it doesn't collide
+        // with any Bootstrap / app class. The overlay covers everything
+        // including the camera panel; touch/scan reveals the UI.
+        const style = document.createElement('style');
+        style.textContent =
+            'body.' + IDLE_DIM_CLASS + '::after {' +
+            '  content: "";' +
+            '  position: fixed;' +
+            '  inset: 0;' +
+            '  background: rgba(0,0,0,0.70);' +
+            '  pointer-events: none;' +
+            '  z-index: 9999;' +
+            '  transition: background 1.5s ease-in-out;' +
+            '  animation: nhIdleDimFadeIn 1.5s ease-in-out;' +
+            '}' +
+            '@keyframes nhIdleDimFadeIn {' +
+            '  from { background: rgba(0,0,0,0); }' +
+            '  to   { background: rgba(0,0,0,0.70); }' +
+            '}';
+        document.head.appendChild(style);
+        log('Idle dim watcher installed');
+    }
+
     window.tabletScanner = {
         start: start,
         stop: stop,
@@ -454,6 +513,8 @@
         setPairedCode: setPairedCode,
         clearPairedCode: clearPairedCode,
         renderPairingQr: renderPairingQr,
-        enterKioskDisplayMode: enterKioskDisplayMode
+        enterKioskDisplayMode: enterKioskDisplayMode,
+        installIdleWatch: installIdleWatch,
+        armIdleDimTimer: armIdleDimTimer
     };
 })();

@@ -1,0 +1,28 @@
+{
+    "name": "New Heights Clock System — Kiosk",
+    "short_name": "NH Kiosk",
+    "description": "New Heights campus check-in kiosk. Landscape-only.",
+    "start_url": "/kiosk/tablet",
+    "scope": "/kiosk/",
+    "display": "fullscreen",
+    "display_override": ["fullscreen", "standalone"],
+    "orientation": "landscape",
+    "background_color": "#0f172a",
+    "theme_color": "#1e3a5f",
+    "lang": "en-US",
+    "categories": ["business", "productivity"],
+    "icons": [
+        {
+            "src": "/images/NHLogo.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any"
+        },
+        {
+            "src": "/images/NHLogo.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any"
+        }
+    ]
+}

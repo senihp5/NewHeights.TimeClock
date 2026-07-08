@@ -13,6 +13,18 @@
 
 <PageTitle>Kiosk Pairing — @AppConstants.Branding.ShortName</PageTitle>
 
+@* 2026-07-08: Same landscape manifest as the paired route. The pairing
+   page comes up first at cold boot on an unpaired tablet, so if it
+   loads in portrait the user has to physically rotate before pairing.
+   Manifest + orientation lock keeps it landscape start-to-finish. *@
+<HeadContent>
+    <link rel="manifest" href="/kiosk-tablet.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="screen-orientation" content="landscape" />
+    <meta name="x5-orientation" content="landscape" />
+</HeadContent>
+
 @*
     2026-07-08 (Phase 2b): Single Intune policy for all tablets points at
     /kiosk/tablet (no code). This page decides what happens next:
@@ -51,7 +63,7 @@
                 <video @ref="videoRef" class="tk-video" autoplay muted playsinline></video>
                 <div class="tkp-scan-hint">
                     <h2>Pair this tablet</h2>
-                    <p>Hold the pairing QR from <code>/admin/kiosks</code> up to the camera.</p>
+                    <p>Hold the pairing QR from <code>/admin/kiosks</code> up to the <strong>BACK camera</strong>.</p>
                     @if (!string.IsNullOrEmpty(lastError))
                     {
                         <p class="tkp-error">@lastError</p>

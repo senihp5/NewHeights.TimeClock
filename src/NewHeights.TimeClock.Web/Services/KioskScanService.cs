@@ -47,6 +47,45 @@ public class KioskScanService : IKioskScanService
         }
 
         using var context = await _dbFactory.CreateDbContextAsync();
+
+        // 2026-07-08: Per-person 60-second min-time-between-scans. Patrick
+        // observed a 1:15pm OUT-then-IN bounce on the tablet — the client-side
+        // 3s debounce is fine for rapid-frame duplicates but doesn't cover
+        // slower re-scans (badge lingering in viewfinder, user stepping away
+        // and back, curiosity re-scan). This server-side gate covers every
+        // caller (tablet, reception ClockInOut, ESP32, mobile) with one fix.
+        // Matches padded/unpadded variants because Staff / TC_Employees
+        // sometimes carry 6-digit IdNumbers ('000139') while badge QRs
+        // usually have the unpadded form ('139').
+        {
+            var debouncePadded = idNumber.PadLeft(6, '0');
+            var debounceUnpadded = idNumber.TrimStart('0');
+            var threshold = DateTime.Now.AddSeconds(-60);
+            var lastScanAt = await context.AttendanceTransactions.AsNoTracking()
+                .Where(t => t.ScanDateTime >= threshold &&
+                            (t.IdNumber == idNumber
+                             || t.IdNumber == debouncePadded
+                             || t.IdNumber == debounceUnpadded))
+                .OrderByDescending(t => t.ScanDateTime)
+                .Select(t => (DateTime?)t.ScanDateTime)
+                .FirstOrDefaultAsync();
+
+            if (lastScanAt.HasValue)
+            {
+                var secondsSince = (DateTime.Now - lastScanAt.Value).TotalSeconds;
+                if (secondsSince < 60)
+                {
+                    var waitSeconds = 60 - (int)secondsSince;
+                    _logger.LogInformation(
+                        "KioskScan REJECTED (TOO_SOON): ID {IdNumber} scanned {Delta:F1}s ago at terminal {Terminal}",
+                        idNumber, secondsSince, terminalId);
+                    return Error(
+                        $"Already scanned. Please wait {waitSeconds}s before scanning again.",
+                        "TOO_SOON");
+                }
+            }
+        }
+
         bool hasNameFromScan = !string.IsNullOrEmpty(firstName) && !string.IsNullOrEmpty(lastName);
 
         string paddedIdNumber = idNumber.PadLeft(6, '0');

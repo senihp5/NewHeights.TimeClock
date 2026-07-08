@@ -17,6 +17,20 @@
 
 <PageTitle>Check-In Kiosk — @AppConstants.Branding.ShortName</PageTitle>
 
+@* 2026-07-08: PWA manifest tells the browser (and any "Add to Home
+   screen" flow, including Managed Google Play's Web App installer)
+   that this route is landscape-only + fullscreen. Belt-and-suspenders
+   with the Intune-side Web App orientation setting; also gives
+   screen.orientation.lock('landscape') a valid preferred orientation
+   to lock to on Chromium builds that reject the lock otherwise. *@
+<HeadContent>
+    <link rel="manifest" href="/kiosk-tablet.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="screen-orientation" content="landscape" />
+    <meta name="x5-orientation" content="landscape" />
+</HeadContent>
+
 @* 2026-07-08 Phase 2c v2: full-viewport landscape layout, no top
    header. Right column stacks Logo → School name → Time → Ready-to-
    scan/Result. Camera panel is ~65% of the width so scanning has
@@ -42,7 +56,7 @@
             }
             <div class="tk-cam-corner-label">
                 <img src="/images/phoenix.png" alt="Phoenix" class="tk-corner-icon" />
-                <span>Hold badge up to camera</span>
+                <span>Hold badge up to BACK camera on the left</span>
             </div>
         </div>
         <div class="tk-right-panel">
@@ -72,7 +86,7 @@
                         <img src="/images/phoenix.png" alt="Phoenix" class="tk-idle-icon" />
                         <h2>Ready to scan</h2>
                         <p class="tk-idle-location">@terminal?.LocationDescription</p>
-                        <p class="tk-idle-sub">Hold your ID badge in front of the camera on the left.</p>
+                        <p class="tk-idle-sub">Hold your ID badge up to the <strong>BACK camera</strong> on the left.</p>
                     </div>
                 }
             </div>
@@ -93,11 +107,12 @@
        Everything specific to tablet-scanner display and offline
        state uses the tk- prefix. */
 
-    /* 2026-07-08 Phase 2c v2: full-viewport landscape.
+    /* 2026-07-08 Phase 2c v3: full-viewport landscape.
        .tk-fullpage fills the browser viewport exactly (100vw / 100vh),
-       eliminating scrollbars. Camera panel is 65% of the width so
-       badges scan clearly; right column stacks branding → dynamic
-       content → terminal footer. */
+       eliminating scrollbars. Camera panel shrunk to 50% (was 65%) —
+       QR scans reliably at this size on the Pritom P7 rear camera and
+       the right panel gets more room so KioskScanCard doesn't
+       overflow. Right panel bumped to 50% (was 35%). */
     html, body { margin: 0; padding: 0; overflow: hidden; }
 
     .tk-fullpage {
@@ -113,9 +128,9 @@
         gap: 0;
     }
 
-    /* ── Left: camera (65%) ─────────────────────────────────────── */
+    /* ── Left: camera (50%) ─────────────────────────────────────── */
     .tk-cam-panel {
-        flex: 0 0 65%;
+        flex: 0 0 50%;
         position: relative;
         background: #000;
         overflow: hidden;
@@ -142,13 +157,14 @@
     }
     .tk-corner-icon { width: 24px; height: 24px; opacity: 0.95; }
 
-    /* ── Right: header + content + footer (35%) ─────────────────── */
+    /* ── Right: header + content + footer (50%) ─────────────────── */
     .tk-right-panel {
-        flex: 0 0 35%;
+        flex: 0 0 50%;
         display: flex;
         flex-direction: column;
         background: #f8fafc;
         color: #1e3a5f;
+        overflow: hidden;
     }
 
     .tk-right-header {
@@ -191,8 +207,68 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 1rem;
+        padding: 0.5rem 0.75rem;
         overflow: hidden;
+        min-width: 0;
+    }
+
+    /* 2026-07-08 v3: KioskScanCard was designed for the reception
+       kiosk (full-viewport width). Constrain it here so it fits
+       inside the tablet's right panel without horizontal overflow.
+       Scoped to .tk-right-content so ClockInOut.razor is untouched.
+       Inline style block = global CSS (not scoped), so plain
+       descendant selectors work — no ::deep needed. */
+    .tk-right-content .result-display {
+        max-width: 100%;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.75rem;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        gap: 0.5rem;
+    }
+    .tk-right-content .employee-photo {
+        width: 120px;
+        height: 120px;
+        max-width: 40%;
+        object-fit: cover;
+        border-radius: 50%;
+        margin: 0 auto;
+    }
+    .tk-right-content .employee-photo.placeholder {
+        display: flex; align-items: center; justify-content: center;
+        background: #1e3a5f; color: white;
+        font-size: 3rem; font-weight: 700;
+    }
+    .tk-right-content .result-message {
+        width: 100%;
+        max-width: 100%;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+    }
+    .tk-right-content .result-message h3 {
+        font-size: 1.25rem;
+        margin: 0.25rem 0;
+        line-height: 1.25;
+    }
+    .tk-right-content .employee-name {
+        font-size: 1.05rem;
+        font-weight: 600;
+        margin: 0.15rem 0;
+    }
+    .tk-right-content .punch-type-badge {
+        display: inline-block;
+        margin: 0.25rem 0;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.85rem;
+    }
+    .tk-right-content .person-type,
+    .tk-right-content .hours-today {
+        font-size: 0.85rem;
+        margin: 0.15rem 0;
     }
 
     .tk-right-footer {
@@ -336,6 +412,17 @@
             // on browsers that don't support them.
             try { await JS.InvokeVoidAsync("tabletScanner.enterKioskDisplayMode"); }
             catch (Exception ex) { Logger.LogWarning(ex, "KioskTablet: display-mode helpers failed"); }
+
+            // 2026-07-08 thermal tuning D: idle-dim overlay. Installs
+            // document-level listeners once; overlay applies after 3 min
+            // of no touch / scan and clears on any activity. Camera keeps
+            // running underneath so a scan wakes it instantly.
+            try
+            {
+                await JS.InvokeVoidAsync("tabletScanner.installIdleWatch");
+                await JS.InvokeVoidAsync("tabletScanner.armIdleDimTimer");
+            }
+            catch (Exception ex) { Logger.LogWarning(ex, "KioskTablet: idle-dim install failed"); }
 
             // Stamp LastSeenAt + user-agent once at boot so /admin/kiosks
             // shows the tablet is alive even before the first badge scan.
