@@ -13,6 +13,7 @@
 @inject IDbContextFactory<TimeClockDbContext> DbFactory
 @inject IAuditService Audit
 @inject AuthenticationStateProvider AuthStateProvider
+@inject IJSRuntime JS
 @inject ILogger<KioskTerminals> Logger
 
 <PageTitle>Kiosk Terminals</PageTitle>
@@ -121,6 +122,7 @@
                             @if (t.DeviceType == AppConstants.Kiosk.DeviceType.TabletKiosk)
                             {
                                 <button class="btn-secondary" @onclick="() => ShowSetupUrl(t)">Setup URL</button>
+                                <button class="btn-secondary" @onclick="() => ShowPairingQr(t)">Pair QR</button>
                             }
                             <button class="kt-btn-danger" @onclick="() => ToggleActiveAsync(t)">
                                 @(t.IsActive ? "Deactivate" : "Reactivate")
@@ -241,6 +243,36 @@
     </div>
 }
 
+@if (showPairingQrModal && pairingQrTerminal != null)
+{
+    <div class="modal-overlay" @onclick="ClosePairingQrModal">
+        <div class="modal-content" @onclick:stopPropagation="true" style="width: 460px;">
+            <div class="modal-header">
+                <h2>Pairing QR — @pairingQrTerminal.TerminalCode</h2>
+                <button class="modal-close" @onclick="ClosePairingQrModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p>Hold this QR code up to the tablet's camera on the pairing screen (<code>/kiosk/tablet</code>) to pair it to this terminal:</p>
+                <div class="kt-qr-holder">
+                    <div id="pair-qr-target"></div>
+                </div>
+                <p class="kt-qr-caption">
+                    <code>@BuildPairingPayload(pairingQrTerminal.TerminalCode)</code>
+                </p>
+                <p class="kt-help-text">
+                    Only pairing QRs from this page are accepted — random QR codes (badges, ads, etc.)
+                    are silently ignored by the tablet's pairing scanner. Pairing survives reboots via
+                    the tablet's local storage. To un-pair a tablet, use Intune's remote wipe / factory
+                    reset — it will re-enroll and land on the pairing screen fresh.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-primary" @onclick="ClosePairingQrModal">Done</button>
+            </div>
+        </div>
+    </div>
+}
+
 <style>
     /* 2026-07-08: page-scoped styles for classes that aren't part of the
        shared admin CSS bundle. Modal / form-group / btn-* / alert-* / admin-*
@@ -293,6 +325,15 @@
         padding: 0.35rem 0.75rem; border-radius: 4px; font-size: 0.8rem;
         cursor: pointer; }
     .kt-btn-danger:hover { background: #991b1b; }
+
+    .kt-qr-holder { display: flex; justify-content: center; align-items: center;
+        padding: 1rem 0; }
+    #pair-qr-target { padding: 12px; background: white;
+        border: 1px solid #e5e7eb; border-radius: 8px; }
+    .kt-qr-caption { text-align: center; font-size: 0.75rem; color: #6b7280;
+        margin: 0.25rem 0 1rem; word-break: break-all; }
+    .kt-qr-caption code { font-family: monospace; background: #f3f4f6;
+        padding: 2px 6px; border-radius: 3px; }
 </style>
 
 @code {
@@ -324,6 +365,14 @@
     // ── Setup URL modal ───────────────────────────────────────────────────
     private bool showSetupUrlModal = false;
     private TcTerminal? setupUrlTerminal = null;
+
+    // ── Pairing QR modal (Phase 2b) ───────────────────────────────────────
+    // Renders a QR code containing `nhkiosk-pair:{TerminalCode}` via a
+    // JS interop call after the modal DOM is present. qrcodejs is lazy-
+    // loaded from cdnjs the first time renderPairingQr is invoked.
+    private bool showPairingQrModal = false;
+    private TcTerminal? pairingQrTerminal = null;
+    private bool pairingQrRendered = false;
 
     // ── Current user (for audit) ──────────────────────────────────────────
     private string currentUserEmail = "";
@@ -576,7 +625,55 @@
 
     private string BuildSetupUrl(string terminalCode)
     {
-        return $"https://clock.newheightsed.com/kiosk/tablet/{terminalCode}";
+        // 2026-07-08 (Phase 2b): now returns the bootstrap URL. All tablets
+        // point at the same /kiosk/tablet path via a single Intune policy;
+        // per-tablet pairing happens via a QR at first boot. Legacy per-code
+        // URL (/kiosk/tablet/{code}) still resolves and can be used as an
+        // explicit override if a specific tablet needs to bypass pairing.
+        return "https://clock.newheightsed.com/kiosk/tablet";
+    }
+
+    // ── Pairing QR modal (Phase 2b) ───────────────────────────────────────
+
+    private static string BuildPairingPayload(string terminalCode)
+    {
+        // Prefixed so the tablet's pairing scanner ignores random QRs.
+        return $"nhkiosk-pair:{terminalCode}";
+    }
+
+    private void ShowPairingQr(TcTerminal t)
+    {
+        pairingQrTerminal = t;
+        pairingQrRendered = false;
+        showPairingQrModal = true;
+    }
+
+    private void ClosePairingQrModal()
+    {
+        showPairingQrModal = false;
+        pairingQrTerminal = null;
+        pairingQrRendered = false;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Trigger the QR render after the modal DOM exists. Blazor won't
+        // call OnAfterRenderAsync until the current render pass finishes,
+        // so #pair-qr-target is guaranteed to be in the DOM by the time
+        // JS runs. `pairingQrRendered` guards against re-render loops.
+        if (showPairingQrModal && pairingQrTerminal != null && !pairingQrRendered)
+        {
+            pairingQrRendered = true;
+            try
+            {
+                var payload = BuildPairingPayload(pairingQrTerminal.TerminalCode);
+                await JS.InvokeVoidAsync("tabletScanner.renderPairingQr", "pair-qr-target", payload);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError(ex, "Failed to render pairing QR for terminal {Id}", pairingQrTerminal.TerminalId);
+            }
+        }
     }
 
     // ── Terminal-code generator ───────────────────────────────────────────

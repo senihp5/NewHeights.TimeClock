@@ -38,6 +38,7 @@
     let animationFrameId = null;
     let barcodeDetector = null;    // Native or jsQR shim
     let usingJsQrFallback = false;
+    let pairingMode = false;       // true → route decodes to OnPairingCodeScanned
 
     let lastScanAt = 0;            // Timestamp (ms since epoch)
     const DEBOUNCE_MS = 3000;
@@ -172,15 +173,32 @@
                 if (now - lastScanAt >= DEBOUNCE_MS) {
                     const payload = results[0].rawValue || '';
                     if (payload) {
-                        lastScanAt = now;
-                        log('QR decoded: ' + payload.substring(0, 40));
-                        playBeep();
+                        if (pairingMode) {
+                            // Only accept QRs that carry the pairing prefix.
+                            // Silently ignore any other QR (badge, ad, random
+                            // poster) so field IT can't accidentally pair.
+                            if (payload.indexOf(PAIR_PREFIX) === 0) {
+                                lastScanAt = now;
+                                const code = payload.substring(PAIR_PREFIX.length);
+                                log('Pairing QR decoded: ' + code);
+                                playBeep();
+                                try {
+                                    await dotNetRef.invokeMethodAsync('OnPairingCodeScanned', code);
+                                } catch (e) {
+                                    log('OnPairingCodeScanned invoke failed: ' + e.message);
+                                }
+                            }
+                        } else {
+                            lastScanAt = now;
+                            log('QR decoded: ' + payload.substring(0, 40));
+                            playBeep();
 
-                        const photo = captureFrontPhoto();
-                        try {
-                            await dotNetRef.invokeMethodAsync('OnQrScanned', payload, photo);
-                        } catch (e) {
-                            log('OnQrScanned invoke failed: ' + e.message);
+                            const photo = captureFrontPhoto();
+                            try {
+                                await dotNetRef.invokeMethodAsync('OnQrScanned', payload, photo);
+                            } catch (e) {
+                                log('OnQrScanned invoke failed: ' + e.message);
+                            }
                         }
                     }
                 }
@@ -212,6 +230,7 @@
         dotNetRef = netRef;
         photoEnabled = !!photoOn;
         frontVideoEl = photoOn ? photoVideoElOrNull : null;
+        pairingMode = false;
 
         try {
             rearStream = await openCamera('environment');
@@ -261,6 +280,7 @@
         dotNetRef = null;
         barcodeDetector = null;
         usingJsQrFallback = false;
+        pairingMode = false;
         log('Scanner stopped');
     }
 
@@ -268,5 +288,105 @@
         return navigator.userAgent || '';
     }
 
-    window.tabletScanner = { start: start, stop: stop, getUserAgent: getUserAgent };
+    // ── Pairing / localStorage helpers (Phase 2b — 2026-07-08) ────────
+    //
+    // Single Intune policy points all tablets at /kiosk/tablet (no code).
+    // The tablet reads localStorage on load: if a paired TerminalCode
+    // exists, redirect to /kiosk/tablet/{code}. Otherwise start a
+    // pairing-mode scan that only accepts QRs prefixed nhkiosk-pair:
+    // (the admin page /admin/kiosks generates these). Unpair happens
+    // via Intune factory reset (v1) — no in-app clear UI yet.
+    const LS_KEY = 'nhKioskTerminalCode';
+    const PAIR_PREFIX = 'nhkiosk-pair:';
+
+    function getPairedCode() {
+        try { return window.localStorage.getItem(LS_KEY); }
+        catch { return null; }
+    }
+
+    function setPairedCode(code) {
+        try { window.localStorage.setItem(LS_KEY, code); return true; }
+        catch { return false; }
+    }
+
+    function clearPairedCode() {
+        try { window.localStorage.removeItem(LS_KEY); return true; }
+        catch { return false; }
+    }
+
+    // Same shape as start(...) but the decode callback filters QR
+    // content to the pairing prefix and hands the raw code (prefix
+    // stripped) to the C# side. Random QRs (badges, ads, etc.) are
+    // silently ignored so field IT can't accidentally pair a tablet
+    // by pointing it at a random poster.
+    async function startPairing(videoEl, netRef) {
+        // Reuse the same scanner startup path but override the QR
+        // handler through the JSInvokable callback contract — the C#
+        // side calls a different method for pairing decode.
+        rearVideoEl = videoEl;
+        dotNetRef = netRef;
+        photoEnabled = false;
+        frontVideoEl = null;
+        pairingMode = true;
+
+        try {
+            rearStream = await openCamera('environment');
+            rearVideoEl.srcObject = rearStream;
+            await rearVideoEl.play();
+            log('Rear camera opened (pairing mode)');
+
+            await initDetector();
+
+            running = true;
+            decodeTick();
+        } catch (e) {
+            log('startPairing failed: ' + e.message);
+            stop();
+            throw e;
+        }
+    }
+
+    // ── Admin-side helper: render a pairing QR into a target div ──────
+    //
+    // Called from KioskTerminals.razor via IJSRuntime after the pairing
+    // modal opens. Lazy-loads qrcodejs from cdnjs the first time so the
+    // rest of the app doesn't pay for it on every page load.
+    let qrcodejsLoading = null;
+    async function ensureQrcodejs() {
+        if (window.QRCode) return;
+        if (qrcodejsLoading) { await qrcodejsLoading; return; }
+        qrcodejsLoading = new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+            s.async = true;
+            s.onload = () => resolve();
+            s.onerror = () => reject(new Error('Failed to load qrcodejs'));
+            document.head.appendChild(s);
+        });
+        await qrcodejsLoading;
+    }
+
+    async function renderPairingQr(targetElId, text) {
+        await ensureQrcodejs();
+        const el = document.getElementById(targetElId);
+        if (!el) { log('renderPairingQr: target #' + targetElId + ' not found'); return; }
+        el.innerHTML = ''; // clear any prior render (re-opens of the modal)
+        new window.QRCode(el, {
+            text: text,
+            width: 300,
+            height: 300,
+            correctLevel: window.QRCode.CorrectLevel.H
+        });
+    }
+
+    window.tabletScanner = {
+        start: start,
+        stop: stop,
+        startPairing: startPairing,
+        getUserAgent: getUserAgent,
+        getPairedCode: getPairedCode,
+        setPairedCode: setPairedCode,
+        clearPairedCode: clearPairedCode,
+        renderPairingQr: renderPairingQr
+    };
 })();

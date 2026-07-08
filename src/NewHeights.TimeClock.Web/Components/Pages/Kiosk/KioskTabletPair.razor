@@ -1,0 +1,208 @@
+@page "/kiosk/tablet"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [AllowAnonymous]
+@layout KioskLayout
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Web.Services
+@inject IKioskScanService KioskScanService
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject ILogger<KioskTabletPair> Logger
+@implements IAsyncDisposable
+
+<PageTitle>Kiosk Pairing — @AppConstants.Branding.ShortName</PageTitle>
+
+@*
+    2026-07-08 (Phase 2b): Single Intune policy for all tablets points at
+    /kiosk/tablet (no code). This page decides what happens next:
+
+      • localStorage has a paired TerminalCode → validate + redirect to
+        /kiosk/tablet/{code}. Managed Edge preserves localStorage across
+        reboots so a paired tablet always goes straight to its kiosk.
+
+      • No paired code → render pairing UI. Field IT holds a QR from
+        /admin/kiosks up to the tablet camera. Scanner filters to QRs
+        prefixed nhkiosk-pair: and hands the raw code to OnPairingCodeScanned.
+
+      • Unpair (v1): factory-reset the tablet via Intune remote command.
+        Post-reset the tablet re-enrolls and lands here fresh.
+*@
+
+<div class="kiosk-container">
+    <header class="kiosk-header">
+        <a href="@AppConstants.Branding.Website" target="_blank" class="logo-link" @onclick:stopPropagation>
+            <img src="/images/logo.jpg" alt="New Heights" class="header-logo" />
+        </a>
+        <h1>@AppConstants.Branding.SchoolName</h1>
+        <p class="current-date">Tablet setup</p>
+    </header>
+
+    <div class="scan-area">
+        @if (isCheckingLocalStorage)
+        {
+            <div class="tkp-loading-card">
+                <p>Checking pairing status…</p>
+            </div>
+        }
+        else
+        {
+            <div class="tkp-scanner">
+                <video @ref="videoRef" class="tk-video" autoplay muted playsinline></video>
+                <div class="tkp-scan-hint">
+                    <h2>Pair this tablet</h2>
+                    <p>Hold the pairing QR from <code>/admin/kiosks</code> up to the camera.</p>
+                    @if (!string.IsNullOrEmpty(lastError))
+                    {
+                        <p class="tkp-error">@lastError</p>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <footer class="kiosk-footer">
+        <p class="terminal-info">Unpaired · awaiting configuration</p>
+    </footer>
+</div>
+
+<style>
+    /* Pairing-page-only styles. Reuses .kiosk-container / .scan-area / .tk-video
+       from the paired kiosk. tkp- prefix keeps these local. */
+    .tkp-loading-card { max-width: 480px; margin: 4rem auto; background: white;
+        border-radius: 12px; padding: 2rem; text-align: center;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15); color: #6b7280; }
+
+    .tkp-scanner { position: relative; width: 100%; max-width: 720px;
+        margin: 0 auto; aspect-ratio: 4/3; background: #000;
+        border-radius: 12px; overflow: hidden;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.25); }
+    .tkp-scan-hint { position: absolute; inset: auto 0 0 0;
+        background: linear-gradient(0deg, rgba(30,58,95,0.92), rgba(30,58,95,0.2));
+        color: white; padding: 1rem 1.5rem 1.25rem; text-align: center; }
+    .tkp-scan-hint h2 { margin: 0 0 0.4rem; font-size: 1.35rem; color: white; }
+    .tkp-scan-hint p { margin: 0.15rem 0; color: #e5e7eb; font-size: 0.9rem; }
+    .tkp-scan-hint code { background: rgba(0,0,0,0.35); padding: 1px 6px;
+        border-radius: 3px; font-family: monospace; }
+    .tkp-error { color: #fecaca !important; font-weight: 600; margin-top: 0.5rem !important; }
+</style>
+
+@code {
+    private bool isCheckingLocalStorage = true;
+    private string lastError = "";
+
+    private ElementReference videoRef;
+    private DotNetObjectReference<KioskTabletPair>? dotNetRef;
+    private bool scannerStarted = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        // Step 1: check localStorage for an existing pairing. Runs in JS.
+        string? existingCode = null;
+        try
+        {
+            existingCode = await JS.InvokeAsync<string?>("tabletScanner.getPairedCode");
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "KioskTabletPair: localStorage read failed");
+        }
+
+        if (!string.IsNullOrWhiteSpace(existingCode))
+        {
+            // Redirect to the paired kiosk URL immediately. If the code
+            // turns out to be invalid (deactivated, deleted, etc.), the
+            // paired route already handles it with the "Terminal offline"
+            // card, so there's no need to re-validate here.
+            Logger.LogInformation(
+                "KioskTabletPair: existing pairing found ({Code}) — redirecting",
+                existingCode);
+            Nav.NavigateTo($"/kiosk/tablet/{existingCode}", forceLoad: true);
+            return;
+        }
+
+        // Step 2: no pairing yet — start the scanner in pairing mode.
+        isCheckingLocalStorage = false;
+        StateHasChanged();
+
+        try
+        {
+            dotNetRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("tabletScanner.startPairing", videoRef, dotNetRef);
+            scannerStarted = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "KioskTabletPair: startPairing failed");
+            lastError = "Couldn't open the camera. Reboot the tablet or contact IT.";
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Called from tablet-scanner.js when a pairing QR is decoded.
+    /// The prefix `nhkiosk-pair:` has already been stripped by the JS.
+    /// </summary>
+    [JSInvokable]
+    public async Task OnPairingCodeScanned(string terminalCode)
+    {
+        if (string.IsNullOrWhiteSpace(terminalCode))
+        {
+            lastError = "Pairing code was empty. Try again.";
+            StateHasChanged();
+            return;
+        }
+
+        // Validate against TC_Terminals server-side. Filter to TABLET_KIOSK
+        // so an ESP32 code (if someone repurposed the pairing prefix)
+        // doesn't accidentally pair.
+        var terminal = await KioskScanService.ResolveActiveTerminalAsync(
+            terminalCode.Trim(),
+            AppConstants.Kiosk.DeviceType.TabletKiosk);
+
+        if (terminal == null)
+        {
+            lastError = $"Terminal '{terminalCode}' is not registered or is deactivated. Ask IT to check /admin/kiosks.";
+            Logger.LogWarning(
+                "KioskTabletPair: pairing attempted with invalid/inactive code {Code}",
+                terminalCode);
+            StateHasChanged();
+            return;
+        }
+
+        // Persist to localStorage, then redirect to the paired kiosk.
+        try
+        {
+            await JS.InvokeVoidAsync("tabletScanner.setPairedCode", terminal.TerminalCode);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "KioskTabletPair: setPairedCode interop failed");
+            lastError = "Couldn't save pairing. Reboot the tablet and try again.";
+            StateHasChanged();
+            return;
+        }
+
+        Logger.LogInformation(
+            "KioskTabletPair: tablet paired to terminal {Id} ({Code})",
+            terminal.TerminalId, terminal.TerminalCode);
+
+        // Stop the scanner before navigating so the camera releases cleanly.
+        try { await JS.InvokeVoidAsync("tabletScanner.stop"); }
+        catch { /* JS may already be gone */ }
+
+        Nav.NavigateTo($"/kiosk/tablet/{terminal.TerminalCode}", forceLoad: true);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (scannerStarted)
+        {
+            try { await JS.InvokeVoidAsync("tabletScanner.stop"); }
+            catch { /* JS teardown race */ }
+        }
+        dotNetRef?.Dispose();
+    }
+}
