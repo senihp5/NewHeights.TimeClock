@@ -148,50 +148,102 @@
             </details>
         </AuthorizeView>
 
+        @* 2026-07-08: Admin section reorganized into categorized sub-groups
+           so admins don't have to scroll a flat list. Each sub-category is
+           a nested <details> that starts collapsed — click to expand. Full
+           site scan captured every admin route present in Components/Pages/
+           Admin/ so nothing gets forgotten (previously the /admin/kiosks
+           page and /admin/employees main list were missing from the nav). *@
         <AuthorizeView Policy="RequireAdmin">
             <details class="nav-section-group" open>
                 <summary class="nav-section">Admin</summary>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/pay-periods">Pay Periods</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/staff-hours">Staff Hours Windows</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/holidays">Holiday Schedule</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/bell-schedules">Bell Schedules</NavLink>
-                </div>
-                @* Timecard Recalc moved to HR section 2026-04-28 — admins still
-                   reach it via the HR group (RequireHR includes admin). *@
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/hourly-csv-import">Hourly CSV Import</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/sub-paper-entry">Sub Paper Entry</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/email-test">Email Test</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/employees/sync">Employee Sync</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/employees/add">Add Employee (Manual)</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/schedule/import">Schedule Import</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/audit">Audit Log</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/sub-pool-management">Sub Pool Management</NavLink>
-                </div>
-                <div class="nav-item px-2">
-                    <NavLink class="nav-link" href="admin/timesheet-troubleshoot">Timesheet Troubleshoot</NavLink>
-                </div>
+
+                @* Kiosks &amp; Devices — physical scanning device
+                   registration + connectivity diagnostics. *@
+                <details class="nav-subsection-group">
+                    <summary class="nav-subsection">Kiosks &amp; Devices</summary>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/kiosks">Kiosk Terminals</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/gps-test">GPS Test</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/email-test">Email Test</NavLink>
+                    </div>
+                </details>
+
+                @* Employees — the master list, manual adds, and PowerSchool
+                   sync all live here. *@
+                <details class="nav-subsection-group">
+                    <summary class="nav-subsection">Employees</summary>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/employees">Employee Management</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/employees/add">Add Employee (Manual)</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/employees/sync">Employee Sync</NavLink>
+                    </div>
+                </details>
+
+                @* Timesheets — pay-period configuration + hours-window
+                   thresholds + paper timesheet CSV import + case-by-case
+                   troubleshoot page. Timecard Recalc lives under HR (see
+                   the HR section above) since HR triggers it at pay period
+                   close. *@
+                <details class="nav-subsection-group">
+                    <summary class="nav-subsection">Timesheets</summary>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/pay-periods">Pay Periods</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/staff-hours">Staff Hours Windows</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/hourly-csv-import">Hourly CSV Import</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/timesheet-troubleshoot">Timesheet Troubleshoot</NavLink>
+                    </div>
+                </details>
+
+                @* Schedules — holidays, bell periods, and PowerSchool
+                   master-schedule import. *@
+                <details class="nav-subsection-group">
+                    <summary class="nav-subsection">Schedules</summary>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/holidays">Holiday Schedule</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/bell-schedules">Bell Schedules</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/schedule/import">Schedule Import</NavLink>
+                    </div>
+                </details>
+
+                @* Substitute System — the pool of eligible subs +
+                   paper-form entry for legacy sub timecards. *@
+                <details class="nav-subsection-group">
+                    <summary class="nav-subsection">Substitute System</summary>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/sub-pool-management">Sub Pool Management</NavLink>
+                    </div>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/sub-paper-entry">Sub Paper Entry</NavLink>
+                    </div>
+                </details>
+
+                @* Diagnostics — audit log for after-the-fact investigation. *@
+                <details class="nav-subsection-group">
+                    <summary class="nav-subsection">Diagnostics</summary>
+                    <div class="nav-item px-2">
+                        <NavLink class="nav-link" href="admin/audit">Audit Log</NavLink>
+                    </div>
+                </details>
+
             </details>
         </AuthorizeView>
 

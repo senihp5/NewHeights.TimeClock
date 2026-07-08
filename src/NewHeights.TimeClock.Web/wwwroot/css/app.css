@@ -549,6 +549,60 @@ main {
     border-radius: 3px;
 }
 
+/* 2026-07-08: Nested sub-section groups inside the Admin section.
+   Sub-sections have their own collapse arrow, slightly smaller header,
+   and a small left indent so hierarchy reads at a glance. */
+.nav-subsection {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.42);
+    padding: 0.4rem 0.75rem 0.2rem 1.5rem;
+    letter-spacing: 0.4px;
+}
+
+.nav-subsection-group > summary.nav-subsection {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    list-style: none;
+    user-select: none;
+    transition: color 0.15s ease;
+}
+
+.nav-subsection-group > summary.nav-subsection::-webkit-details-marker {
+    display: none;
+}
+
+.nav-subsection-group > summary.nav-subsection::before {
+    content: "\25B8";
+    display: inline-block;
+    width: 0.6em;
+    font-size: 0.6rem;
+    color: rgba(255,255,255,0.35);
+    transition: transform 0.15s ease;
+}
+
+.nav-subsection-group[open] > summary.nav-subsection::before {
+    transform: rotate(90deg);
+}
+
+.nav-subsection-group > summary.nav-subsection:hover {
+    color: rgba(255,255,255,0.75);
+}
+
+.nav-subsection-group > summary.nav-subsection:focus-visible {
+    outline: 2px solid rgba(255,255,255,0.3);
+    outline-offset: 2px;
+    border-radius: 3px;
+}
+
+/* Indent items nested inside a sub-section so they visually align
+   under the sub-section header, not with the top-level Admin items. */
+.nav-subsection-group > .nav-item {
+    padding-left: 1.25rem;
+}
+
 
 
 
