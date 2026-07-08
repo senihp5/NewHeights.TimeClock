@@ -46,6 +46,29 @@
             <p class="tk-offline-code">Terminal code: <code>@TerminalCode</code></p>
         </div>
     }
+    else if (!isKioskOpen)
+    {
+        @* 2026-07-08 (option A): Kiosk closed outside school hours.
+           Camera + decode NOT started while this branch renders. The
+           clock timer re-evaluates every second; the moment we hit
+           an open window the branch flips and OnAfterRenderAsync
+           starts the scanner. No reboot required. *@
+        <div class="tk-closed-fullscreen">
+            <img src="/images/logo.jpg" alt="New Heights" class="tk-closed-logo" />
+            <h1 class="tk-closed-school">@AppConstants.Branding.SchoolName</h1>
+            <div class="tk-closed-clock">@currentTime.ToString("h:mm:ss tt")</div>
+            <div class="tk-closed-card">
+                <img src="/images/phoenix.png" alt="Phoenix" class="tk-closed-icon" />
+                <h2>Kiosk closed</h2>
+                <p>Check-in is unavailable outside of school hours.</p>
+                <p class="tk-reopens">Reopens <strong>@AppConstants.Kiosk.OperatingSchedule.FormatReopens(currentTime, nextOpenAt)</strong></p>
+            </div>
+            @if (terminal != null)
+            {
+                <div class="tk-closed-footer">@FormatTerminalFooter(terminal)</div>
+            }
+        </div>
+    }
     else
     {
         <div class="tk-cam-panel">
@@ -313,6 +336,38 @@
         .tk-right-panel { flex: 0 0 45%; }
     }
 
+    /* 2026-07-08 option A: full-viewport "kiosk closed" screen. Fills
+       100vw / 100vh (matches the .tk-fullpage flex parent) so it takes
+       over the whole tablet during off-hours. Camera panel is NOT
+       mounted in this branch — no getUserMedia stream running. */
+    .tk-closed-fullscreen {
+        width: 100vw; height: 100vh;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+        color: white; text-align: center; padding: 2rem;
+        box-sizing: border-box;
+    }
+    .tk-closed-logo { height: 72px; width: auto; border-radius: 8px;
+        margin-bottom: 0.75rem; opacity: 0.95; }
+    .tk-closed-school { font-size: 1.5rem; font-weight: 700; margin: 0.25rem 0 0.75rem;
+        color: white; }
+    .tk-closed-clock { font-size: 3rem; font-weight: 700; color: #f5b81c;
+        font-variant-numeric: tabular-nums; margin-bottom: 1.5rem; }
+    .tk-closed-card { max-width: 480px; background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.2); border-radius: 12px;
+        padding: 1.5rem 2rem; backdrop-filter: blur(6px); }
+    .tk-closed-icon { width: 72px; height: 72px; opacity: 0.85;
+        margin-bottom: 0.5rem; }
+    .tk-closed-card h2 { color: #f5b81c; margin: 0.5rem 0 0.75rem;
+        font-size: 1.75rem; }
+    .tk-closed-card p { color: #e2e8f0; margin: 0.35rem 0; font-size: 1rem;
+        line-height: 1.4; }
+    .tk-reopens { margin-top: 0.75rem !important; font-size: 1.1rem !important; }
+    .tk-reopens strong { color: white; }
+    .tk-closed-footer { position: absolute; bottom: 1rem; font-size: 0.75rem;
+        color: rgba(255,255,255,0.5); }
+
     .tk-offline-card { max-width: 480px; margin: 4rem auto;
         background: white; border: 2px solid #b91c1c; border-radius: 12px;
         padding: 2rem; text-align: center;
@@ -349,6 +404,13 @@
     private DateTime currentTime = DateTime.Now;
     private System.Timers.Timer? clockTimer;
 
+    // ── Operating-hours state (option A, 2026-07-08) ──────────────────
+    // Recomputed every clock tick from AppConstants.Kiosk.OperatingSchedule.
+    // isKioskOpen drives the razor branch; nextOpenAt drives the "reopens
+    // at X" line on the closed card.
+    private bool isKioskOpen = true;
+    private DateTime nextOpenAt = DateTime.Now;
+
     // ── Scan debounce + auto-reset ─────────────────────────────────────
     private DateTime lastScanTime = DateTime.MinValue;
     private CancellationTokenSource? autoResetCts;
@@ -375,22 +437,58 @@
                 TerminalCode);
         }
 
+        // Initial schedule check — controls whether the scanner is
+        // started at all in OnAfterRenderAsync.
+        isKioskOpen = AppConstants.Kiosk.OperatingSchedule.IsOpen(DateTime.Now);
+        nextOpenAt = AppConstants.Kiosk.OperatingSchedule.NextOpenAt(DateTime.Now);
+
         // Clock ticks every second on the server for the header display.
         // Cheap; kiosk is expected to be dedicated hardware, not shared.
+        // Also drives the option-A open/closed transition — when the
+        // schedule state flips, we start or stop the JS scanner without
+        // needing a reboot.
         clockTimer = new System.Timers.Timer(1000);
         clockTimer.Elapsed += async (_, _) =>
         {
             currentTime = DateTime.Now;
+
+            var shouldBeOpen = AppConstants.Kiosk.OperatingSchedule.IsOpen(currentTime);
+            var flipped = shouldBeOpen != isKioskOpen;
+            isKioskOpen = shouldBeOpen;
+            if (!isKioskOpen)
+            {
+                nextOpenAt = AppConstants.Kiosk.OperatingSchedule.NextOpenAt(currentTime);
+            }
+
             try { await InvokeAsync(StateHasChanged); } catch { }
+
+            // Handle scanner start/stop on state flip. StateHasChanged
+            // above will cause a re-render, which — if we just flipped
+            // to open — mounts the <video> element and lets
+            // OnAfterRenderAsync (below) start the scanner. On flip to
+            // closed we stop the JS scanner immediately so the camera
+            // powers down; the razor branch will hide the <video>
+            // element on the next render pass.
+            if (flipped && !isKioskOpen && scannerStarted)
+            {
+                try { await JS.InvokeVoidAsync("tabletScanner.stop"); }
+                catch (Exception ex) { Logger.LogWarning(ex, "KioskTablet: scanner stop on close failed"); }
+                scannerStarted = false;
+                Logger.LogInformation("KioskTablet: entered off-hours — scanner stopped");
+            }
         };
         clockTimer.Start();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        // Start the JS scanner only once after the first render, and only
-        // if the terminal validated. Skip on the offline card render path.
-        if (!firstRender || !terminalResolved || scannerStarted) return;
+        // Start the JS scanner when: terminal validated + kiosk currently
+        // open + scanner not already running. On first render this covers
+        // normal boot; on subsequent renders it covers the option-A
+        // transition from off-hours (video element wasn't mounted) into
+        // open hours (video element just got mounted, needs scanner).
+        // Skip on the offline card render path and while closed.
+        if (!terminalResolved || !isKioskOpen || scannerStarted) return;
 
         try
         {

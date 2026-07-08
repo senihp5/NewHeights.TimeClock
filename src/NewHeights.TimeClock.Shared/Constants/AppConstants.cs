@@ -121,5 +121,88 @@ public static class AppConstants
             // identical to CAMPUS_CHECKIN today.
             public const string Classroom = "CLASSROOM";
         }
+
+        // 2026-07-08: Kiosk operating schedule (option A — camera off
+        // outside school hours). Purpose: cut sustained thermal load
+        // on off-brand Android tablets (Pritom P7) by disabling the
+        // camera + decode loop when no one can possibly be scanning.
+        //
+        // Windows (kiosk OPEN — scanner running):
+        //   Mon-Thu 6:00am – 9:30pm
+        //   Friday  6:00am – 6:00pm
+        //   Sat-Sun closed
+        //
+        // Off-hours windows (kiosk CLOSED — camera off, "reopens at
+        // X" card shown instead):
+        //   Mon-Thu nights: 9:30pm → next morning 6:00am
+        //   Weekend: Fri 6:00pm → Mon 6:00am
+        //
+        // Same hours apply to both campuses today. If they diverge in
+        // the future, move to per-campus or per-terminal config on
+        // TC_Terminals. Kept as static methods (not a service) so no
+        // DI plumbing is needed for the razor page.
+        public static class OperatingSchedule
+        {
+            private static readonly TimeSpan OpenTime  = new(6, 0, 0);   // 6:00 AM
+            private static readonly TimeSpan CloseWeekday = new(21, 30, 0); // 9:30 PM
+            private static readonly TimeSpan CloseFriday  = new(18, 0, 0);  // 6:00 PM
+
+            public static bool IsOpen(DateTime now)
+            {
+                var t = now.TimeOfDay;
+                return now.DayOfWeek switch
+                {
+                    DayOfWeek.Monday    => t >= OpenTime && t < CloseWeekday,
+                    DayOfWeek.Tuesday   => t >= OpenTime && t < CloseWeekday,
+                    DayOfWeek.Wednesday => t >= OpenTime && t < CloseWeekday,
+                    DayOfWeek.Thursday  => t >= OpenTime && t < CloseWeekday,
+                    DayOfWeek.Friday    => t >= OpenTime && t < CloseFriday,
+                    _ => false // Saturday, Sunday closed
+                };
+            }
+
+            /// <summary>
+            /// Returns the next DateTime the kiosk will be open. Walks up
+            /// to 8 days forward looking for the next weekday 6:00 AM in
+            /// the future. If we're currently in an open window this still
+            /// returns the NEXT opening (i.e., tomorrow morning) — callers
+            /// should check IsOpen first.
+            /// </summary>
+            public static DateTime NextOpenAt(DateTime now)
+            {
+                for (int daysAhead = 0; daysAhead < 8; daysAhead++)
+                {
+                    var candidate = now.Date.AddDays(daysAhead).Add(OpenTime);
+                    if (candidate <= now) continue;
+                    var day = candidate.DayOfWeek;
+                    if (day is DayOfWeek.Monday or DayOfWeek.Tuesday
+                            or DayOfWeek.Wednesday or DayOfWeek.Thursday
+                            or DayOfWeek.Friday)
+                    {
+                        return candidate;
+                    }
+                }
+                // Fallback — shouldn't reach here in practice.
+                return now.Date.AddDays(1).Add(OpenTime);
+            }
+
+            /// <summary>
+            /// Human-readable version for the "Reopens at" card.
+            /// Same-day → "6:00 AM"; different day → "Monday at 6:00 AM".
+            /// </summary>
+            public static string FormatReopens(DateTime now, DateTime nextOpen)
+            {
+                var timeStr = nextOpen.ToString("h:mm tt");
+                if (nextOpen.Date == now.Date)
+                {
+                    return timeStr;
+                }
+                if (nextOpen.Date == now.Date.AddDays(1))
+                {
+                    return $"tomorrow at {timeStr}";
+                }
+                return $"{nextOpen:dddd} at {timeStr}";
+            }
+        }
     }
 }
