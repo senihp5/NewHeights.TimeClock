@@ -1,0 +1,385 @@
+@page "/kiosk/tablet/{TerminalCode}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@rendermode InteractiveServer
+@attribute [AllowAnonymous]
+@layout KioskLayout
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.DTOs
+@using NewHeights.TimeClock.Web.Services
+@using Microsoft.EntityFrameworkCore
+@inject IKioskScanService KioskScanService
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IJSRuntime JS
+@inject ILogger<KioskTablet> Logger
+@implements IAsyncDisposable
+
+<PageTitle>Check-In Kiosk — @AppConstants.Branding.ShortName</PageTitle>
+
+<div class="kiosk-container">
+    <header class="kiosk-header">
+        <a href="@AppConstants.Branding.Website" target="_blank" class="logo-link" @onclick:stopPropagation>
+            <img src="/images/logo.jpg" alt="New Heights" class="header-logo" />
+        </a>
+        <h1>@AppConstants.Branding.SchoolName</h1>
+        <p class="current-time">@currentTime.ToString("h:mm:ss tt")</p>
+        <p class="current-date">@currentTime.ToString("dddd, MMMM d, yyyy")</p>
+    </header>
+
+    <div class="scan-area">
+        @if (!terminalResolved)
+        {
+            @* Terminal wasn't resolvable — invalid code, deactivated,
+               or wrong device type. Render an offline card styled to
+               match the kiosk so it doesn't look broken on display. *@
+            <div class="tk-offline-card">
+                <img src="/images/phoenix.png" alt="Phoenix" class="tk-offline-icon" />
+                <h2>Terminal offline</h2>
+                <p>This kiosk is not registered or has been deactivated. Please contact IT.</p>
+                <p class="tk-offline-code">Terminal code: <code>@TerminalCode</code></p>
+            </div>
+        }
+        else if (showResult)
+        {
+            <KioskScanCard
+                PhotoBase64="@photoBase64"
+                Initial="@GetInitial()"
+                ResultMessage="@resultMessage"
+                ResultClass="@(isSuccess ? "success" : "error")"
+                PersonName="@personName"
+                ScanTypeDisplay="@scanTypeDisplay"
+                ScanTypeBadgeClass="@scanTypeBadgeClass"
+                PersonTypeDisplay="@personTypeDisplay"
+                TotalHoursToday="@totalHoursToday" />
+        }
+        else
+        {
+            @* Live camera viewfinder + scan prompt. On successful QR
+               decode, tablet-scanner.js calls OnQrScanned via JSInterop. *@
+            <div class="tk-scanner">
+                <video @ref="videoRef" class="tk-video" autoplay muted playsinline></video>
+                @if (terminal?.PhotoCaptureEnabled == true)
+                {
+                    <video @ref="photoVideoRef" class="tk-photo-video" autoplay muted playsinline></video>
+                }
+                <div class="tk-scan-hint">
+                    <img src="/images/phoenix.png" alt="Phoenix" class="tk-hint-icon" />
+                    <h3>Hold your ID badge up to the camera</h3>
+                    <p>@terminal?.LocationDescription</p>
+                </div>
+            </div>
+        }
+    </div>
+
+    <footer class="kiosk-footer">
+        <p class="terminal-info">
+            @if (terminal != null)
+            {
+                <span>@FormatTerminalFooter(terminal)</span>
+            }
+            else
+            {
+                <span>Unregistered terminal</span>
+            }
+        </p>
+    </footer>
+</div>
+
+<style>
+    /* 2026-07-08: Phase 2 tablet-kiosk page styles. Uses the same
+       .kiosk-container / .kiosk-header / .scan-area / .kiosk-footer
+       shell as ClockInOut.razor (defined in wwwroot/css/kiosk.css).
+       Everything specific to tablet-scanner display and offline
+       state uses the tk- prefix. */
+
+    .tk-scanner { position: relative; width: 100%; max-width: 720px;
+        margin: 0 auto; aspect-ratio: 4/3; background: #000;
+        border-radius: 12px; overflow: hidden;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.25); }
+    .tk-video { position: absolute; inset: 0; width: 100%; height: 100%;
+        object-fit: cover; }
+    .tk-photo-video { position: absolute; width: 1px; height: 1px;
+        opacity: 0; pointer-events: none; }
+
+    .tk-scan-hint { position: absolute; inset: auto 0 0 0;
+        background: linear-gradient(0deg, rgba(30,58,95,0.92), rgba(30,58,95,0.2));
+        color: white; padding: 1rem 1.5rem 1.25rem; text-align: center; }
+    .tk-scan-hint h3 { margin: 0.5rem 0 0.25rem; font-size: 1.15rem;
+        color: white; }
+    .tk-scan-hint p { margin: 0; color: #f5b81c; font-size: 0.9rem; }
+    .tk-hint-icon { width: 40px; height: 40px; opacity: 0.9; }
+
+    .tk-offline-card { max-width: 480px; margin: 4rem auto;
+        background: white; border: 2px solid #b91c1c; border-radius: 12px;
+        padding: 2rem; text-align: center;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+    .tk-offline-card h2 { color: #b91c1c; margin: 0.75rem 0 0.5rem; }
+    .tk-offline-card p { color: #374151; margin: 0.25rem 0; }
+    .tk-offline-icon { width: 72px; height: 72px; opacity: 0.6; }
+    .tk-offline-code { margin-top: 1rem !important; font-size: 0.85rem;
+        color: #6b7280; }
+    .tk-offline-code code { background: #f3f4f6; padding: 2px 8px;
+        border-radius: 4px; font-family: monospace; }
+</style>
+
+@code {
+    // ── Route parameter ────────────────────────────────────────────────
+    [Parameter] public string TerminalCode { get; set; } = "";
+
+    // ── Resolved terminal (null until OnInitializedAsync completes) ────
+    private TcTerminal? terminal;
+    private bool terminalResolved = false;
+
+    // ── UI display state — mirrors ClockInOut for KioskScanCard ────────
+    private bool showResult = false;
+    private bool isSuccess = false;
+    private string resultMessage = "";
+    private string personName = "";
+    private string photoBase64 = "";
+    private decimal? totalHoursToday = null;
+    private string scanTypeDisplay = "";
+    private string scanTypeBadgeClass = "in";
+    private string personTypeDisplay = "";
+
+    // ── Clock display ──────────────────────────────────────────────────
+    private DateTime currentTime = DateTime.Now;
+    private System.Timers.Timer? clockTimer;
+
+    // ── Scan debounce + auto-reset ─────────────────────────────────────
+    private DateTime lastScanTime = DateTime.MinValue;
+    private CancellationTokenSource? autoResetCts;
+
+    // ── JS refs + interop ──────────────────────────────────────────────
+    private ElementReference videoRef;
+    private ElementReference photoVideoRef;
+    private DotNetObjectReference<KioskTablet>? dotNetRef;
+    private bool scannerStarted = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Resolve terminal server-side. Restricted to TABLET_KIOSK so an
+        // ESP32 code accidentally pasted into a tablet URL doesn't succeed.
+        terminal = await KioskScanService.ResolveActiveTerminalAsync(
+            TerminalCode,
+            AppConstants.Kiosk.DeviceType.TabletKiosk);
+        terminalResolved = terminal != null;
+
+        if (!terminalResolved)
+        {
+            Logger.LogWarning(
+                "KioskTablet: unresolvable or inactive terminal code {Code}",
+                TerminalCode);
+        }
+
+        // Clock ticks every second on the server for the header display.
+        // Cheap; kiosk is expected to be dedicated hardware, not shared.
+        clockTimer = new System.Timers.Timer(1000);
+        clockTimer.Elapsed += async (_, _) =>
+        {
+            currentTime = DateTime.Now;
+            try { await InvokeAsync(StateHasChanged); } catch { }
+        };
+        clockTimer.Start();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Start the JS scanner only once after the first render, and only
+        // if the terminal validated. Skip on the offline card render path.
+        if (!firstRender || !terminalResolved || scannerStarted) return;
+
+        try
+        {
+            dotNetRef = DotNetObjectReference.Create(this);
+            var photoEnabled = terminal?.PhotoCaptureEnabled == true;
+            await JS.InvokeVoidAsync(
+                "tabletScanner.start",
+                videoRef,
+                dotNetRef,
+                photoEnabled,
+                photoEnabled ? photoVideoRef : (ElementReference?)null);
+            scannerStarted = true;
+
+            // Stamp LastSeenAt + user-agent once at boot so /admin/kiosks
+            // shows the tablet is alive even before the first badge scan.
+            await UpdateLastSeenAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "KioskTablet: failed to start scanner for terminal {Id}",
+                terminal?.TerminalId);
+        }
+    }
+
+    /// <summary>
+    /// Called from tablet-scanner.js when a QR is successfully decoded.
+    /// Reuses the same KioskScanService path the reception kiosk uses;
+    /// the only kiosk-side difference is that the raw payload arrived
+    /// via camera instead of a hidden text input, and we can attach an
+    /// optional photo snapshot when PhotoCaptureEnabled = true.
+    /// </summary>
+    [JSInvokable]
+    public async Task OnQrScanned(string payload, string? photoBase64Snapshot)
+    {
+        if (!terminalResolved || terminal == null) return;
+        if (string.IsNullOrWhiteSpace(payload)) return;
+
+        // 3-second debounce — matches ClockInOut behavior. Same scanned
+        // badge fired twice in a burst only produces one punch.
+        var now = DateTime.Now;
+        if ((now - lastScanTime).TotalSeconds < 3)
+        {
+            Logger.LogInformation(
+                "KioskTablet debounce: dropped duplicate scan {Delta:F1}s after last",
+                (now - lastScanTime).TotalSeconds);
+            return;
+        }
+        lastScanTime = now;
+
+        autoResetCts?.Cancel();
+        autoResetCts = new CancellationTokenSource();
+
+        try
+        {
+            var result = await KioskScanService.ProcessRawScanAsync(
+                payload.Trim(),
+                terminal.CampusId,
+                AppConstants.Kiosk.DeviceType.TabletKiosk,
+                terminal.TerminalId,
+                terminal.LocationId);
+
+            ApplyScanResult(result);
+
+            // Log the photoSnapshot presence but don't wire storage yet —
+            // per build pack decision B (2026-06-30): plumbed but disabled.
+            // If PhotoCaptureEnabled flips on later, this is the spot to
+            // pipe photoBase64Snapshot into TC_TimePunches.ScanPhoto or
+            // wherever the ESP32 firmware writes its captures.
+            if (!string.IsNullOrEmpty(photoBase64Snapshot))
+            {
+                Logger.LogInformation(
+                    "KioskTablet: photo snapshot received but storage disabled (terminal {Id})",
+                    terminal.TerminalId);
+            }
+
+            await UpdateLastSeenAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "KioskTablet: scan handling failed for terminal {Id}",
+                terminal.TerminalId);
+            ShowError("System error — please try again");
+        }
+
+        _ = AutoResetAfterDelay(autoResetCts.Token);
+    }
+
+    private void ApplyScanResult(KioskScanResult result)
+    {
+        if (!result.Success)
+        {
+            ShowError(result.Message);
+            return;
+        }
+
+        personName        = result.PersonName ?? "";
+        photoBase64       = result.PhotoBase64 ?? "";
+        totalHoursToday   = result.TotalHoursToday;
+        scanTypeDisplay   = result.ScanTypeDisplay ?? "";
+        scanTypeBadgeClass = result.ScanTypeBadgeClass ?? "in";
+        personTypeDisplay = result.PersonTypeDisplay ?? "";
+        resultMessage     = result.Message;
+        isSuccess         = true;
+        showResult        = true;
+        StateHasChanged();
+    }
+
+    private void ShowError(string message)
+    {
+        isSuccess         = false;
+        resultMessage     = message;
+        personName        = "";
+        photoBase64       = "";
+        scanTypeDisplay   = "";
+        personTypeDisplay = "";
+        totalHoursToday   = null;
+        showResult        = true;
+        StateHasChanged();
+    }
+
+    private async Task AutoResetAfterDelay(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(5000, ct);
+            if (ct.IsCancellationRequested) return;
+            showResult        = false;
+            personName        = "";
+            photoBase64       = "";
+            totalHoursToday   = null;
+            resultMessage     = "";
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (TaskCanceledException) { /* expected on re-scan */ }
+    }
+
+    private string GetInitial()
+    {
+        if (string.IsNullOrWhiteSpace(personName)) return "?";
+        return personName[0].ToString().ToUpper();
+    }
+
+    private static string FormatTerminalFooter(TcTerminal t)
+    {
+        var campus = t.Campus?.CampusName ?? $"Campus {t.CampusId}";
+        return $"{campus} · {t.LocationDescription} · Terminal #{t.TerminalId}";
+    }
+
+    // Best-effort heartbeat write. Failures logged but never thrown —
+    // scan-processing path must not depend on this succeeding.
+    private async Task UpdateLastSeenAsync()
+    {
+        if (terminal == null) return;
+        try
+        {
+            using var context = await DbFactory.CreateDbContextAsync();
+            var tracked = await context.TcTerminals
+                .FirstOrDefaultAsync(t => t.TerminalId == terminal.TerminalId);
+            if (tracked == null) return;
+            tracked.LastSeenAt = DateTime.Now;
+            // Firmware slot on a tablet = the browser user-agent, useful
+            // to spot when a tablet gets factory-reset or its Edge is
+            // updated. Truncated to 30 chars to fit the column width.
+            var ua = await JS.InvokeAsync<string?>("tabletScanner.getUserAgent");
+            if (!string.IsNullOrEmpty(ua))
+            {
+                tracked.LastSeenFirmware = ua.Length > 30 ? ua[..30] : ua;
+            }
+            await context.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex,
+                "KioskTablet: UpdateLastSeenAsync failed for terminal {Id}",
+                terminal.TerminalId);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        clockTimer?.Stop();
+        clockTimer?.Dispose();
+        autoResetCts?.Cancel();
+        autoResetCts?.Dispose();
+
+        if (scannerStarted)
+        {
+            try { await JS.InvokeVoidAsync("tabletScanner.stop"); }
+            catch { /* JS may already be torn down */ }
+        }
+        dotNetRef?.Dispose();
+    }
+}
