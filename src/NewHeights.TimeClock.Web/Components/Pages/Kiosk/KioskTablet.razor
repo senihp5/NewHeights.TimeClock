@@ -96,7 +96,7 @@
                         PhotoBase64="@photoBase64"
                         Initial="@GetInitial()"
                         ResultMessage="@resultMessage"
-                        ResultClass="@(isSuccess ? "success" : "error")"
+                        ResultClass="@(isSuccess ? "success" : (isInfoResult ? "info" : "error"))"
                         PersonName="@personName"
                         ScanTypeDisplay="@scanTypeDisplay"
                         ScanTypeBadgeClass="@scanTypeBadgeClass"
@@ -171,12 +171,32 @@
         position: absolute;
         top: 12px; left: 12px;
         display: flex; align-items: center; gap: 0.5rem;
-        background: rgba(30,58,95,0.9); color: white;
+        /* 2026-07-08 fix: dropped backdrop-filter: blur(4px). GPU-heavy
+           on Pritom P7, was starving the camera compositor. Solid dark
+           background achieves the same readability without the cost. */
+        background: rgba(15, 23, 42, 0.85); color: white;
         padding: 0.5rem 0.85rem; border-radius: 8px;
         font-size: 0.95rem; font-weight: 600;
         letter-spacing: 0.02em;
-        backdrop-filter: blur(4px);
         z-index: 2;
+    }
+
+    /* 2026-07-08: Snapshot flash animation. Triggered by
+       tabletScanner.flashCameraPanel() after a successful decode.
+       Class add + short animation, then removed after 0.4s so the
+       next flash restarts cleanly. */
+    .tk-cam-panel.tk-flash::after {
+        content: '';
+        position: absolute; inset: 0;
+        background: white;
+        pointer-events: none;
+        animation: tkSnapshotFlash 400ms ease-out;
+        z-index: 3;
+    }
+    @@keyframes tkSnapshotFlash {
+        0%   { opacity: 0; }
+        15%  { opacity: 0.85; }
+        100% { opacity: 0; }
     }
     .tk-corner-icon { width: 24px; height: 24px; opacity: 0.95; }
 
@@ -294,6 +314,19 @@
         margin: 0.15rem 0;
     }
 
+    /* 2026-07-08: "info" state for the KioskScanCard — used for the
+       60s per-person debounce ("Already scanned, please wait Xs")
+       so users don't read it as a red error. Yellow-tinted, not
+       alarming. Style overrides only apply inside .tk-right-content
+       so ClockInOut's error styling is untouched. */
+    .tk-right-content .result-display.info {
+        background: #fef9c3;   /* soft amber */
+        color: #78350f;
+        border: 1px solid #fde68a;
+        border-radius: 8px;
+    }
+    .tk-right-content .result-display.info h3 { color: #78350f; }
+
     .tk-right-footer {
         flex-shrink: 0;
         padding: 0.5rem 1rem 0.75rem;
@@ -354,9 +387,11 @@
         color: white; }
     .tk-closed-clock { font-size: 3rem; font-weight: 700; color: #f5b81c;
         font-variant-numeric: tabular-nums; margin-bottom: 1.5rem; }
-    .tk-closed-card { max-width: 480px; background: rgba(255,255,255,0.08);
+    .tk-closed-card { max-width: 480px; background: rgba(255,255,255,0.10);
         border: 1px solid rgba(255,255,255,0.2); border-radius: 12px;
-        padding: 1.5rem 2rem; backdrop-filter: blur(6px); }
+        padding: 1.5rem 2rem;
+        /* 2026-07-08 fix: dropped backdrop-filter blur — same reason as
+           .tk-cam-corner-label. Solid semi-transparent bg reads fine. */ }
     .tk-closed-icon { width: 72px; height: 72px; opacity: 0.85;
         margin-bottom: 0.5rem; }
     .tk-closed-card h2 { color: #f5b81c; margin: 0.5rem 0 0.75rem;
@@ -443,9 +478,8 @@
         nextOpenAt = AppConstants.Kiosk.OperatingSchedule.NextOpenAt(DateTime.Now);
 
         // Clock ticks every second on the server for the header display.
-        // Cheap; kiosk is expected to be dedicated hardware, not shared.
-        // Also drives the option-A open/closed transition — when the
-        // schedule state flips, we start or stop the JS scanner without
+        // Same tick also drives the option-A open/closed transition — if
+        // the schedule flips, we start or stop the JS scanner without
         // needing a reboot.
         clockTimer = new System.Timers.Timer(1000);
         clockTimer.Elapsed += async (_, _) =>
@@ -462,13 +496,11 @@
 
             try { await InvokeAsync(StateHasChanged); } catch { }
 
-            // Handle scanner start/stop on state flip. StateHasChanged
-            // above will cause a re-render, which — if we just flipped
-            // to open — mounts the <video> element and lets
-            // OnAfterRenderAsync (below) start the scanner. On flip to
-            // closed we stop the JS scanner immediately so the camera
-            // powers down; the razor branch will hide the <video>
-            // element on the next render pass.
+            // Handle scanner start/stop on state flip. On flip to closed we
+            // stop the JS scanner immediately so the camera powers down;
+            // the razor branch will hide the <video> element on the next
+            // render. On flip to open, the re-render mounts <video> and
+            // OnAfterRenderAsync starts the scanner.
             if (flipped && !isKioskOpen && scannerStarted)
             {
                 try { await JS.InvokeVoidAsync("tabletScanner.stop"); }
@@ -602,7 +634,11 @@
     {
         if (!result.Success)
         {
-            ShowError(result.Message);
+            // TOO_SOON is a friendly "you already scanned" hit, not a real
+            // error — treat it as an info card (not red) so users don't
+            // think their badge failed. Every other error stays red.
+            var isInfo = string.Equals(result.ErrorCode, "TOO_SOON", StringComparison.Ordinal);
+            ShowMessage(result.Message, isSuccess: false, isInfo: isInfo);
             return;
         }
 
@@ -616,11 +652,26 @@
         isSuccess         = true;
         showResult        = true;
         StateHasChanged();
+
+        // 2026-07-08: Snapshot flash on the camera panel so the user
+        // sees an unmistakable visual confirmation even if they're
+        // looking at their badge and not the screen. Fire-and-forget;
+        // JS animation is entirely client-side.
+        _ = JS.InvokeVoidAsync("tabletScanner.flashCameraPanel");
     }
 
-    private void ShowError(string message)
+    private void ShowError(string message) => ShowMessage(message, isSuccess: false, isInfo: false);
+
+    /// <summary>
+    /// Renders a non-success card. When isInfo=true, styles it as
+    /// friendly info (yellow/blue) rather than an error (red) — used
+    /// for the "you just scanned, please wait" debounce message so
+    /// staff don't misread it as a scan failure.
+    /// </summary>
+    private void ShowMessage(string message, bool isSuccess, bool isInfo)
     {
-        isSuccess         = false;
+        this.isSuccess    = isSuccess;
+        this.isInfoResult = isInfo;
         resultMessage     = message;
         personName        = "";
         photoBase64       = "";
@@ -630,6 +681,8 @@
         showResult        = true;
         StateHasChanged();
     }
+
+    private bool isInfoResult = false;
 
     private async Task AutoResetAfterDelay(CancellationToken ct)
     {
