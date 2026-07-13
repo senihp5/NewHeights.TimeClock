@@ -181,16 +181,20 @@
         z-index: 2;
     }
 
-    /* 2026-07-08: Snapshot flash animation. Triggered by
+    /* 2026-07-08 v2: Snapshot flash animation. Triggered by
        tabletScanner.flashCameraPanel() after a successful decode.
-       Class add + short animation, then removed after 0.4s so the
-       next flash restarts cleanly. */
+       CRITICAL: base rule sets opacity: 0 explicitly. Without that,
+       once the 400ms animation finishes the ::after reverts to
+       opacity 1 (browser default) and the white sheet stays over
+       the camera forever. animation-fill-mode: forwards belt-and-
+       suspenders the 100% keyframe as the resting state. */
     .tk-cam-panel.tk-flash::after {
         content: '';
         position: absolute; inset: 0;
         background: white;
+        opacity: 0;
         pointer-events: none;
-        animation: tkSnapshotFlash 400ms ease-out;
+        animation: tkSnapshotFlash 400ms ease-out forwards;
         z-index: 3;
     }
     @@keyframes tkSnapshotFlash {

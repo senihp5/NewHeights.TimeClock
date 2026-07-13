@@ -40,8 +40,19 @@
     let usingJsQrFallback = false;
     let pairingMode = false;       // true → route decodes to OnPairingCodeScanned
 
-    let lastScanAt = 0;            // Timestamp (ms since epoch)
+    let lastScanAt = 0;            // Timestamp (ms since epoch) — global rapid-frame guard
     const DEBOUNCE_MS = 3000;
+
+    // 2026-07-08: Per-badge client-side debounce. Matches the server-side
+    // 60-second min-time-between-punches so we never send a redundant scan
+    // that the server would only bounce back as TOO_SOON. Without this,
+    // a rapid re-scan of the same badge sent both scans within 3s: the
+    // server's TOO_SOON response (fast — one lookup) beat the success
+    // response (slow — DB writes), so the user saw "just scanned" BEFORE
+    // the welcome card. Different badges scan freely; only same-badge
+    // re-scans within 60s are dropped client-side.
+    const lastScanByPayload = new Map(); // payload → timestamp (ms)
+    const PER_PAYLOAD_DEBOUNCE_MS = 60000;
 
     // Debug console via existing kioskInterop pattern from reception page.
     // If the page doesn't provide it, log() is a no-op.
@@ -189,17 +200,29 @@
                                 }
                             }
                         } else {
-                            lastScanAt = now;
-                            log('QR decoded: ' + payload.substring(0, 40));
-                            playBeep();
-                            // A successful scan counts as activity — reset the idle dim.
-                            armIdleDimTimer();
+                            // 2026-07-08: Per-badge debounce. Silently drop
+                            // any re-scan of the same payload within 60s so
+                            // the server never sees the redundant round-trip
+                            // (and the user never sees the TOO_SOON toast
+                            // beat the actual welcome card back to the UI).
+                            const lastForBadge = lastScanByPayload.get(payload) || 0;
+                            if (now - lastForBadge < PER_PAYLOAD_DEBOUNCE_MS) {
+                                log('Same-badge re-scan dropped client-side ('
+                                    + Math.round((now - lastForBadge) / 1000) + 's ago)');
+                            } else {
+                                lastScanAt = now;
+                                lastScanByPayload.set(payload, now);
+                                log('QR decoded: ' + payload.substring(0, 40));
+                                playBeep();
+                                // A successful scan counts as activity — reset the idle dim.
+                                armIdleDimTimer();
 
-                            const photo = captureFrontPhoto();
-                            try {
-                                await dotNetRef.invokeMethodAsync('OnQrScanned', payload, photo);
-                            } catch (e) {
-                                log('OnQrScanned invoke failed: ' + e.message);
+                                const photo = captureFrontPhoto();
+                                try {
+                                    await dotNetRef.invokeMethodAsync('OnQrScanned', payload, photo);
+                                } catch (e) {
+                                    log('OnQrScanned invoke failed: ' + e.message);
+                                }
                             }
                         }
                     }
@@ -446,6 +469,61 @@
         });
     }
 
+    // ── Client-side clock display (2026-07-08, choppy-video fix) ─────
+    //
+    // Previously the KioskTablet.razor clock timer called
+    // InvokeAsync(StateHasChanged) every second, which for Blazor
+    // Server = 1 Hz SignalR round-trip + full page diff render. On
+    // the Pritom P7 that stole enough main-thread time to make the
+    // camera preview visibly choppy. Now JS drives the clock display
+    // directly by updating DOM textContent — no framework, no
+    // server round-trip. The server-side schedule check still runs
+    // every 15s (down from 1s) to catch off-hours transitions.
+    let clockIntervalId = null;
+    function startClockDisplay(timeElId, dateElId) {
+        function tick() {
+            const now = new Date();
+            const timeEl = document.getElementById(timeElId);
+            const dateEl = document.getElementById(dateElId);
+            if (timeEl) {
+                timeEl.textContent = now.toLocaleTimeString([], {
+                    hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true
+                });
+            }
+            if (dateEl) {
+                dateEl.textContent = now.toLocaleDateString([], {
+                    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+                });
+            }
+        }
+        if (clockIntervalId) clearInterval(clockIntervalId);
+        tick();
+        clockIntervalId = setInterval(tick, 1000);
+    }
+
+    function stopClockDisplay() {
+        if (clockIntervalId) { clearInterval(clockIntervalId); clockIntervalId = null; }
+    }
+
+    // ── Camera-panel snapshot flash (2026-07-08) ─────────────────────
+    // Briefly flashes the camera panel white after a successful scan
+    // so the user gets an unmissable "photo taken" visual, even if
+    // they're looking at the badge in their hand and not the screen.
+    // Uses CSS class add/remove — animation-driven, no per-frame JS.
+    function flashCameraPanel() {
+        const panel = document.querySelector('.tk-cam-panel');
+        if (!panel) return;
+        panel.classList.remove('tk-flash');
+        // Force reflow so the class re-add restarts the animation.
+        void panel.offsetWidth;
+        panel.classList.add('tk-flash');
+        // Belt-and-suspenders: strip the class after the 400ms animation.
+        // The CSS uses animation-fill-mode: forwards + opacity: 0 base, so
+        // the panel is already visually clear when the animation ends. This
+        // just ensures a subsequent flashCameraPanel() call can re-trigger.
+        setTimeout(() => { panel.classList.remove('tk-flash'); }, 450);
+    }
+
     // ── Idle screen dim (2026-07-08 thermal tuning D) ─────────────────
     //
     // After IDLE_DIM_MS with no user activity or successful scan, apply a
@@ -515,6 +593,9 @@
         renderPairingQr: renderPairingQr,
         enterKioskDisplayMode: enterKioskDisplayMode,
         installIdleWatch: installIdleWatch,
-        armIdleDimTimer: armIdleDimTimer
+        armIdleDimTimer: armIdleDimTimer,
+        startClockDisplay: startClockDisplay,
+        stopClockDisplay: stopClockDisplay,
+        flashCameraPanel: flashCameraPanel
     };
 })();
