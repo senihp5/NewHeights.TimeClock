@@ -1,0 +1,321 @@
+@page "/teacher/today"
+@page "/teacher/today/{DateText}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@attribute [Authorize(Policy = "RequireAnyStaff")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IUserContextService UserContextSvc
+@inject IClassRosterService RosterService
+@inject NavigationManager Navigation
+@inject ILogger<TeacherToday> Logger
+
+<PageTitle>My Classes Today - @AppConstants.Branding.ShortName</PageTitle>
+
+<style>
+    .tt-page { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem; font-family: "Segoe UI", Arial, sans-serif; color: #1f2937; }
+    .tt-header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; margin-bottom: 1rem; }
+    .tt-header h1 { margin: 0 0 0.25rem 0; color: #1e3a5f; font-size: 1.6rem; }
+    .tt-header .tt-sub { color: #6b7280; font-size: 0.95rem; }
+    .tt-date-nav { display: flex; gap: 0.4rem; align-items: center; }
+    .tt-date-nav input[type=date] { padding: 0.35rem 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 0.95rem; }
+    .tt-date-nav .btn-nav { padding: 0.35rem 0.6rem; background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 4px; cursor: pointer; font-size: 0.95rem; }
+    .tt-date-nav .btn-nav:hover { background: #e5e7eb; }
+    .tt-loading, .tt-empty, .tt-error { padding: 1.5rem; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; text-align: center; color: #4b5563; margin-top: 1rem; }
+    .tt-error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    .tt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.85rem; margin-top: 1rem; }
+    .tt-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04); cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; text-decoration: none; color: inherit; display: block; }
+    .tt-card:hover { border-color: #1e3a5f; box-shadow: 0 4px 12px rgba(30, 58, 95, 0.12); }
+    .tt-card .tt-period-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; }
+    .tt-card .tt-period { font-weight: 700; color: #1e3a5f; font-size: 0.85rem; letter-spacing: 0.03em; }
+    .tt-card .tt-room { color: #6b7280; font-size: 0.85rem; }
+    .tt-card .tt-course { font-size: 1.05rem; font-weight: 600; line-height: 1.3; margin: 0 0 0.35rem 0; color: #111827; }
+    .tt-card .tt-meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; color: #6b7280; font-size: 0.85rem; margin-bottom: 0.6rem; }
+    .tt-card .tt-status-row { display: flex; justify-content: space-between; align-items: center; padding-top: 0.5rem; border-top: 1px solid #f3f4f6; }
+    .tt-pill { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.02em; }
+    .tt-pill-notstarted { background: #f3f4f6; color: #6b7280; }
+    .tt-pill-inprogress { background: #fef3c7; color: #92400e; }
+    .tt-pill-submitted  { background: #dbeafe; color: #1e40af; }
+    .tt-pill-rejected   { background: #fee2e2; color: #991b1b; }
+    .tt-pill-validated  { background: #d1fae5; color: #065f46; }
+    .tt-pill-reopened   { background: #fef3c7; color: #92400e; }
+    .tt-enroll-count { color: #6b7280; font-size: 0.8rem; }
+    .tt-debug { margin-top: 1.5rem; padding: 0.75rem 1rem; background: #f9fafb; border: 1px dashed #d1d5db; border-radius: 4px; color: #6b7280; font-size: 0.8rem; }
+</style>
+
+<div class="tt-page">
+    <header class="tt-header">
+        <div>
+            <h1>My Classes</h1>
+            <p class="tt-sub">@displayDate.ToString("dddd, MMMM d, yyyy")</p>
+        </div>
+        <div class="tt-date-nav">
+            <button type="button" class="btn-nav" @onclick="GoPreviousDay" title="Previous day">&larr;</button>
+            <input type="date"
+                   value="@displayDate.ToString("yyyy-MM-dd")"
+                   @onchange="OnDateChanged" />
+            <button type="button" class="btn-nav" @onclick="GoToday" title="Today">Today</button>
+            <button type="button" class="btn-nav" @onclick="GoNextDay" title="Next day">&rarr;</button>
+        </div>
+    </header>
+
+    @if (isImpersonating)
+    {
+        <div style="background:#fff7ed; border:1px solid #fdba74; color:#9a3412; padding:0.65rem 1rem; border-radius:4px; margin-bottom:0.85rem; font-size:0.9rem;">
+            <strong>Viewing as:</strong> @impersonatedDisplayLabel
+            <a href="@($"/teacher/today/{displayDate:yyyy-MM-dd}")" style="margin-left:1rem; color:#9a3412; text-decoration:underline;">Exit view-as</a>
+        </div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="tt-loading">Loading your classes&hellip;</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="tt-error">@loadError</div>
+    }
+    else if (teacherDcid == null)
+    {
+        <div class="tt-error">
+            We couldn't match your account (<em>@signedInEmail</em>) to a teacher record in CMS.
+            If you should be listed as a teacher, ask Patrick to verify your Staff sync.
+        </div>
+    }
+    else if (sections.Count == 0)
+    {
+        <div class="tt-empty">
+            No classes scheduled for you on @displayDate.ToString("MMM d, yyyy"). If you expect to see a class here, the
+            section may not have synced from PowerSchool yet.
+        </div>
+    }
+    else
+    {
+        <div class="tt-grid">
+            @foreach (var s in sections)
+            {
+                var (pillClass, pillText) = ResolvePillFor(s);
+                var routeDate = displayDate.ToString("yyyy-MM-dd");
+
+                <a class="tt-card"
+                   href="@($"/class/attendance/{s.ClassSectionId}/{routeDate}")"
+                   title="Open attendance for this class">
+                    <div class="tt-period-row">
+                        <span class="tt-period">@FormatPeriod(s)</span>
+                        @if (!string.IsNullOrWhiteSpace(s.Room))
+                        {
+                            <span class="tt-room">Rm @s.Room</span>
+                        }
+                    </div>
+                    <h3 class="tt-course">@s.CourseName</h3>
+                    <div class="tt-meta">
+                        @if (!string.IsNullOrWhiteSpace(s.Expression))
+                        {
+                            <span>@s.Expression</span>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(s.CampusName))
+                        {
+                            <span>@s.CampusName</span>
+                        }
+                    </div>
+                    <div class="tt-status-row">
+                        <span class="tt-pill @pillClass">@pillText</span>
+                        <span class="tt-enroll-count">@s.EnrolledCount enrolled</span>
+                    </div>
+                </a>
+            }
+        </div>
+    }
+
+    @if (showDebugInfo)
+    {
+        <div class="tt-debug">
+            Debug:
+            email = <strong>@signedInEmail</strong>;
+            teacherDcid = <strong>@teacherDcid</strong>;
+            sections = <strong>@sections.Count</strong>;
+            date = <strong>@displayDate.ToString("yyyy-MM-dd")</strong>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string? DateText { get; set; }
+
+    /// <summary>
+    /// Admin-only override: pass ?viewAs=1152 to view the page as if signed in
+    /// as Staff.Dcid 1152 (e.g. Fake Teacher). Ignored for non-admin users.
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "viewAs")]
+    public int? ViewAsDcid { get; set; }
+
+    private DateOnly displayDate = DateOnly.FromDateTime(DateTime.Today);
+    private string signedInEmail = "";
+    private int? teacherDcid;
+    private bool isImpersonating = false;
+    private string? impersonatedDisplayLabel = null;
+
+    private List<ClassSectionSummary> sections = new();
+    private bool isLoading = true;
+    private string loadError = "";
+    private bool showDebugInfo = false;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(DateText)
+            && DateOnly.TryParse(DateText, out var parsed))
+        {
+            displayDate = parsed;
+        }
+        else
+        {
+            displayDate = DateOnly.FromDateTime(DateTime.Today);
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        Console.WriteLine($"[TT-DIAG] LoadAsync starting date={displayDate} viewAs={ViewAsDcid}");
+        Logger.LogWarning("TeacherToday DIAG-PAGE-ENTRY: LoadAsync starting (date={Date})", displayDate);
+
+        isLoading = true;
+        loadError = "";
+        sections = new();
+        teacherDcid = null;
+        isImpersonating = false;
+        impersonatedDisplayLabel = null;
+
+        try
+        {
+            var ctx = await UserContextSvc.GetCurrentUserAsync();
+            signedInEmail = ctx.Email ?? "";
+            showDebugInfo = ctx.IsAdmin;
+
+            Console.WriteLine($"[TT-DIAG] ctx loaded email='{signedInEmail}' isAdmin={ctx.IsAdmin} viewAs={ViewAsDcid}");
+            Logger.LogWarning(
+                "TeacherToday DIAG-PAGE-CTX: email='{Email}' isAdmin={IsAdmin} viewAs={ViewAs}",
+                signedInEmail, ctx.IsAdmin, ViewAsDcid);
+
+            if (string.IsNullOrWhiteSpace(signedInEmail))
+            {
+                loadError = "We couldn't read your email from the sign-in token. Try signing out and back in.";
+                return;
+            }
+
+            try
+            {
+                teacherDcid = await RosterService.ResolveTeacherDcidFromEmailAsync(signedInEmail);
+                Console.WriteLine($"[TT-DIAG] ResolveTeacherDcidFromEmailAsync returned: {teacherDcid}");
+            }
+            catch (Exception resolveEx)
+            {
+                Console.WriteLine($"[TT-DIAG] ResolveTeacherDcidFromEmailAsync THREW: {resolveEx.GetType().Name}: {resolveEx.Message}");
+                loadError = $"Lookup threw {resolveEx.GetType().Name}: {resolveEx.Message}";
+                throw;
+            }
+
+            if (ctx.IsAdmin && ViewAsDcid.HasValue)
+            {
+                Logger.LogInformation(
+                    "TeacherToday: admin {Email} impersonating Staff.Dcid {Dcid}",
+                    signedInEmail, ViewAsDcid.Value);
+                teacherDcid = ViewAsDcid.Value;
+                isImpersonating = true;
+                using var diagDb = await DbFactory.CreateDbContextAsync();
+                var staffRow = await diagDb.Staff
+                    .AsNoTracking()
+                    .Where(s => s.Dcid == teacherDcid.Value)
+                    .Select(s => new { s.FirstName, s.LastName, s.Id, s.SchoolId })
+                    .FirstOrDefaultAsync();
+                impersonatedDisplayLabel = staffRow != null
+                    ? $"{staffRow.FirstName} {staffRow.LastName} (Dcid {teacherDcid}, PsId {staffRow.Id}, SchoolId {staffRow.SchoolId})"
+                    : $"(unknown - Dcid {teacherDcid})";
+            }
+
+            if (teacherDcid == null)
+            {
+                Logger.LogInformation(
+                    "TeacherToday: email {Email} did not resolve to a staff DCID in CMS",
+                    signedInEmail);
+                return;
+            }
+
+            sections = await RosterService.GetSectionsForTeacherAsync(teacherDcid.Value, displayDate);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TT-DIAG] LoadAsync OUTER CATCH: {ex.GetType().Name}: {ex.Message}");
+            Logger.LogError(ex,
+                "TeacherToday: failed to load sections for {Email} on {Date}",
+                signedInEmail, displayDate);
+            if (string.IsNullOrEmpty(loadError))
+                loadError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private string ViewAsQuery()
+        => ViewAsDcid.HasValue ? $"?viewAs={ViewAsDcid.Value}" : string.Empty;
+
+    private async Task OnDateChanged(ChangeEventArgs e)
+    {
+        if (e.Value is string s && DateOnly.TryParse(s, out var picked))
+        {
+            displayDate = picked;
+            Navigation.NavigateTo($"/teacher/today/{picked:yyyy-MM-dd}{ViewAsQuery()}");
+            await Task.CompletedTask;
+        }
+    }
+
+    private void GoPreviousDay()
+    {
+        var prev = displayDate.AddDays(-1);
+        Navigation.NavigateTo($"/teacher/today/{prev:yyyy-MM-dd}{ViewAsQuery()}");
+    }
+
+    private void GoNextDay()
+    {
+        var next = displayDate.AddDays(1);
+        Navigation.NavigateTo($"/teacher/today/{next:yyyy-MM-dd}{ViewAsQuery()}");
+    }
+
+    private void GoToday()
+    {
+        Navigation.NavigateTo($"/teacher/today{ViewAsQuery()}");
+    }
+
+    private static string FormatPeriod(ClassSectionSummary s)
+    {
+        if (s.PeriodNumber.HasValue)
+            return $"PERIOD {s.PeriodNumber.Value}";
+        return s.Expression ?? "—";
+    }
+
+    private static (string pillClass, string pillText) ResolvePillFor(ClassSectionSummary s)
+    {
+        if (s.Sheet == null)
+            return ("tt-pill-notstarted", "Not started");
+
+        return s.Sheet.Status switch
+        {
+            ClassAttendanceSheetStatus.NotStarted => ("tt-pill-notstarted", "Not started"),
+            ClassAttendanceSheetStatus.InProgress => ("tt-pill-inprogress", "In progress"),
+            ClassAttendanceSheetStatus.Submitted  => ("tt-pill-submitted",  "Submitted"),
+            ClassAttendanceSheetStatus.Rejected   => ("tt-pill-rejected",   "Returned"),
+            ClassAttendanceSheetStatus.Validated  => ("tt-pill-validated",  "Validated"),
+            ClassAttendanceSheetStatus.Reopened   => ("tt-pill-reopened",   "Reopened"),
+            _ => ("tt-pill-notstarted", "—")
+        };
+    }
+}

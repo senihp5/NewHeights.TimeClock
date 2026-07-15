@@ -135,7 +135,9 @@ window.qrScanner = {
 window.blazorReconnection = {
     dotNetHelper: null,
     retryCount: 0,
-    maxRetries: 999,
+    // Tightened from 999. 3 quick + 12 slow = ~63s before force-reload.
+    // Anything longer leaves the kiosk silently broken for staff/students.
+    maxRetries: 15,
 
     init: function(dotNetRef) {
         this.dotNetHelper = dotNetRef;
@@ -143,31 +145,41 @@ window.blazorReconnection = {
     },
 
     setupReconnectionHandlers: function() {
+        if (typeof Blazor === 'undefined' || !Blazor.defaultReconnectionHandler) {
+            console.warn('[Kiosk] Blazor.defaultReconnectionHandler not yet available - retrying init in 500ms');
+            setTimeout(() => this.setupReconnectionHandlers(), 500);
+            return;
+        }
+
         Blazor.defaultReconnectionHandler._reconnectCallback = async (d) => {
             console.log('[Kiosk] Blazor reconnection attempt', this.retryCount);
-            
+
             for (let i = 0; i < this.maxRetries; i++) {
                 this.retryCount = i + 1;
                 console.log(`[Kiosk] Reconnection attempt ${this.retryCount}/${this.maxRetries}`);
-                
+
                 await new Promise(resolve => setTimeout(resolve, i < 3 ? 1000 : 5000));
-                
+
                 if (await Blazor.reconnect()) {
                     console.log('[Kiosk] Reconnection successful');
                     this.retryCount = 0;
-                    
+
                     if (this.dotNetHelper) {
-                        this.dotNetHelper.invokeMethodAsync('OnReconnected');
+                        try {
+                            await this.dotNetHelper.invokeMethodAsync('OnReconnected');
+                        } catch (e) {
+                            console.warn('[Kiosk] OnReconnected callback failed:', e);
+                        }
                     }
                     return;
                 }
             }
-            
-            console.error('[Kiosk] Reconnection failed after max retries');
+
+            console.error('[Kiosk] Reconnection failed after max retries - forcing page reload');
             location.reload();
         };
-        
-        console.log('[Kiosk] Reconnection handlers configured');
+
+        console.log('[Kiosk] Reconnection handlers configured (maxRetries=' + this.maxRetries + ')');
     }
 };
 

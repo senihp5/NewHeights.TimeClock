@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NewHeights.TimeClock.Data.Entities;
+using NewHeights.TimeClock.Shared.Enums;
 
 namespace NewHeights.TimeClock.Data;
 
@@ -74,6 +75,9 @@ public class TimeClockDbContext : DbContext
     // Added in migration 066 (Class Attendance Phase A).
     public DbSet<TcClassObservation> TcClassObservations { get; set; } = null!;
 
+    // Added in migration 067 (Class Attendance Phase A).
+    public DbSet<TcClassAttendanceSheet> TcClassAttendanceSheets { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -141,6 +145,7 @@ public class TimeClockDbContext : DbContext
             entity.Property(e => e.Latitude).HasColumnType("decimal(9,6)");
             entity.Property(e => e.Longitude).HasColumnType("decimal(9,6)");
             entity.Property(e => e.CampusWifiSSID).HasMaxLength(100);
+            entity.Property(e => e.IsVirtual).HasDefaultValue(false);
             entity.HasOne(e => e.District)
                   .WithMany(d => d.Campuses)
                   .HasForeignKey(e => e.DistrictId);
@@ -1046,6 +1051,65 @@ public class TimeClockDbContext : DbContext
             entity.HasOne(e => e.Student)
                   .WithMany()
                   .HasForeignKey(e => e.StudentDcid)
+                  .OnDelete(DeleteBehavior.NoAction)
+                  .IsRequired(false);
+        });
+
+        modelBuilder.Entity<TcClassAttendanceSheet>(entity =>
+        {
+            entity.ToTable("TC_ClassAttendanceSheet");
+            entity.HasKey(e => e.SheetId);
+
+            entity.Property(e => e.SubmittedBy).HasMaxLength(256);
+            entity.Property(e => e.ValidatedBy).HasMaxLength(256);
+            entity.Property(e => e.ValidationNote).HasMaxLength(1000);
+            entity.Property(e => e.RejectedBy).HasMaxLength(256);
+            entity.Property(e => e.RejectionReason).HasMaxLength(500);
+            entity.Property(e => e.ReopenedBy).HasMaxLength(256);
+            entity.Property(e => e.ReopenReason).HasMaxLength(500);
+            entity.Property(e => e.ArchivePdfBlobUri).HasMaxLength(500);
+
+            entity.Property(e => e.Status)
+                  .HasConversion<string>()
+                  .HasMaxLength(20)
+                  .IsRequired()
+                  .HasDefaultValue(ClassAttendanceSheetStatus.NotStarted);
+
+            entity.HasIndex(e => new { e.ClassSectionId, e.SheetDate })
+                  .IsUnique()
+                  .HasDatabaseName("UQ_TC_ClassAttendanceSheet_SectionDate");
+
+            entity.HasIndex(e => new { e.CampusId, e.SheetDate });
+            entity.HasIndex(e => new { e.DistrictId, e.SheetDate });
+
+            entity.HasIndex(e => new { e.TeacherDcid, e.SheetDate })
+                  .HasFilter("[TeacherDcid] IS NOT NULL");
+
+            entity.HasIndex(e => new { e.SheetDate, e.CampusId })
+                  .HasFilter("[Status] = 'Submitted'")
+                  .HasDatabaseName("IX_TC_ClassAttendanceSheet_Submitted");
+
+            entity.HasIndex(e => e.ArchivePdfBlobUri)
+                  .HasFilter("[ArchivePdfBlobUri] IS NOT NULL");
+
+            entity.HasOne(e => e.ClassSection)
+                  .WithMany()
+                  .HasForeignKey(e => e.ClassSectionId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.District)
+                  .WithMany()
+                  .HasForeignKey(e => e.DistrictId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Campus)
+                  .WithMany()
+                  .HasForeignKey(e => e.CampusId)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Teacher)
+                  .WithMany()
+                  .HasForeignKey(e => e.TeacherDcid)
                   .OnDelete(DeleteBehavior.NoAction)
                   .IsRequired(false);
         });

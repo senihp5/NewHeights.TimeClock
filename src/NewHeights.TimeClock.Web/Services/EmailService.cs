@@ -119,7 +119,7 @@ public class EmailService : IEmailService
             </div>
             <p>Please log in to the Staff Portal and submit your time sheet before the deadline.</p>
             <p style='margin-top: 20px;'>
-                <a href='https://timeclock.newheightsed.com/my/timesheet' 
+                <a href='https://clock.newheightsed.com/my/timesheet'
                    style='background: {NavyBlue}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;'>
                     View My Time Sheet
                 </a>
@@ -145,7 +145,7 @@ public class EmailService : IEmailService
             </div>
             <p>Please review and approve these time sheets to ensure timely payroll processing.</p>
             <p style='margin-top: 20px;'>
-                <a href='https://timeclock.newheightsed.com/supervisor/timesheets' 
+                <a href='https://clock.newheightsed.com/supervisor/timesheets'
                    style='background: {Green}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;'>
                     Review Team Time Sheets
                 </a>

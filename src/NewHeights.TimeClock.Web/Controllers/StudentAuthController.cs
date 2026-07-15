@@ -34,12 +34,15 @@ public class StudentAuthController : Controller
     /// <summary>
     /// Signs the student out of the Google cookie session and redirects home.
     /// Does NOT touch the Entra cookie — staff accounts are unaffected.
+    /// 2026-04-28: now scoped to the dedicated "StudentCookie" scheme (the
+    /// scheme Google.SignInScheme writes to). The previous version signed out
+    /// of the default "Cookies" scheme which would have killed any signed-in
+    /// staff member's session as collateral damage.
     /// </summary>
     [HttpGet("sign-out")]
     public async Task<IActionResult> SignOutStudent()
     {
-        await HttpContext.SignOutAsync(
-            Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationDefaults.AuthenticationScheme);
+        await HttpContext.SignOutAsync("StudentCookie");
         return Redirect("/");
     }
 }

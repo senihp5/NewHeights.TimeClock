@@ -1,0 +1,10 @@
+# Session backup files created by Claude during edits
+*.bak_*
+*.backup_*
+
+# Arduino build artifacts (in case arduino-cli builds in-tree)
+build/
+*.elf
+*.bin
+*.hex
+*.map

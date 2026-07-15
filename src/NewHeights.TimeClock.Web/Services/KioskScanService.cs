@@ -79,8 +79,9 @@ public class KioskScanService : IKioskScanService
                     _logger.LogInformation(
                         "KioskScan REJECTED (TOO_SOON): ID {IdNumber} scanned {Delta:F1}s ago at terminal {Terminal}",
                         idNumber, secondsSince, terminalId);
+                    // Friendly copy — the client renders TOO_SOON as an info card, not red.
                     return Error(
-                        $"Already scanned. Please wait {waitSeconds}s before scanning again.",
+                        $"Just scanned — please wait {waitSeconds}s.",
                         "TOO_SOON");
                 }
             }

@@ -1,0 +1,381 @@
+@page "/class/attendance/{SectionId:int}/{DateText}"
+@page "/class/attendance/{SectionId:int}"
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.EntityFrameworkCore
+@using NewHeights.TimeClock.Data
+@using NewHeights.TimeClock.Data.Entities
+@using NewHeights.TimeClock.Shared.Constants
+@using NewHeights.TimeClock.Shared.Enums
+@using NewHeights.TimeClock.Web.Services
+@attribute [Authorize(Policy = "RequireAnyStaff")]
+@rendermode InteractiveServer
+@inject IDbContextFactory<TimeClockDbContext> DbFactory
+@inject IUserContextService UserContextSvc
+@inject IClassRosterService RosterService
+@inject IClassAttendanceService AttendanceService
+@inject NavigationManager Navigation
+@inject ILogger<ClassAttendance> Logger
+
+<PageTitle>@(cls?.CourseName ?? "Class") Attendance - @AppConstants.Branding.ShortName</PageTitle>
+
+<style>
+    .ca-page { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem; font-family: "Segoe UI", Arial, sans-serif; color: #1f2937; }
+    .ca-back { color: #1e3a5f; text-decoration: none; font-size: 0.9rem; }
+    .ca-back:hover { text-decoration: underline; }
+    .ca-header { margin: 0.5rem 0 1rem; }
+    .ca-header h1 { margin: 0 0 0.25rem 0; color: #1e3a5f; font-size: 1.55rem; }
+    .ca-header .ca-meta { color: #6b7280; font-size: 0.95rem; }
+    .ca-statusbar { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.85rem; align-items: center; justify-content: space-between; }
+    .ca-statusbar .ca-pill { display: inline-block; padding: 0.2rem 0.7rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+    .pill-notstarted { background: #f3f4f6; color: #6b7280; }
+    .pill-inprogress { background: #fef3c7; color: #92400e; }
+    .pill-submitted  { background: #dbeafe; color: #1e40af; }
+    .pill-rejected   { background: #fee2e2; color: #991b1b; }
+    .pill-validated  { background: #d1fae5; color: #065f46; }
+    .pill-reopened   { background: #fef3c7; color: #92400e; }
+    .ca-banner { background: #fff7ed; border: 1px solid #fdba74; color: #9a3412; padding: 0.65rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.92rem; }
+    .ca-banner.submitted { background: #eff6ff; border-color: #93c5fd; color: #1e3a8a; }
+    .ca-banner.validated { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
+    .ca-banner.rejected  { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+    .ca-roster { width: 100%; border-collapse: collapse; background: #fff; }
+    .ca-roster th { background: #f3f4f6; color: #374151; text-align: left; padding: 0.6rem 0.75rem; font-size: 0.85rem; border-bottom: 1px solid #e5e7eb; }
+    .ca-roster td { padding: 0.55rem 0.75rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
+    .ca-roster tr:hover td { background: #fafbfc; }
+    .ca-name { font-weight: 600; color: #111827; }
+    .ca-number { color: #6b7280; font-size: 0.8rem; }
+    .ca-status-group { display: inline-flex; gap: 0.3rem; }
+    .ca-status-btn { padding: 0.3rem 0.65rem; border: 1px solid #d1d5db; background: #fff; border-radius: 4px; font-size: 0.8rem; cursor: pointer; color: #374151; }
+    .ca-status-btn:hover { background: #f9fafb; }
+    .ca-status-btn.active { color: #fff; font-weight: 600; border-color: transparent; }
+    .ca-status-btn.active.present  { background: #059669; }
+    .ca-status-btn.active.tardy    { background: #d97706; }
+    .ca-status-btn.active.absent   { background: #dc2626; }
+    .ca-status-btn.active.excused  { background: #7c3aed; }
+    .ca-status-btn.active.earlyout { background: #6b7280; }
+    .ca-comment input { width: 100%; padding: 0.35rem 0.55rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 0.85rem; }
+    .ca-empty { background: #fef9c3; border: 1px solid #fde68a; color: #854d0e; padding: 1rem 1.25rem; border-radius: 6px; }
+    .ca-actions { margin-top: 1.25rem; display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .ca-btn { padding: 0.55rem 1.1rem; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; color: #374151; font-weight: 600; cursor: pointer; }
+    .ca-btn:hover { background: #f3f4f6; }
+    .ca-btn-primary { background: #1e3a5f; color: #fff; border-color: #1e3a5f; }
+    .ca-btn-primary:hover { background: #16314f; }
+    .ca-btn-primary:disabled { background: #9ca3af; border-color: #9ca3af; cursor: not-allowed; }
+    .ca-loading, .ca-error { padding: 1.5rem; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; text-align: center; color: #4b5563; margin-top: 1rem; }
+    .ca-error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    .ca-saved-flash { display: inline-block; padding: 0.25rem 0.6rem; background: #d1fae5; color: #065f46; border-radius: 4px; font-size: 0.8rem; margin-left: 0.5rem; }
+</style>
+
+<div class="ca-page">
+
+    <div>
+        <a class="ca-back" href="@($"/teacher/today/{displayDate:yyyy-MM-dd}")">&larr; Back to My Classes</a>
+    </div>
+
+    @if (isLoading)
+    {
+        <div class="ca-loading">Loading class&hellip;</div>
+    }
+    else if (!string.IsNullOrEmpty(loadError))
+    {
+        <div class="ca-error">@loadError</div>
+    }
+    else if (cls == null)
+    {
+        <div class="ca-error">Section @SectionId not found.</div>
+    }
+    else
+    {
+        <header class="ca-header">
+            <h1>@cls.CourseName</h1>
+            <p class="ca-meta">
+                @displayDate.ToString("dddd, MMMM d, yyyy") &middot;
+                @(cls.PeriodNumber.HasValue ? $"Period {cls.PeriodNumber.Value}" : "—")
+                @if (!string.IsNullOrWhiteSpace(cls.Expression)) { <span> &middot; @cls.Expression</span> }
+                @if (!string.IsNullOrWhiteSpace(cls.Room)) { <span> &middot; Room @cls.Room</span> }
+            </p>
+        </header>
+
+        <div class="ca-statusbar">
+            <span>
+                <strong>Status:</strong>
+                <span class="ca-pill @PillClass(sheet?.Status)">@(sheet?.Status.ToString() ?? "NotStarted")</span>
+            </span>
+            <span class="ca-meta">@roster.Count enrolled</span>
+        </div>
+
+        @if (sheet?.Status == ClassAttendanceSheetStatus.Submitted)
+        {
+            <div class="ca-banner submitted">
+                <strong>Awaiting reception validation.</strong>
+                Submitted @sheet.SubmittedAt?.ToString("MMM d, h:mm tt") by @sheet.SubmittedBy.
+                Grid is read-only until receptionist validates or returns the sheet.
+            </div>
+        }
+        else if (sheet?.Status == ClassAttendanceSheetStatus.Validated)
+        {
+            <div class="ca-banner validated">
+                <strong>Validated by @sheet.ValidatedBy at @sheet.ValidatedAt?.ToString("MMM d, h:mm tt").</strong>
+                @if (!string.IsNullOrWhiteSpace(sheet.ValidationNote))
+                {
+                    <div style="margin-top:0.35rem;">Note: <em>@sheet.ValidationNote</em></div>
+                }
+            </div>
+        }
+        else if (sheet?.Status == ClassAttendanceSheetStatus.Rejected)
+        {
+            <div class="ca-banner rejected">
+                <strong>Returned by reception:</strong> @sheet.RejectionReason
+                <div style="margin-top:0.25rem;">Make corrections below and re-submit.</div>
+            </div>
+        }
+
+        @if (roster.Count == 0)
+        {
+            <div class="ca-empty">
+                <strong>No students enrolled in this section yet.</strong>
+                If you expect a roster here, the section may not have been
+                synced from PowerSchool. For the Fake Course test data, this
+                typically means the 3 test students have <code>enroll_status = 5</code>
+                in PowerSchool which is excluded by the CMS sync. Flip them
+                to <code>enroll_status = 0</code> in PS and the next sync
+                will pick them up.
+            </div>
+        }
+        else
+        {
+            <table class="ca-roster">
+                <thead>
+                    <tr>
+                        <th>Student</th>
+                        <th>Status</th>
+                        <th>Comment</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var row in roster)
+                {
+                    var currentStatus = cellsByDcid.TryGetValue(row.StudentDcid, out var cell)
+                        ? cell.Status
+                        : ClassAttendanceStatus.Present;
+                    var currentComment = cell?.Comment ?? "";
+                    var savedFlash = savedDcid == row.StudentDcid;
+
+                    <tr>
+                        <td>
+                            <div class="ca-name">@(string.IsNullOrWhiteSpace(row.LastName) ? row.StudentNumber : $"{row.LastName}, {row.FirstName}")</div>
+                            <div class="ca-number">#@row.StudentNumber</div>
+                        </td>
+                        <td>
+                            <div class="ca-status-group">
+                                @foreach (var s in AllStatuses)
+                                {
+                                    var pillCss = currentStatus == s ? $"active {s.ToString().ToLowerInvariant()}" : "";
+                                    <button type="button"
+                                            class="ca-status-btn @pillCss"
+                                            disabled="@IsReadOnly"
+                                            @onclick="() => OnStatusChangeAsync(row, s)">
+                                        @s
+                                    </button>
+                                }
+                            </div>
+                            @if (savedFlash)
+                            {
+                                <span class="ca-saved-flash">Saved</span>
+                            }
+                        </td>
+                        <td class="ca-comment">
+                            <input type="text"
+                                   value="@currentComment"
+                                   disabled="@IsReadOnly"
+                                   placeholder="Optional note (e.g. arrived 9:12)"
+                                   @onchange="(e) => OnCommentChangeAsync(row, e)" />
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+
+        <div class="ca-actions">
+            @if (!IsReadOnly && roster.Count > 0)
+            {
+                <button type="button" class="ca-btn-primary ca-btn"
+                        disabled="@isSubmitting"
+                        @onclick="OnSubmitAsync">
+                    @(isSubmitting ? "Submitting…" : "Submit to Reception")
+                </button>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public int SectionId { get; set; }
+    [Parameter] public string? DateText { get; set; }
+
+    private DateOnly displayDate = DateOnly.FromDateTime(DateTime.Today);
+    private TcClassSection? cls;
+    private TcClassAttendanceSheet? sheet;
+    private List<EnrollmentRow> roster = new();
+    private Dictionary<int, TcClassAttendance> cellsByDcid = new();
+    private bool isLoading = true;
+    private bool isSubmitting = false;
+    private string loadError = "";
+    private string signedInEmail = "";
+    private int? savedDcid;
+
+    private static readonly ClassAttendanceStatus[] AllStatuses = new[]
+    {
+        ClassAttendanceStatus.Present,
+        ClassAttendanceStatus.Tardy,
+        ClassAttendanceStatus.Absent,
+        ClassAttendanceStatus.Excused,
+        ClassAttendanceStatus.EarlyOut
+    };
+
+    private bool IsReadOnly => sheet?.Status == ClassAttendanceSheetStatus.Submitted
+                            || sheet?.Status == ClassAttendanceSheetStatus.Validated;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(DateText)
+            && DateOnly.TryParse(DateText, out var parsed))
+        {
+            displayDate = parsed;
+        }
+        else
+        {
+            displayDate = DateOnly.FromDateTime(DateTime.Today);
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        loadError = "";
+        savedDcid = null;
+
+        try
+        {
+            var ctx = await UserContextSvc.GetCurrentUserAsync();
+            signedInEmail = ctx.Email ?? "";
+
+            using var db = await DbFactory.CreateDbContextAsync();
+            cls = await db.TcClassSections
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s => s.ClassSectionId == SectionId);
+
+            if (cls == null) return;
+
+            sheet = await AttendanceService.EnsureSheetAsync(SectionId, displayDate);
+            roster = await RosterService.GetRosterAsync(SectionId, displayDate);
+            var cells = await AttendanceService.GetCellsForSectionDateAsync(SectionId, displayDate);
+            cellsByDcid = cells.ToDictionary(c => c.StudentDcid);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex,
+                "ClassAttendance: failed to load section {SectionId} date {Date}",
+                SectionId, displayDate);
+            loadError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task OnStatusChangeAsync(EnrollmentRow row, ClassAttendanceStatus newStatus)
+    {
+        if (IsReadOnly) return;
+
+        var existingComment = cellsByDcid.TryGetValue(row.StudentDcid, out var cell)
+            ? cell.Comment
+            : null;
+
+        await AttendanceService.MarkAsync(
+            SectionId,
+            row.StudentDcid,
+            row.StudentNumber,
+            displayDate,
+            newStatus,
+            existingComment,
+            ClassAttendanceSource.TeacherManual,
+            scannedAt: null,
+            minutesLate: null,
+            markedBy: signedInEmail);
+
+        savedDcid = row.StudentDcid;
+        await RefreshCellsAsync();
+    }
+
+    private async Task OnCommentChangeAsync(EnrollmentRow row, ChangeEventArgs e)
+    {
+        if (IsReadOnly) return;
+        var text = e.Value as string;
+
+        var currentStatus = cellsByDcid.TryGetValue(row.StudentDcid, out var cell)
+            ? cell.Status
+            : ClassAttendanceStatus.Present;
+
+        await AttendanceService.MarkAsync(
+            SectionId,
+            row.StudentDcid,
+            row.StudentNumber,
+            displayDate,
+            currentStatus,
+            string.IsNullOrWhiteSpace(text) ? null : text.Trim(),
+            ClassAttendanceSource.TeacherManual,
+            scannedAt: null,
+            minutesLate: null,
+            markedBy: signedInEmail);
+
+        savedDcid = row.StudentDcid;
+        await RefreshCellsAsync();
+    }
+
+    private async Task RefreshCellsAsync()
+    {
+        var cells = await AttendanceService.GetCellsForSectionDateAsync(SectionId, displayDate);
+        cellsByDcid = cells.ToDictionary(c => c.StudentDcid);
+        using var db = await DbFactory.CreateDbContextAsync();
+        sheet = await db.TcClassAttendanceSheets
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.ClassSectionId == SectionId
+                                   && s.SheetDate == displayDate);
+    }
+
+    private async Task OnSubmitAsync()
+    {
+        if (sheet == null || isSubmitting) return;
+        isSubmitting = true;
+        try
+        {
+            await AttendanceService.SubmitSheetAsync(sheet.SheetId, signedInEmail);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "ClassAttendance: submit failed for sheet {SheetId}", sheet.SheetId);
+            loadError = $"Submit failed: {ex.Message}";
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private static string PillClass(ClassAttendanceSheetStatus? status) => status switch
+    {
+        ClassAttendanceSheetStatus.NotStarted => "pill-notstarted",
+        ClassAttendanceSheetStatus.InProgress => "pill-inprogress",
+        ClassAttendanceSheetStatus.Submitted  => "pill-submitted",
+        ClassAttendanceSheetStatus.Rejected   => "pill-rejected",
+        ClassAttendanceSheetStatus.Validated  => "pill-validated",
+        ClassAttendanceSheetStatus.Reopened   => "pill-reopened",
+        _ => "pill-notstarted"
+    };
+}

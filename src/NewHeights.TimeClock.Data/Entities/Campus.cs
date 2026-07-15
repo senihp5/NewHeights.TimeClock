@@ -17,6 +17,16 @@ public class Campus
     public int DistrictId { get; set; } = 1;
     public District? District { get; set; }
 
+    /// <summary>
+    /// Migration 068: true for rows that exist solely to anchor Class
+    /// Attendance materialization for non-physical PowerSchool school
+    /// IDs (Summer Term 888, Charter School Waitlist 777). Filter these
+    /// OUT of any physical-presence picker (campus check-in, geofence
+    /// validation, kiosk dispatch). True ONLY when the row does not
+    /// represent a real campus location.
+    /// </summary>
+    public bool IsVirtual { get; set; } = false;
+
     // New geofence columns to be added
     public decimal? Latitude { get; set; }
     public decimal? Longitude { get; set; }
